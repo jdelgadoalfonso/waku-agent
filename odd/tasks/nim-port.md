@@ -36,5 +36,8 @@
 4. Audio faster-whisper/kokoro vs single binary
 5. MCP sin SDK, rich→ANSI, threading→event loop, discord WS + WA HMAC
 
+## Landed
+- Phase 0 skeleton: c3444cf on feature/nim-phase0-skeleton (nimble package, config.nim, CLI skeleton, 6 offline tests green; verifier accept-with-notes, notes fixed). Next unit: providers.nim + dotenv cwd-walk + full dispatch.
+
 ## Next
 - Escribir docs/proposals/nim-port.md y pedir yes antes de fase 0.
