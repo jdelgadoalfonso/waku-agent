@@ -34,6 +34,15 @@ nimble test     # runs the offline phase 0 tests
 - `src/memory.nim` ports the semantic/episodic stores: the `_fts_query`
   parity gate (32 ground-truth vectors from the live Python function) plus
   the `Fact`/`Episode` CRUD with identical SQL, limits and output formats.
+- `src/wire.nim` bridges the loop's Anthropic-shape messages to OpenAI
+  chat.completions (request build, response shaping, thought_signature
+  echo, max_tokens retry rule).
+- `src/sse.nim` reassembles both SSE dialects (OpenAI chunks, Anthropic
+  events) into the loop's assembled shape.
+- `src/loop.nim` is the agent loop (stream-then-fallback, tool execution,
+  iteration limits) over a closure client seam.
+- `src/http.nim` transports both wire formats over HTTP(S), streams SSE
+  into the gates and wires into the loop seam.
 - `src/tools.nim` ports the tool registry (`Tool`, `register`, `to_api`,
   `schemas`, `execute` with errors-as-text) plus JSON arg helpers.
 - `src/calendar.nim` ports the local calendar paths: `create_event` (guard,

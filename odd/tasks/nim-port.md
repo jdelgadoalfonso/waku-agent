@@ -47,6 +47,12 @@
 - Phase 2b local calendar (calendar.nim + 7 tests): cd32a8b.
 - Phase 2c local tools (notes/messages/memory_admin + 6 suites): de0768e.
 - Next: phase 3 (HTTP + wire formats + loop, behind the SSE/reassembly gate).
+- Phase 3a wire bridge (wire.nim + 9 tests): 989c93e.
+- Phase 3b OpenAI SSE gate (feedOpenAi/finalOpenAi + 5 tests): df3b026.
+- Phase 3c Anthropic SSE gate (feedAnthropic/finalAnthropic + 5 tests): 607aea5.
+- Phase 3d agent loop (loop.nim + scripted seam, 7 tests): e641307.
+- Phase 3e HTTP transport (http.nim + localhost stub, 7 tests): 683d298.
+- Next: phase 4 (session + app + graph + CLI gateway).
 - Next unit: providers.nim + dotenv cwd-walk + full dispatch (providers.nim
   landed as 86c843b; phase 0c dotenv + connections implemented, verifier
   accept-with-notes, notes fixed — ready to commit).
