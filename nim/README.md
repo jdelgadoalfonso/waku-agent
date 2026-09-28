@@ -20,19 +20,22 @@ nimble test     # runs the offline phase 0 tests
 
 - `waku.nimble` declares one package that uses the standard library only.
 - `src/config.nim` defines the `Settings` object (provider, apiKey, model,
-  home) with `WAKU_PROVIDER`, `WAKU_API_KEY`, `WAKU_MODEL` and `WAKU_HOME` env overrides, and
-  a small `.env` line parser. This ports the config subset of
-  `waku/config.py`.
-- `src/waku.nim` is the CLI entry point. `--help` lists the 12 commands,
-  `--version` prints the port version, and every other command prints the
-  not-yet-implemented reason to stderr and exits 0.
+  home) with `WAKU_PROVIDER`, `WAKU_API_KEY`, `WAKU_MODEL` and `WAKU_HOME` env overrides,
+  a small `.env` line parser, and the cwd-walk loader (`findDotenv` /
+  `loadDotenvFile` / `loadDotenv`): the `.env` is found upward from where you
+  run, not where the binary lives. This ports `waku/config.py` `_load_env`.
+- `src/providers.nim` parses the `providers.toml` registry subset and ports
+  the `models_for` / `_belongs_elsewhere` / scoped-key resolution rules.
+- `src/waku.nim` loads the `.env` before dispatch and implements the real
+  `connections` output: one line per visible provider (`configured` vs
+  `missing key (set VAR)`), no network probes. Every other command still
+  prints the not-yet-implemented reason to stderr and exits 0.
 - `tests/test_phase0.nim` tests the env overrides, the `.env` parser and the
   command table offline.
 
 ## What is not ported yet
 
-Nothing else runs. The port still needs the `providers.toml` parser, the
-SQLite state and memory, the tool registry, the Anthropic and OpenAI loop,
+The SQLite state and memory, the tool registry, the Anthropic and OpenAI loop,
 the session assembly, the integrations catalog, MCP, the chat gateways, the
 dashboard and the evals. The phase list with its gates lives in
 [docs/nim-port-design.md](../docs/nim-port-design.md).

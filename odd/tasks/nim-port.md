@@ -39,7 +39,9 @@
 ## Landed
 - Phase 0 skeleton: c3444cf on feature/nim-phase0-skeleton (nimble package, config.nim, CLI skeleton, 6 offline tests green; verifier accept-with-notes, notes fixed).
 - Task-file + docs bookkeeping: 51cfa32.
-- Next unit: providers.nim + dotenv cwd-walk + full dispatch.
+- Next unit: providers.nim + dotenv cwd-walk + full dispatch (providers.nim
+  landed as 86c843b; phase 0c dotenv + connections implemented, verifier
+  accept-with-notes, notes fixed — ready to commit).
 
 ## Next
 - Escribir docs/proposals/nim-port.md y pedir yes antes de fase 0.

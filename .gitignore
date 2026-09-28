@@ -43,6 +43,12 @@ lab/one-memory-every-agent/grok-plugin/
 lab/**/*.excalidraw
 !lab/kimi-k3/**/*.excalidraw
 !lab/pi-agent/**/*.excalidraw
+# Local Pi runtime state
+.atl/
+
+# Nim port build outputs (phase 0+)
+nim/waku
+nim/nimcache/
 
 # evals/hosted_docker/test_image.py plants waku/_c1_context_probe/ inside an
 # admitted build-context tree to prove the ignore files keep secrets out of the
