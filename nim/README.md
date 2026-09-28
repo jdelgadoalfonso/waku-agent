@@ -34,6 +34,14 @@ nimble test     # runs the offline phase 0 tests
 - `src/memory.nim` ports the semantic/episodic stores: the `_fts_query`
   parity gate (32 ground-truth vectors from the live Python function) plus
   the `Fact`/`Episode` CRUD with identical SQL, limits and output formats.
+- `src/tools.nim` ports the tool registry (`Tool`, `register`, `to_api`,
+  `schemas`, `execute` with errors-as-text) plus JSON arg helpers.
+- `src/calendar.nim` ports the local calendar paths: `create_event` (guard,
+  +1h default, idempotence, SQLite + ICS) and the windowed local list.
+- `src/notes.nim`, `src/messages.nim`, `src/memory_admin.nim` port the local
+  tools: `save_note`, `send_message` (outbox drafts), `manage_memory`,
+  `update_soul` (+ `SOUL.md` default) and `create_skill` (+ SKILL.md
+  validation). Sync branches, web search and gateway tools are later phases.
 - `src/waku.nim` loads the `.env` before dispatch and implements the real
   `connections` output: one line per visible provider (`configured` vs
   `missing key (set VAR)`), no network probes. Every other command still

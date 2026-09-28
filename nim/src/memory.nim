@@ -10,7 +10,7 @@ import std/unicode
 
 import db_connector/db_sqlite
 
-func isWordRune(r: Rune): bool =
+func isWordRune*(r: Rune): bool =
   ## One `[^\W_]` character: a Unicode letter or an ASCII digit.
   ## Underscore is a separator (unicode61 splits `waku_agent` in two).
   ## Known gap vs Python `str.isalnum`: non-ASCII numbers (Nd/Nl/No such as

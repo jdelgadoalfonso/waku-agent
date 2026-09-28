@@ -49,6 +49,9 @@ lab/**/*.excalidraw
 # Nim port build outputs (phase 0+)
 nim/waku
 nim/nimcache/
+# compiled nimble test binaries live beside their sources
+nim/tests/test_*
+!nim/tests/*.nim
 
 # evals/hosted_docker/test_image.py plants waku/_c1_context_probe/ inside an
 # admitted build-context tree to prove the ignore files keep secrets out of the

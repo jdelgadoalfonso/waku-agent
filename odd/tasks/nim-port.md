@@ -42,8 +42,11 @@
 - Providers + dotenv + connections (phase 0b/0c): 86c843b, 290fbd7.
 - Phase 1a state.db (db.nim, schema/triggers/migrations): 6800bb6.
 - Phase 1b FTS parity gate (ftsQuery + 32 vectors): d7595bd.
-- Phase 1c facts/episodes CRUD (memory.nim stores + 9 tests): 9bde10a.
-- Next: phase 2 (tool registry + local tools, no network).
+- Phase 1c facts/episodes CRUD (memory.nim stores + 9 tests): 9bde10a→4238db6 (amended with task note).
+- Phase 2a registry (tools.nim + 5 tests): a45c0bd.
+- Phase 2b local calendar (calendar.nim + 7 tests): cd32a8b.
+- Phase 2c local tools (notes/messages/memory_admin + 6 suites): f58b326.
+- Next: phase 3 (HTTP + wire formats + loop, behind the SSE/reassembly gate).
 - Next unit: providers.nim + dotenv cwd-walk + full dispatch (providers.nim
   landed as 86c843b; phase 0c dotenv + connections implemented, verifier
   accept-with-notes, notes fixed — ready to commit).
