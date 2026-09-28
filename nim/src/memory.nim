@@ -59,3 +59,112 @@ proc ftsQuery*(text: string): string =
         w.add("*")
         break
   return words.join(" OR ")
+
+type
+  Fact* = object
+    ## One row of `facts`. `source` is 'user' or 'consolidation'.
+    id*: int64
+    subject*: string
+    content*: string
+    source*: string
+    createdAt*: string
+
+  Episode* = object
+    ## One row of `episodes`.
+    id*: int64
+    happenedAt*: string
+    summary*: string
+    createdAt*: string
+
+proc addFact*(db: DbConn, subject, content: string,
+              source = "user") =
+  ## Port of `SqliteFactStore.add`: subject stored lowercased+stripped.
+  db.exec(sql"INSERT INTO facts (subject, content, source) VALUES (?,?,?)",
+          subject.toLower().strip(), content, source)
+
+proc searchFacts*(db: DbConn, query: string, topK = 4): seq[string] =
+  ## Port of `SqliteFactStore.search`: BM25-ranked `"[subject] content"`.
+  ## An empty query is not a search — it returns no rows.
+  let fts = ftsQuery(query)
+  if fts.len == 0:
+    return @[]
+  for row in db.getAllRows(sql("SELECT f.subject, f.content FROM facts_fts " &
+      "JOIN facts f ON f.id = facts_fts.rowid " &
+      "WHERE facts_fts MATCH ? ORDER BY rank LIMIT ?"), fts, $topK):
+    result.add("[" & row[0] & "] " & row[1])
+
+proc listFacts*(db: DbConn, limit = 200): seq[Fact] =
+  ## Newest first. Port of `SqliteFactStore.list`.
+  for row in db.getAllRows(sql("SELECT id, subject, content, source, created_at " &
+      "FROM facts ORDER BY id DESC LIMIT ?"), $limit):
+    result.add(Fact(id: parseBiggestInt(row[0]), subject: row[1],
+                    content: row[2], source: row[3], createdAt: row[4]))
+
+proc searchFactsWithIds*(db: DbConn, query: string,
+                         topK = 8): seq[Fact] =
+  ## Port of `search_with_ids`: ranked rows, or the newest rows when the
+  ## query carries no searchable token.
+  let fts = ftsQuery(query)
+  if fts.len == 0:
+    return listFacts(db, topK)
+  for row in db.getAllRows(sql("SELECT f.id, f.subject, f.content FROM facts_fts " &
+      "JOIN facts f ON f.id = facts_fts.rowid " &
+      "WHERE facts_fts MATCH ? ORDER BY rank LIMIT ?"), fts, $topK):
+    result.add(Fact(id: parseBiggestInt(row[0]), subject: row[1],
+                    content: row[2], source: "", createdAt: ""))
+
+proc updateFactContent*(db: DbConn, id: int64, content: string): bool =
+  ## Port of `update` without subject: content only. True when a row moved.
+  db.execAffectedRows(sql"UPDATE facts SET content=? WHERE id=?",
+                      content, $id) > 0
+
+proc updateFact*(db: DbConn, id: int64, content, subject: string): bool =
+  ## Port of `update` with subject (stored lowercased+stripped).
+  ## Split from `updateFactContent` so "no subject change" needs no sentinel:
+  ## Python spells it `subject=None`, which has no Nim default-arg equivalent.
+  db.execAffectedRows(sql"UPDATE facts SET content=?, subject=? WHERE id=?",
+                      content, subject.toLower().strip(), $id) > 0
+
+proc deleteFact*(db: DbConn, id: int64): bool =
+  ## Port of `SqliteFactStore.delete`. True when a row moved.
+  db.execAffectedRows(sql"DELETE FROM facts WHERE id=?", $id) > 0
+
+proc settle*(): bool =
+  ## Port of `SqliteFactStore.settle`: always settled — the row and its
+  ## FTS5 index land in one step, so a fact is searchable the instant
+  ## `addFact` returns. (No `timeout` param: there is nothing to wait for.)
+  true
+
+proc addEpisode*(db: DbConn, summary, happenedAt: string) =
+  ## Port of `SqliteEpisodeStore.add`.
+  db.exec(sql"INSERT INTO episodes (happened_at, summary) VALUES (?,?)",
+          happenedAt, summary)
+
+proc recentEpisodes*(db: DbConn, topK = 3): seq[string] =
+  ## Port of `SqliteEpisodeStore.recent`: newest `happened_at` first.
+  for row in db.getAllRows(sql("SELECT happened_at, summary FROM episodes " &
+      "ORDER BY happened_at DESC LIMIT ?"), $topK):
+    result.add("(" & row[0] & ") " & row[1])
+
+proc searchEpisodes*(db: DbConn, query: string, topK = 3): seq[string] =
+  ## Port of `SqliteEpisodeStore.search`: relevance first, most recent
+  ## first among matches; an empty query falls back to `recentEpisodes`.
+  let fts = ftsQuery(query)
+  if fts.len == 0:
+    return recentEpisodes(db, topK)
+  for row in db.getAllRows(sql("SELECT e.happened_at, e.summary FROM episodes_fts " &
+      "JOIN episodes e ON e.id = episodes_fts.rowid " &
+      "WHERE episodes_fts MATCH ? ORDER BY rank, e.happened_at DESC LIMIT ?"),
+      fts, $topK):
+    result.add("(" & row[0] & ") " & row[1])
+
+proc listEpisodes*(db: DbConn, limit = 200): seq[Episode] =
+  ## Newest first. Port of `SqliteEpisodeStore.list`.
+  for row in db.getAllRows(sql("SELECT id, happened_at, summary, created_at " &
+      "FROM episodes ORDER BY id DESC LIMIT ?"), $limit):
+    result.add(Episode(id: parseBiggestInt(row[0]), happenedAt: row[1],
+                       summary: row[2], createdAt: row[3]))
+
+proc deleteEpisode*(db: DbConn, id: int64): bool =
+  ## Port of `SqliteEpisodeStore.delete`. True when a row moved.
+  db.execAffectedRows(sql"DELETE FROM episodes WHERE id=?", $id) > 0

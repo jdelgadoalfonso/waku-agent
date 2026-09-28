@@ -39,6 +39,11 @@
 ## Landed
 - Phase 0 skeleton: c3444cf on feature/nim-phase0-skeleton (nimble package, config.nim, CLI skeleton, 6 offline tests green; verifier accept-with-notes, notes fixed).
 - Task-file + docs bookkeeping: 51cfa32.
+- Providers + dotenv + connections (phase 0b/0c): 86c843b, 290fbd7.
+- Phase 1a state.db (db.nim, schema/triggers/migrations): 6800bb6.
+- Phase 1b FTS parity gate (ftsQuery + 32 vectors): d7595bd.
+- Phase 1c facts/episodes CRUD (memory.nim stores + 9 tests): 9bde10a.
+- Next: phase 2 (tool registry + local tools, no network).
 - Next unit: providers.nim + dotenv cwd-walk + full dispatch (providers.nim
   landed as 86c843b; phase 0c dotenv + connections implemented, verifier
   accept-with-notes, notes fixed — ready to commit).
