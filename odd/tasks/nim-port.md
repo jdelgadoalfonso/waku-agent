@@ -53,6 +53,13 @@
 - Phase 3d agent loop (loop.nim + scripted seam, 7 tests): e641307.
 - Phase 3e HTTP transport (http.nim + localhost stub, 7 tests): 683d298.
 - Next: phase 4 (session + app + graph + CLI gateway).
+- Phase 4a graph engine+nodes (graph/engine.nim, graph/nodes.nim + 27 tests): 188592f (verifier accept-with-notes, 4 notes fixed: _-key filter + test, deep-copy doc, 3 robustness tests, unknown-jump doc).
+- Phase 4b session assembly (session.nim + config/memory extensions + 15 tests): f6d02f2 (verifier accept-with-notes, 8 notes fixed: locale doc, turns=0 test, config/envInt tests, multi-fold test, model-tail test, RetrieveFn notify, default consts, meta-render doc).
+- Phase 4c app respond (app/trace/jsondump + 18 tests): ff86ed2 (verifier accept-with-notes, 7 notes fixed: test count, triage_reason "", utcStamp test, astral test, flag-on-no-seam test, afterTurn test, errorText-vs-repr doc).
+- Phase 4d workflows+ops (triage/gather/brief + 26 tests): 3763c4e (verifier first REJECTED on RangeDefect crash with truncated '{'; fixed with b<a guard + regression test + 5 minor notes; re-verify subagent errored, blocker re-verified inline with a crash-shape probe + full suite).
+- Phase 4e CLI dispatch (cli/client/waku dispatch + 10 tests): f78a0a1 (verifier accept-with-notes, 6 notes fixed; README refreshed per rule 9).
+- PHASE 4 COMPLETE (session + app + graph + CLI gateway): 188592f, f6d02f2, ff86ed2, 3763c4e, f78a0a1 — suite 185 OK green, zero warnings. Stubs left for phases 5-8 (dashboard, connect, mcp, voice, telegram, discord, whatsapp); skill install/export has no explicit phase in the design doc — deferred, needs anchoring.
+- Next: phase 5 (integrations + catalog + pricing).
 - Next unit: providers.nim + dotenv cwd-walk + full dispatch (providers.nim
   landed as 86c843b; phase 0c dotenv + connections implemented, verifier
   accept-with-notes, notes fixed — ready to commit).
