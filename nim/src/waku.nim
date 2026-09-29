@@ -1,14 +1,29 @@
-## Waku CLI entry point — Nim port, phase 0.
+## Waku CLI entry point — Nim port, phase 4.
 ##
-## Port target: the `waku/__main__.py` command dispatch. Phase 0c wires the
-## real `connections` output (provider rows with key presence, no network
-## probes) and loads the user's `.env` upward from the working directory
-## before dispatch. Every other command still reports not-yet-implemented.
+## Port target: the `waku/__main__.py` command dispatch. `connections` was
+## phase 0c; phase 4e wires `chat` (default, the REPL), `brief` and
+## `gather` against a real app (settings → providers → client → db).
+## Every other command still reports not-yet-implemented.
+##
+## Exit codes follow Python: unknown command → 1 with the usage text.
+## Two deliberate divergences: `--help`/`--version` exit 0 (Unix
+## convention; Python has no such flags, so bare `waku --help` there is
+## usage+1), and known-but-unported commands report to stderr and exit 0
+## (phase scaffolding — Python has no such state).
 
+import std/json
 import std/os
+import std/syncio
 
+import ./brief
+import ./cli
+import ./client
 import ./config
+import ./db
+import ./gather
 import ./providers
+import ./triage
+import ./wire
 
 const
   version* = "0.0.1-phase0"  # keep in sync with `version` in waku.nimble
@@ -78,17 +93,104 @@ proc writeVersion*() =
   ## Print the port version.
   echo version
 
-when isMainModule:
-  import std/os
-  import std/syncio
+proc buildCliApp*(dotenvStart = ""): Waku =
+  ## Everything a CLI command runs against: env, registry, live client,
+  ## state db. Raises `ClientConfigError` (message holds the fix) before
+  ## touching the network or the filesystem beyond the `.env` read.
+  let dotenvPath = loadDotenv(dotenvStart)
+  var settings = loadSettings()
+  let registryPath = findProvidersToml()
+  if registryPath.len == 0:
+    raise newException(ClientConfigError,
+      "providers.toml not found from " & getCurrentDir() &
+      " upward or beside the binary")
+  let rows = loadProviders(registryPath)
+  let client = clientFor(settings, rows, getEnv("WAKU_API_KEY"),
+                         dotenvPath)
+  let db = connectDb(settings.home)
+  var w = newWaku(settings, client, db)
+  if settings.graphWorkflows:
+    w.graphTurn = triageGraphTurn(client, settings.smallModel,
+      settings.home,
+      proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
+        w.runFullTurn(st.jget("message").getStr(), n, strm))
+  return w
 
-  let args = commandLineParams()
-  if args.len == 0 or args[0] == "--help":
+proc runChat*(dotenvStart = ""): int =
+  ## Default command: talk in the terminal.
+  var w: Waku
+  try:
+    w = buildCliApp(dotenvStart)
+  except ClientConfigError as exc:
+    stderr.writeLine(exc.msg)
+    return 1
+  runRepl(w)
+  return 0
+
+proc runBriefCmd*(dotenvStart = ""): int =
+  ## Morning briefing as a loop turn, filed to the outbox.
+  var w: Waku
+  try:
+    w = buildCliApp(dotenvStart)
+  except ClientConfigError as exc:
+    stderr.writeLine(exc.msg)
+    return 1
+  let (reply, path) = runBrief(w)
+  echo reply
+  echo "saved to " & path
+  return 0
+
+proc runGatherCmd*(dotenvStart = ""): int =
+  ## Morning briefing as a graph, filed to the outbox.
+  var w: Waku
+  try:
+    w = buildCliApp(dotenvStart)
+  except ClientConfigError as exc:
+    stderr.writeLine(exc.msg)
+    return 1
+  echo "gathering — github, web, calendar and memory, together…"
+  let state = runGather(w)
+  let digest = state.jget("digest").getStr()
+  echo if digest.len > 0: digest else: "(no digest — every source was empty)"
+  if state.jget("draft_path").kind == JString:
+    echo "saved to " & state["draft_path"].getStr()
+  if state.jget("errors").kind == JObject:
+    for node, err in pairs(state["errors"]):
+      echo node & ": " & err.getStr()
+  return 0
+
+proc writeUsage*() =
+  ## What to run. Unknown commands land here with exit 1, like Python.
+  echo "waku - local-first personal assistant (Nim port)"
+  echo ""
+  echo "Usage: waku <command>"
+  echo ""
+  echo "Commands:"
+  for cmd in cliCommands:
+    echo "  " & cmd
+
+proc runCommand*(args: seq[string], dotenvStart = ""): int =
+  ## Dispatch one command line. `dotenvStart` pins the `.env` search for
+  ## tests (default: the working directory, like a real run).
+  if args.len == 0 or args[0] == "chat":
+    return runChat(dotenvStart)
+  if args[0] == "--help":
     writeHelp()
-  elif args[0] == "--version":
+    return 0
+  if args[0] == "--version":
     writeVersion()
-  elif args[0] == "connections":
-    quit(runConnections())
-  else:
-    stderr.writeLine "nim port phase 0: " & args[0] & " not yet implemented"
-    # Exit 0: phase 0 has nothing to fail on yet.
+    return 0
+  if args[0] == "connections":
+    return runConnections()
+  if args[0] == "brief":
+    return runBriefCmd(dotenvStart)
+  if args[0] == "gather":
+    return runGatherCmd(dotenvStart)
+  if args[0] in cliCommands:  # known but later phase: honest stub
+    stderr.writeLine "nim port phase 4: " & args[0] & " not yet implemented"
+    return 0
+  writeUsage()  # unknown, like Python: usage + exit 1
+  return 1
+
+when isMainModule:
+  quit(runCommand(commandLineParams()))

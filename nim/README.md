@@ -1,9 +1,9 @@
-# Waku Nim port (phase 0)
+# Waku Nim port (phase 4)
 
 This folder holds the Nim port of Waku. The port will ship one binary that
-reads and writes the same `.waku/` data as Python Waku. Phase 0 is the
-skeleton: the package builds, the config module loads, and the CLI entry
-point lists the commands the port will implement.
+reads and writes the same `.waku/` data as Python Waku. Phase 4 (session +
+app + graph + CLI gateway) is landed; phases 5+ (integrations, MCP,
+gateways, ops, evals) are not.
 
 ## Build and test
 
@@ -51,16 +51,39 @@ nimble test     # runs the offline phase 0 tests
   tools: `save_note`, `send_message` (outbox drafts), `manage_memory`,
   `update_soul` (+ `SOUL.md` default) and `create_skill` (+ SKILL.md
   validation). Sync branches, web search and gateway tools are later phases.
-- `src/waku.nim` loads the `.env` before dispatch and implements the real
-  `connections` output: one line per visible provider (`configured` vs
-  `missing key (set VAR)`), no network probes. Every other command still
-  prints the not-yet-implemented reason to stderr and exits 0.
+- `src/session.nim` ports `runtime/session.py`: SOUL.md create-only-once,
+  system-prompt assembly (soul + clock + model line + nil-able retrieval
+  seams), `[tools used: ...]` folding, `start_new`/`switch` with the
+  `history_turns` window.
+- `src/app.nim` ports `app.py`: the `Waku` assembly, `respond` (capture +
+  fail-open graph door + canonical-JSON meta), the bounded history window.
+- `src/trace.nim` ports `ops/tracing.py` minus OTel: JSONL traces,
+  `usage.jsonl` ledger, `compose` fanout.
+- `src/jsondump.nim` renders `json.dumps`-shaped meta/ledger bytes and
+  Python-`str()`-shaped tool args.
+- `src/graph/` ports `graph/engine.py` + `graph/nodes.py` (waves, routers,
+  guards, tool/llm/agent/fn nodes).
+- `src/triage.nim` ports the triage workflow (fail-open classify, `.ics`
+  reader, 5-node graph) plus the `graphTurn` app binder.
+- `src/gather.nim` ports the gather workflow + ops binders (calendar,
+  memory with its own connection, toolless synthesis, outbox draft) and
+  `runGather`. GitHub/web stay honestly unavailable until phase 5.
+- `src/brief.nim` ports `ops/brief.py` (`runBrief` → outbox txt).
+- `src/client.nim` ports `get_client` (row lookup, key scoping, default
+  models, endpoint resolution, helpful startup errors).
+- `src/cli.nim` ports `gateway/cli.py` (REPL with `/memory`, read-only
+  snapshot, live observer lines, `terminal` thread).
+- `src/waku.nim` dispatches `chat` (default), `brief`, `gather` and
+  `connections` for real; unknown commands exit 1 with the usage text.
 - `tests/test_phase0.nim` tests the env overrides, the `.env` parser and the
   command table offline.
 
 ## What is not ported yet
 
-The tool registry, the Anthropic and OpenAI loop,
-the session assembly, the integrations catalog, MCP, the chat gateways, the
-dashboard and the evals. The phase list with its gates lives in
+The integrations catalog/pricing, full tool wiring (`build_registry` — the
+registry takes injected tools until the remaining tools land), the memory
+layer (gated retrieval, consolidation, MEMORY.md sync), MCP, the `connect`
+flows, `skill install/export`, the chat gateways (telegram/discord/whatsapp/
+voice), the dashboard, OTel spans, and the evals. The phase list with its
+gates lives in
 [docs/nim-port-design.md](../docs/nim-port-design.md).

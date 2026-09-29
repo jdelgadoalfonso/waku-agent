@@ -39,6 +39,9 @@ type
     smallModel*: string
       ## `WAKU_SMALL_MODEL`: cheap model for the retrieval gate and the
       ## consolidation summarizer. Empty means the provider default.
+    baseUrl*: string
+      ## `WAKU_BASE_URL`: global endpoint override for BYOK. Never leaks
+      ## into a scoped-credentials row's own endpoint (see client.nim).
     maxIterations*: int
       ## `WAKU_MAX_ITERATIONS` (default 10): loop guardrail.
     maxTokens*: int
@@ -54,7 +57,8 @@ type
 proc defaultSettings*(): Settings =
   ## Settings before any env var is read (the Python dataclass defaults).
   Settings(provider: "anthropic", apiKey: "", model: "", home: ".waku",
-           smallModel: "", maxIterations: defaultMaxIterations,
+           smallModel: "", baseUrl: "",
+           maxIterations: defaultMaxIterations,
            maxTokens: defaultMaxTokens, historyTurns: defaultHistoryTurns,
            graphWorkflows: false)
 
@@ -77,6 +81,7 @@ proc loadFromEnv*(s: var Settings) =
   s.model = getEnv("WAKU_MODEL")
   s.home = getEnv("WAKU_HOME", ".waku")
   s.smallModel = getEnv("WAKU_SMALL_MODEL")
+  s.baseUrl = getEnv("WAKU_BASE_URL")
   s.maxIterations = envInt("WAKU_MAX_ITERATIONS", defaultMaxIterations)
   s.maxTokens = envInt("WAKU_MAX_TOKENS", defaultMaxTokens)
   s.historyTurns = envInt("WAKU_HISTORY_TURNS", defaultHistoryTurns)
