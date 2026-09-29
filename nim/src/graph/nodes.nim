@@ -23,7 +23,7 @@ proc asText(value: JsonNode): string =
   of JNull: result = "None"
   else: result = $value
 
-proc formatTemplate(templateStr: string, state: JsonNode): string =
+proc formatTemplate*(templateStr: string, state: JsonNode): string =
   ## Port of `prompt_template.format(**state)`: `{key}` fields fill from
   ## state — underscore-prefixed state keys are excluded exactly like
   ## Python's format dict, so `{_x}` raises KeyError like any unknown
