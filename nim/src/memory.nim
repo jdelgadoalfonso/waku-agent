@@ -168,3 +168,43 @@ proc listEpisodes*(db: DbConn, limit = 200): seq[Episode] =
 proc deleteEpisode*(db: DbConn, id: int64): bool =
   ## Port of `SqliteEpisodeStore.delete`. True when a row moved.
   db.execAffectedRows(sql"DELETE FROM episodes WHERE id=?", $id) > 0
+
+proc logChat*(db: DbConn, userMessage, reply: string, sessionId = "default",
+               source = "cli", meta = "") =
+  ## Port of `Memory.log_chat`: one user row plus one assistant row, so
+  ## consolidation can distill the turn later. Meta (gate/latency/
+  ## iterations/tools) rides on the assistant row as a JSON string; an
+  ## empty meta omits the column (NULL, like Python's None) instead of
+  ## storing an empty string. Meta arrives pre-rendered: 4c (app respond)
+  ## must fix one canonical render (`json.dumps`-shaped,
+  ## `{"iterations": 1}` with the space) because the dashboard reads
+  ## meta for the turn card.
+  db.exec(sql("INSERT INTO chat_log (role, content, session_id, source) " &
+            "VALUES ('user', ?, ?, ?)"),
+          userMessage, sessionId, source)
+  if meta.len > 0:
+    db.exec(sql("INSERT INTO chat_log (role, content, session_id, source, " &
+              "meta) VALUES ('assistant', ?, ?, ?, ?)"),
+            reply, sessionId, source, meta)
+  else:
+    db.exec(sql("INSERT INTO chat_log (role, content, session_id, source) " &
+              "VALUES ('assistant', ?, ?, ?)"),
+            reply, sessionId, source)
+
+proc sessionHistory*(db: DbConn,
+                     sessionId: string): seq[tuple[user, reply: string]] =
+  ## Port of `Memory.session_history`: the (user, assistant) exchanges of
+  ## one past session, in order — used to reload working memory on switch.
+  ## An assistant row with no pending user row is skipped, exactly like
+  ## Python's `elif pending is not None`.
+  var pending = ""
+  var hasPending = false
+  for row in db.getAllRows(
+      sql"SELECT role, content FROM chat_log WHERE session_id=? ORDER BY id",
+      sessionId):
+    if row[0] == "user":
+      pending = row[1]
+      hasPending = true
+    elif hasPending:
+      result.add((user: pending, reply: row[1]))
+      hasPending = false

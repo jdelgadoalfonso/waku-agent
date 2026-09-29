@@ -4,10 +4,23 @@
 ## `WAKU_*` env overrides and a small `.env` line parser. No settings
 ## framework: a plain object read once at startup. If you can read this file,
 ## you know everything the port can be configured to do so far.
+##
+## Phase 4b extends the loop/session subset (small_model, max_iterations,
+## max_tokens, history_turns, graph_workflows). Gateway and store switches
+## (telegram, whatsapp, apple_*, semantic/episodic stores) stay Python-only
+## until their phases.
 
 import std/os
 import std/strutils
 import std/syncio
+
+const
+  defaultMaxIterations* = 10
+    ## Loop guardrail (`WAKU_MAX_ITERATIONS`).
+  defaultMaxTokens* = 8192
+    ## Output ceiling with headroom for reasoning models (`WAKU_MAX_TOKENS`).
+  defaultHistoryTurns* = 12
+    ## Sliding working-memory window in turns (`WAKU_HISTORY_TURNS`).
 
 type
   Settings* = object
@@ -23,10 +36,38 @@ type
     home*: string
       ## `WAKU_HOME`: where Waku keeps its state (memory DB, calendar,
       ## outbox, traces). Local-first means you can always look.
+    smallModel*: string
+      ## `WAKU_SMALL_MODEL`: cheap model for the retrieval gate and the
+      ## consolidation summarizer. Empty means the provider default.
+    maxIterations*: int
+      ## `WAKU_MAX_ITERATIONS` (default 10): loop guardrail.
+    maxTokens*: int
+      ## `WAKU_MAX_TOKENS` (default 8192): output ceiling with headroom
+      ## for reasoning models — a ceiling, not a target.
+    historyTurns*: int
+      ## `WAKU_HISTORY_TURNS` (default 12): working memory is a sliding
+      ## window of the last N turns; older turns live in state.db.
+    graphWorkflows*: bool
+      ## `WAKU_GRAPH_WORKFLOWS`: route messages through the triage graph
+      ## first (fail-open to the plain loop, so never worse).
 
 proc defaultSettings*(): Settings =
   ## Settings before any env var is read (the Python dataclass defaults).
-  Settings(provider: "anthropic", apiKey: "", model: "", home: ".waku")
+  Settings(provider: "anthropic", apiKey: "", model: "", home: ".waku",
+           smallModel: "", maxIterations: defaultMaxIterations,
+           maxTokens: defaultMaxTokens, historyTurns: defaultHistoryTurns,
+           graphWorkflows: false)
+
+proc envInt(name: string, default: int): int =
+  ## `int(os.getenv(name, default))` with a fallback: a non-numeric value
+  ## keeps the default instead of crashing startup (Python would raise).
+  let raw = getEnv(name)
+  if raw.len == 0:
+    return default
+  try:
+    return parseInt(raw)
+  except ValueError:
+    return default
 
 proc loadFromEnv*(s: var Settings) =
   ## Read the `WAKU_*` env vars into `s`, keeping the sensible default
@@ -35,6 +76,11 @@ proc loadFromEnv*(s: var Settings) =
   s.apiKey = getEnv("WAKU_API_KEY")
   s.model = getEnv("WAKU_MODEL")
   s.home = getEnv("WAKU_HOME", ".waku")
+  s.smallModel = getEnv("WAKU_SMALL_MODEL")
+  s.maxIterations = envInt("WAKU_MAX_ITERATIONS", defaultMaxIterations)
+  s.maxTokens = envInt("WAKU_MAX_TOKENS", defaultMaxTokens)
+  s.historyTurns = envInt("WAKU_HISTORY_TURNS", defaultHistoryTurns)
+  s.graphWorkflows = getEnv("WAKU_GRAPH_WORKFLOWS") in ["1", "true", "yes"]
 
 proc loadSettings*(): Settings =
   ## Port of `waku/config.py` `load_settings`: read the env vars once
