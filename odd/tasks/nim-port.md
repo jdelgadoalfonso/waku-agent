@@ -62,9 +62,11 @@
 - Anchored: Phase 5a skill install/export (installer.py 47 líneas: fetch 15s + _parse + WAKU_HOME/skills/<name>/SKILL.md vía _incoming; exporter.py 108 líneas: TARGETS claude/codex, skip roots+_incoming, copytree con --to/--project/--force; reusa validSkillText de phase 2c + http.nim de phase 3; Tier Short Plan, no Proposal).
 - Next: phase 5 (integrations + catalog + pricing, empezando por 5a skill distribution).
 - Phase 5a skill distribution landed (skills.nim + waku.nim dispatch + 19 tests): ba1a14b, df659c6, ec28531 — suite 204 OK, cero warnings.
-- Next unit: providers.nim + dotenv cwd-walk + full dispatch (providers.nim
-  landed as 86c843b; phase 0c dotenv + connections implemented, verifier
-  accept-with-notes, notes fixed — ready to commit).
+- Phase 5b pricing landed (pricing.nim + provider price lists + 16 tests): 4d20c5e
+  (verifier accept-with-notes, 7 notes: 2 fixed — empty-provider parity,
+  int-literal price test — 5 recorded as deliberate robustness deltas).
+  Suite 220 OK, cero warnings.
+- Next: phase 5c catalog (list_models con seam inyectado + models.json).
 
 ## Next
 - Escribir docs/proposals/nim-port.md y pedir yes antes de fase 0.

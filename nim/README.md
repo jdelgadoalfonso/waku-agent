@@ -1,9 +1,9 @@
-# Waku Nim port (phase 4)
+# Waku Nim port (phase 5b)
 
 This folder holds the Nim port of Waku. The port will ship one binary that
-reads and writes the same `.waku/` data as Python Waku. Phase 4 (session +
-app + graph + CLI gateway) is landed; phases 5+ (integrations, MCP,
-gateways, ops, evals) are not.
+reads and writes the same `.waku/` data as Python Waku. Phase 5b (pricing)
+is landed; the catalog, integrations, MCP,
+gateways, ops and evals are not.
 
 ## Build and test
 
@@ -81,12 +81,18 @@ nimble test     # runs the offline phase 0 tests
   into WAKU_HOME/skills (fetch injected, tests run offline); `skill export`
   copies the bundled + home skills into `.claude`/`.codex` under your home
   (or `--project`, `--force` replaces a copy that changed since).
+- `src/pricing.nim` ports `ops/pricing.py` (phase 5b): `MODEL_PRICING`
+  (15 rates), `MODEL_CUTOFF` ("" = unpublished), `priceFor` (catalog cache
+  > `:free` > model > provider row > 3.0/15.0), `rememberPrice` and
+  `usageSummary` over `usage.jsonl` (repriced at read, bad lines skipped).
+  Provider `price` lists are parsed in `providers.nim`, so the estimate
+  stays single-sourced like Python's registry-derived `PRICING`.
 - `tests/test_phase0.nim` tests the env overrides, the `.env` parser and the
   command table offline.
 
 ## What is not ported yet
 
-The integrations catalog/pricing, full tool wiring (`build_registry` — the
+The integrations catalog, full tool wiring (`build_registry` — the
 registry takes injected tools until the remaining tools land), the memory
 layer (gated retrieval, consolidation, MEMORY.md sync), MCP, the `connect`
 flows, the chat gateways (telegram/discord/whatsapp/
