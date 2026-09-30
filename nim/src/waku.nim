@@ -2,8 +2,9 @@
 ##
 ## Port target: the `waku/__main__.py` command dispatch. `connections` was
 ## phase 0c; phase 4e wires `chat` (default, the REPL), `brief` and
-## `gather` against a real app (settings → providers → client → db).
-## Every other command still reports not-yet-implemented.
+## `gather` against a real app (settings → providers → client → db);
+## phase 5a wires `skill install` and `skill export`. Every other
+## command still reports not-yet-implemented.
 ##
 ## Exit codes follow Python: unknown command → 1 with the usage text.
 ## Two deliberate divergences: `--help`/`--version` exit 0 (Unix
@@ -11,8 +12,10 @@
 ## usage+1), and known-but-unported commands report to stderr and exit 0
 ## (phase scaffolding — Python has no such state).
 
+import std/httpclient
 import std/json
 import std/os
+import std/strutils
 import std/syncio
 
 import ./brief
@@ -22,6 +25,7 @@ import ./config
 import ./db
 import ./gather
 import ./providers
+import ./skills
 import ./triage
 import ./wire
 
@@ -169,6 +173,44 @@ proc writeUsage*() =
   for cmd in cliCommands:
     echo "  " & cmd
 
+proc fetchHttp(url: string): string =
+  ## The real fetch for `skill install`: stdlib httpclient GET with a
+  ## 15s timeout (Python's `urlopen(raw, timeout=15)`). Non-2xx raises
+  ## `HttpRequestError`, like urllib's HTTPError; the dispatch turns any
+  ## fetch error into stderr + exit 1.
+  let client = newHttpClient(timeout = 15000)
+  try:
+    return client.getContent(url)
+  finally:
+    client.close()
+
+proc runSkillInstall*(url: string): int =
+  ## `skill install <url>`: fetch, validate, drop into WAKU_HOME/skills.
+  ## Port of the `skill install` dispatch in `waku/__main__.py`; errors
+  ## print to stderr and exit 1 (Python's SystemExit prints to stderr
+  ## with exit 1; real fetch failures there are tracebacks).
+  try:
+    echo installSkill(loadSettings().home, url, fetchHttp)
+  except CatchableError as exc:
+    stderr.writeLine(exc.msg)
+    return 1
+  return 0
+
+proc runSkillExport*(argv: seq[string]): int =
+  ## `skill export [flags]`: copy skills into another agent's skills
+  ## folder. Base is the OS home, or this folder with `--project`
+  ## (Python's `Path.home()`/`Path.cwd()`); lines print to stdout with
+  ## exit 0, arg/file errors print to stderr with exit 1.
+  try:
+    let (targets, project, force) = parseExportArgs(argv)
+    let lines = exportSkills(targets, loadSettings().home,
+        if project: getCurrentDir() else: getHomeDir(), force)
+    echo if lines.len > 0: lines.join("\n") else: "No skills found to export."
+  except CatchableError as exc:
+    stderr.writeLine(exc.msg)
+    return 1
+  return 0
+
 proc runCommand*(args: seq[string], dotenvStart = ""): int =
   ## Dispatch one command line. `dotenvStart` pins the `.env` search for
   ## tests (default: the working directory, like a real run).
@@ -186,6 +228,13 @@ proc runCommand*(args: seq[string], dotenvStart = ""): int =
     return runBriefCmd(dotenvStart)
   if args[0] == "gather":
     return runGatherCmd(dotenvStart)
+  if args[0] == "skill" and args.len >= 2 and args[1] == "export":
+    return runSkillExport(args[2 .. ^1])
+  if args[0] == "skill" and args.len >= 3 and args[1] == "install":
+    return runSkillInstall(args[2])
+  if args[0] == "skill":  # known subcommand, wrong shape: usage + exit 1, like Python
+    writeUsage()
+    return 1
   if args[0] in cliCommands:  # known but later phase: honest stub
     stderr.writeLine "nim port phase 4: " & args[0] & " not yet implemented"
     return 0

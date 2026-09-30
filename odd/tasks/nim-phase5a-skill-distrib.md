@@ -28,4 +28,6 @@ Port `waku/memory/procedural/installer.py` (47 líneas) + `exporter.py` (108 lí
 - Sin red en tests (fetch stub inyectado; export con cwd fijado a root temp). Sin `.waku/`, sin secrets, sin push/PR.
 
 ## Commits
-- (se completan al cerrar cada unidad: install, export, dispatch)
+- Install (rawSkillUrl, installSkill con fetch seam, 9 tests): ba1a14b
+- Export (listDistribSkills, exportSkills, bundledSkillDirs, parseExportArgs, 10 tests): df659c6
+- Dispatch (waku.nim skill install/export + README): (a cerrar en este commit)

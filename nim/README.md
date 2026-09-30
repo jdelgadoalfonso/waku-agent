@@ -73,8 +73,14 @@ nimble test     # runs the offline phase 0 tests
   models, endpoint resolution, helpful startup errors).
 - `src/cli.nim` ports `gateway/cli.py` (REPL with `/memory`, read-only
   snapshot, live observer lines, `terminal` thread).
-- `src/waku.nim` dispatches `chat` (default), `brief`, `gather` and
-  `connections` for real; unknown commands exit 1 with the usage text.
+- `src/waku.nim` dispatches `chat` (default), `brief`, `gather`,
+  `connections` and `skill install/export` for real; unknown commands
+  exit 1 with the usage text.
+- `src/skills.nim` ports `memory/procedural/installer.py` + `exporter.py`
+  (phase 5a): `skill install` fetches + validates a SKILL.md and drops it
+  into WAKU_HOME/skills (fetch injected, tests run offline); `skill export`
+  copies the bundled + home skills into `.claude`/`.codex` under your home
+  (or `--project`, `--force` replaces a copy that changed since).
 - `tests/test_phase0.nim` tests the env overrides, the `.env` parser and the
   command table offline.
 
@@ -83,7 +89,7 @@ nimble test     # runs the offline phase 0 tests
 The integrations catalog/pricing, full tool wiring (`build_registry` — the
 registry takes injected tools until the remaining tools land), the memory
 layer (gated retrieval, consolidation, MEMORY.md sync), MCP, the `connect`
-flows, `skill install/export`, the chat gateways (telegram/discord/whatsapp/
+flows, the chat gateways (telegram/discord/whatsapp/
 voice), the dashboard, OTel spans, and the evals. The phase list with its
 gates lives in
 [docs/nim-port-design.md](../docs/nim-port-design.md).
