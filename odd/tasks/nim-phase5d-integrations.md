@@ -5,7 +5,7 @@ Port `waku/integrations.py` (905 líneas) a `nim/src/integrations.nim`, en dos
 unidades para proteger revisión. Toda lectura de entorno por parámetro
 (`env: Table[string, string]`), home por parámetro; cero red, cero subprocess.
 
-## 5d1 — núcleo puro (esta unidad)
+## 5d1 — núcleo puro (LANDED `42125f1`, 28 tests, suite 272 OK)
 - Tipos: `IntegrationState` (5 estados), `ReloadMode`, `FieldKind`,
   `EnvField`, `IntegrationStatus`, `Integration`, `FieldView`,
   `IntegrationView`, `ApplyResult`.
