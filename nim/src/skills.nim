@@ -21,7 +21,8 @@
 ##   memory_admin.nim header for why).
 ## - `skill export` arg/file errors print to stderr and exit 1, while
 ##   Python prints the arg errors to stdout (real I/O failures there are
-##   uncaught tracebacks on stderr); exit codes match Python.
+##   uncaught tracebacks on stderr); parse errors exit 1 (Python argparse
+##   exits 2; messages mirror argparse).
 ## - `bundledSkillDirs` walks the caller's working directory (repo
 ##   checkout layouts, the `findProvidersToml` convention) and the
 ##   binary directory last; Python resolves from the package file's
@@ -30,7 +31,10 @@
 ##   double-load.
 ## - frontmatter splitting below is plain string work (the loader's
 ##   regex stays inside `memory_admin`); the fields parse and the
-##   `---` markers mean the same on both sides.
+##   `---` markers mean the same on both sides, but key matching is
+##   case-insensitive in Nim (via `validSkillText` in memory_admin.nim)
+##   vs case-sensitive in Python (loader.py); in practice the spec keys
+##   are lowercase.
 
 import std/algorithm
 import std/os
