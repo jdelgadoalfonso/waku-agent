@@ -72,7 +72,7 @@ compile time (`include`/`staticRead`), never copied.
 3. HTTP + wire formats + loop — GATE: SSE streaming + tool-call reassembly on
    both wire formats (incl. `thought_signature` echo, max_tokens fallback).
 4. Session + app + graph + CLI gateway.
-5. Integrations + catalog + pricing.
+5. Integrations + catalog + pricing + skill distribution (5a: `skill install` fetch+validate+store reusing `validSkillText` + `http.nim`; `skill export` copy to ~/.claude/~/.codex with --to/--project/--force; same exit codes per §3).
 6. MCP (hand-rolled, both transports + OAuth loopback 41765).
 7. Gateways — voice ships only as external helper if it breaks single-binary.
 8. Ops + dashboard (embed fonts/design copies, respect LICENSE-BRAND).
