@@ -59,7 +59,9 @@
 - Phase 4d workflows+ops (triage/gather/brief + 26 tests): 3763c4e (verifier first REJECTED on RangeDefect crash with truncated '{'; fixed with b<a guard + regression test + 5 minor notes; re-verify subagent errored, blocker re-verified inline with a crash-shape probe + full suite).
 - Phase 4e CLI dispatch (cli/client/waku dispatch + 10 tests): f78a0a1 (verifier accept-with-notes, 6 notes fixed; README refreshed per rule 9).
 - PHASE 4 COMPLETE (session + app + graph + CLI gateway): 188592f, f6d02f2, ff86ed2, 3763c4e, f78a0a1 — suite 185 OK green, zero warnings. Stubs left for phases 5-8 (dashboard, connect, mcp, voice, telegram, discord, whatsapp); skill install/export has no explicit phase in the design doc — deferred, needs anchoring.
-- Next: phase 5 (integrations + catalog + pricing).
+- Anchored: Phase 5a skill install/export (installer.py 47 líneas: fetch 15s + _parse + WAKU_HOME/skills/<name>/SKILL.md vía _incoming; exporter.py 108 líneas: TARGETS claude/codex, skip roots+_incoming, copytree con --to/--project/--force; reusa validSkillText de phase 2c + http.nim de phase 3; Tier Short Plan, no Proposal).
+- Next: phase 5 (integrations + catalog + pricing, empezando por 5a skill distribution).
+- Phase 5a skill distribution landed (skills.nim + waku.nim dispatch + 19 tests): ba1a14b, df659c6, ec28531 — suite 204 OK, cero warnings.
 - Next unit: providers.nim + dotenv cwd-walk + full dispatch (providers.nim
   landed as 86c843b; phase 0c dotenv + connections implemented, verifier
   accept-with-notes, notes fixed — ready to commit).
