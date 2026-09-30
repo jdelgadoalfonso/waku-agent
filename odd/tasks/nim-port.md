@@ -66,7 +66,11 @@
   (verifier accept-with-notes, 7 notes: 2 fixed — empty-provider parity,
   int-literal price test — 5 recorded as deliberate robustness deltas).
   Suite 220 OK, cero warnings.
-- Next: phase 5c catalog (list_models con seam inyectado + models.json).
+- Phase 5c catalog landed (catalog.nim + 24 tests): c7ea28e
+  (verifier accept-with-notes, 7 notes: 2 coverage tests added — pinless
+  file keeps empty choice, global base URL never leaks into scoped rows —
+  5 recorded as deliberate divergences). Suite 244 OK, cero warnings.
+- Next: phase 5d integrations registry.
 
 ## Next
 - Escribir docs/proposals/nim-port.md y pedir yes antes de fase 0.

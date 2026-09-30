@@ -28,7 +28,12 @@ con paridad Python y tests 100% offline.
   (default `@[]` → 3.0/15.0), ledger no-dict/tokens-float normalizados,
   round half-away (Python half-even), sort inestable en empates, seam
   `clearPriceCache` sin equivalente Python.
-- Siguiente: 5c catalog.
+- 5c LANDED en `c7ea28e` (catalog.nim + 24 tests,
+  verifier accept-with-notes, suite 244 OK, 0 warnings).
+  Divergencias deliberadas: sin pareo regional, sin HTTP real (fetch
+  inyectado + seam `now`), tools/reasoning ausentes (no null), degradar
+  en vez de lanzar, sort inestable en empates.
+- Siguiente: 5d integrations (registry menos probes con subprocess).
 - Python ground truth: `waku/ops/pricing.py`, `waku/ops/catalog.py`,
   `waku/integrations.py`, `waku/providers.toml` (12 rows con `price`),
   `waku/loop/models.py` (REGISTRY/PROVIDERS).

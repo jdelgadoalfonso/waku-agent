@@ -1,8 +1,8 @@
-# Waku Nim port (phase 5b)
+# Waku Nim port (phase 5c)
 
 This folder holds the Nim port of Waku. The port will ship one binary that
 reads and writes the same `.waku/` data as Python Waku. Phase 5b (pricing)
-is landed; the catalog, integrations, MCP,
+is landed; the integrations, MCP,
 gateways, ops and evals are not.
 
 ## Build and test
@@ -87,12 +87,20 @@ nimble test     # runs the offline phase 0 tests
   `usageSummary` over `usage.jsonl` (repriced at read, bad lines skipped).
   Provider `price` lists are parsed in `providers.nim`, so the estimate
   stays single-sourced like Python's registry-derived `PRICING`.
+- `src/catalog.nim` ports `ops/catalog.py` (phase 5c): `listModels`
+  (provider resolution, catalog URL rules, 300 s / ~60 s caches, latin-1
+  key guard, entry parsing with `rememberPrice`, free-first sort,
+  known-default fallback) with an injected fetch and an explicit clock
+  seam, plus the `models.json` shortlist (`pinnedSpecs`,
+  `defaultModelFor`, `savePinned`). No live HTTP yet; wiring to a real
+  client comes with a later phase. Regional endpoint pairing is skipped
+  (the registry parser ignores `[[array]]` tables).
 - `tests/test_phase0.nim` tests the env overrides, the `.env` parser and the
   command table offline.
 
 ## What is not ported yet
 
-The integrations catalog, full tool wiring (`build_registry` — the
+The integrations registry, full tool wiring (`build_registry` — the
 registry takes injected tools until the remaining tools land), the memory
 layer (gated retrieval, consolidation, MEMORY.md sync), MCP, the `connect`
 flows, the chat gateways (telegram/discord/whatsapp/
