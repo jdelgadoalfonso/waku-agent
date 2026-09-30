@@ -3,8 +3,9 @@
 ## the scoped-credentials key fallback and the no-key message).
 ##
 ## Only the TOML subset the registry uses is parsed: `[name]` tables with
-## `key = "value"` strings and `true`/`false` flags. `[[array]]` tables
-## (regional endpoints) and non-string values (price lists) are skipped.
+## `key = "value"` strings, `true`/`false` flags and `price = [in, out]`
+## lists. `[[array]]` tables (regional endpoints) and other non-string
+## values are skipped.
 
 import std/algorithm
 import std/os
@@ -33,11 +34,15 @@ type
     modelEnv*: string
     smallModelEnv*: string
     scopedCredentials*: bool ## hosted row: never fall back to WAKU_API_KEY
+    priceIn*: float          ## rough $/M input tokens (providers.toml `price`)
+    priceOut*: float         ## rough $/M output tokens
 
 proc defaultProvider(name: string): Provider =
   ## A row with no fields set. `claimsFamilies` defaults to true, matching
-  ## the Python dataclass; every other flag defaults to false.
-  result = Provider(name: name, claimsFamilies: true)
+  ## the Python dataclass; every other flag defaults to false. The price
+  ## defaults to the unknown-provider estimate in `pricing.priceFor`.
+  result = Provider(name: name, claimsFamilies: true, priceIn: 3.0,
+                    priceOut: 15.0)
 
 proc setStringField(p: var Provider, key, value: string) =
   case key
@@ -63,6 +68,21 @@ proc setBoolField(p: var Provider, key: string, value: bool) =
   of "catalog_from_base_url": p.catalogFromBaseUrl = value
   of "scoped_credentials": p.scopedCredentials = value
   else: discard
+
+proc parsePriceField(p: var Provider, rawValue: string) =
+  ## Parse `price = [in, out]` into the row. A malformed list is skipped,
+  ## keeping the row default — like every other unknown value, never fatal.
+  let v = rawValue.strip()
+  if not (v.startsWith("[") and v.endsWith("]")):
+    return
+  let parts = v[1 ..< ^1].split(",")
+  if parts.len != 2:
+    return
+  try:
+    p.priceIn = parseFloat(parts[0].strip())
+    p.priceOut = parseFloat(parts[1].strip())
+  except ValueError:
+    discard
 
 proc unquote(value: string): (bool, string) =
   let v = value.strip()
@@ -111,7 +131,9 @@ proc parseProviders*(text: string): seq[Provider] =
       setStringField(result[^1], key, value)
     elif rawValue == "true" or rawValue == "false":
       setBoolField(result[^1], key, rawValue == "true")
-    # Anything else (price lists, numbers) is not registry data: skip.
+    elif key == "price":
+      parsePriceField(result[^1], rawValue)
+    # Anything else (numbers, other lists) is not registry data: skip.
 
 proc loadProviders*(path: string): seq[Provider] =
   ## Read and parse a providers.toml file.
