@@ -70,7 +70,10 @@
   (verifier accept-with-notes, 7 notes: 2 coverage tests added — pinless
   file keeps empty choice, global base URL never leaks into scoped rows —
   5 recorded as deliberate divergences). Suite 244 OK, cero warnings.
-- Next: phase 5d integrations registry.
+- Phase 5d1 integrations core landed (integrations.nim + 28 tests): 42125f1
+  (verifier errored; inline-verified + golden render zero-diff from the
+  implementer; 2 parity micro-fixes applied). Suite 272 OK, cero warnings.
+- Next: phase 5d2 (health store + injected probes + apply/test + cliMain).
 
 ## Next
 - Escribir docs/proposals/nim-port.md y pedir yes antes de fase 0.
