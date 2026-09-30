@@ -1,5 +1,8 @@
-## Phase 5a tests: skill distribution — `rawSkillUrl`, `installSkill`.
-## Offline only: install runs against an injected fetch stub, no network.
+## Phase 5a tests: skill distribution — `rawSkillUrl`, `installSkill`,
+## `listDistribSkills`, `exportSkills`, `parseExportArgs`.
+## Offline only: install runs against an injected fetch stub, export
+## against temp homes with the cwd pinned to a temp root (so the bundled
+## skill walk finds nothing outside the temp tree), no network.
 
 import std/os
 import std/strutils
@@ -83,3 +86,106 @@ suite "phase 5a installSkill":
         "See skills/TEMPLATE.md in the repo."
     assert not fileExists(home / "skills" / "_incoming" / "SKILL.md")
     removeDir(home)
+
+suite "phase 5a listDistribSkills":
+  test "home wins over bundled; roots, _incoming and invalid are skipped":
+    let root = freshDir("waku-skill-list")
+    let bundled = root / "bundled-skills"
+    createDir(bundled / "alpha")
+    writeFile(bundled / "alpha" / "SKILL.md",
+      "---\nname: alpha\ndescription: bundled\n---\n\nbundled\n")
+    createDir(bundled / "beta")
+    writeFile(bundled / "beta" / "SKILL.md",
+      "---\nname: beta\ndescription: b\n---\n\nbeta\n")
+    let home = root / "home"
+    createDir(home / "skills" / "alpha")
+    writeFile(home / "skills" / "alpha" / "SKILL.md",
+      "---\nname: alpha\ndescription: home\n---\n\nhome\n")
+    createDir(home / "skills" / "_incoming")
+    writeFile(home / "skills" / "_incoming" / "SKILL.md",
+      "---\nname: incoming\ndescription: i\n---\n\nx\n")
+    writeFile(home / "skills" / "SKILL.md",
+      "---\nname: root-level\ndescription: r\n---\n\nx\n")
+    createDir(home / "skills" / "invalid-folder")
+    writeFile(home / "skills" / "invalid-folder" / "SKILL.md", "no frontmatter")
+    let skills = listDistribSkills(home, @[bundled])
+    assert skills.len == 2
+    assert skills[0].name == "alpha"
+    assert skills[0].path == absolutePath(home / "skills" / "alpha" / "SKILL.md")
+    assert skills[1].name == "beta"
+    removeDir(root)
+
+suite "phase 5a exportSkills":
+  test "copies, then unchanged, kept yours, and --force replaces":
+    let savedDir = getCurrentDir()
+    let root = freshDir("waku-skill-export")
+    try:
+      setCurrentDir(root)
+      let home = root / "home"
+      createDir(home / "skills" / "alpha")
+      writeFile(home / "skills" / "alpha" / "SKILL.md",
+        "---\nname: alpha\ndescription: a\n---\n\none\n")
+      let base = root / "base"
+      let dest = base / ".claude" / "skills" / "alpha"
+      assert exportSkills(@["claude"], home, base, false) == @["  copied      " & dest]
+      assert exportSkills(@["claude"], home, base, false) == @["  unchanged   " & dest]
+      writeFile(dest / "SKILL.md", "---\nname: alpha\ndescription: a\n---\n\nedited\n")
+      assert exportSkills(@["claude"], home, base, false) ==
+        @["  kept yours  " & dest & " (it differs; --force replaces it)"]
+      assert exportSkills(@["claude"], home, base, true) == @["  copied      " & dest]
+      assert readFile(dest / "SKILL.md") == "---\nname: alpha\ndescription: a\n---\n\none\n"
+      assert readFile(dest / "SKILL.md") != "edited\n"
+    finally:
+      setCurrentDir(savedDir)
+      if dirExists(root):
+        removeDir(root)
+
+  test "memory target raises the python message":
+    try:
+      discard exportSkills(@["memory"], "/tmp/waku-nowhere", "/tmp/waku-nowhere", false)
+      assert false, "must raise"
+    except CatchableError as exc:
+      assert exc.msg ==
+        "Exporting skills to Waku Memory is not available yet: Waku Memory is adding " &
+        "a place for skills first. For now: --to claude,codex"
+
+  test "unknown target raises the python message":
+    try:
+      discard exportSkills(@["muse"], "/tmp/waku-nowhere", "/tmp/waku-nowhere", false)
+      assert false, "must raise"
+    except CatchableError as exc:
+      assert exc.msg == "Unknown target: muse. Choose from: claude, codex"
+
+  test "empty targets raise the python message":
+    try:
+      discard exportSkills(@[], "/tmp/waku-nowhere", "/tmp/waku-nowhere", false)
+      assert false, "must raise"
+    except CatchableError as exc:
+      assert exc.msg == "Unknown target: (none). Choose from: claude, codex"
+
+suite "phase 5a parseExportArgs":
+  test "defaults: claude, no project, no force":
+    let (targets, project, force) = parseExportArgs(@[])
+    assert targets == @["claude"]
+    assert not project and not force
+
+  test "--to claude,codex plus --project and --force":
+    let (targets, project, force) =
+      parseExportArgs(@["--to", "claude,codex", "--project", "--force"])
+    assert targets == @["claude", "codex"]
+    assert project and force
+
+  test "--to values are lowercased and trimmed":
+    let (targets, _, _) = parseExportArgs(@["--to", " CODEX , "])
+    assert targets == @["codex"]
+
+  test "--to=claude equals form":
+    let (targets, _, _) = parseExportArgs(@["--to=claude"])
+    assert targets == @["claude"]
+
+  test "unrecognized flag raises":
+    try:
+      discard parseExportArgs(@["--wat"])
+      assert false, "must raise"
+    except CatchableError as exc:
+      assert "unrecognized arguments" in exc.msg
