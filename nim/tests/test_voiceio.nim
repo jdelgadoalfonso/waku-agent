@@ -304,7 +304,6 @@ suite "phase 7d1 external mic":
 
   test "close stops the recorder once and refuses later reads":
     let path = spool()
-    defer: removeFile(path)
     writeRaw(path, seq[int16](@[1000i16, 2000i16]))
     var stops = 0
     let mic = externalMic(
@@ -366,3 +365,16 @@ suite "phase 7d1 external mic":
     check take.len == micBlock * 2
     check take[0] == 0.0f32
     check take[1] == 1.0f32 / 32768.0f32
+
+  test "closing removes the spool, so the next take starts clean":
+    let path = spool()
+    writeRaw(path, seq[int16](@[1000'i16, 2000'i16]))
+    check fileExists(path)
+    let mic = externalMic(
+      proc(argv: seq[string]): MicProcess {.closure.} =
+        MicProcess(alive: proc(): bool {.closure.} = true,
+          stop: proc() {.closure.} = discard), "cat", path)
+    discard micRead(mic, 2)
+    micClose(mic)
+    check not fileExists(path)
+    micClose(mic)   # idempotent: the second call must not raise

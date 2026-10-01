@@ -772,3 +772,23 @@ suite "phase 7d1 voice command":
     assert prompts[0] == "recording — press Enter when done… "
     assert said[^1] == byeLine
     assert code == 0
+
+suite "phase 7d1 voice recorder recycling":
+  test "the scanner asks for a recycle once per window":
+    # one scripted transcript keeps the stop flag false, so the loop
+    # reaches the first window
+    var (rig, state) = rigOf(quietBlocks(50), @["never used"],
+      shortFollowup())
+    var recycles = 0
+    rig.recycle = proc() {.closure.} =
+      inc recycles
+      state.stopAfter = 0   # one window is enough for this pin
+    wakeLoop(rig)
+    assert recycles == 1
+
+  test "a rig without a recycle seam never asks":
+    let (rig, state) = rigOf(quietBlocks(50), @["never used"],
+      shortFollowup())
+    state.stopAfter = 0
+    wakeLoop(rig)  # would raise on a nil call if the loop did not guard
+    assert state.beats.len == 0

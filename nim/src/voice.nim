@@ -655,6 +655,9 @@ type
     ## Throw the backlog away and say how many samples it was. The
     ## load-bearing bit of the always-listening loop: Waku's own voice
     ## must not be transcribed back as a wake word.
+  RecycleFn* = proc() {.closure.}
+    ## Restart the recorder when its spool has outgrown its cap, between
+    ## windows. Nil means the caller manages the spool itself.
   TraceFn* = proc(kind: string, payload: JsonNode) {.closure.}
     ## The `wake_scan` trace line (`waku.tracer.event`).
   StatusFn* = proc(msg: string) {.closure.}
@@ -690,6 +693,7 @@ type
     status*: StatusFn
     trace*: TraceFn
     stop*: ShouldStopFn
+    recycle*: RecycleFn
 
 proc stopping(rig: VoiceRig): bool =
   ## True once Ctrl-C asked the session to end. A nil `stop` never
@@ -724,6 +728,13 @@ proc wakeLoop*(rig: VoiceRig) =
   ## never looks dead, and a drain after every Waku utterance so it does
   ## not wake on the tail of its own voice.
   ##
+  ## The recorder is restarted once its spool passes `spoolCapBytes`
+  ## (~17 minutes of audio), between windows and never mid-phrase: the
+  ## price is one dropped window and the short wait for the new recorder
+  ## to fill its first block. Without it an always-listening session
+  ## would grow a gigabyte-sized file in the temp dir, which is often a
+  ## tmpfs.
+  ##
   ## Divergences: the scout and the command ears are the SAME engine
   ## (Python runs a tiny model for scanning and the full one after the
   ## wake word; a single configured command cannot be two models, and the
@@ -752,6 +763,11 @@ proc wakeLoop*(rig: VoiceRig) =
       continue
     let chunk = concatBlocks(window)
     window = window[wakeWindowBlocks - wakeTailBlocks .. ^1]
+    # one completed window, so one recycle check (a single `stat`): a
+    # session that never hears its wake word would otherwise grow the
+    # spool forever
+    if not rig.recycle.isNil:
+      rig.recycle()
     let level = rms(chunk)
     var transcript = ""
     if shouldTranscribe(level, rig.config.threshold):
@@ -864,6 +880,10 @@ proc voiceMain*(env: Table[string, string], respond: RespondFn,
   let mouthCommand = env.getOrDefault("WAKU_TTS_COMMAND", "")
   let temp = getTempDir() / ("waku-voice-stt-" & $getCurrentProcessId() &
     ".wav")
+  # The WAV is a RECORDING, so it is per-process and removed in the
+  # `finally` below; a hard kill leaves it behind, like any temp file with
+  # something private in it. The external engine is the only thing that
+  # ever sees the audio besides the model.
   let stt: SttFn =
     proc(audio: seq[float32]): string {.closure.} =
       writeFile(temp, encodeWav(audio, config.whisperSampleRate))
@@ -889,21 +909,32 @@ proc voiceMain*(env: Table[string, string], respond: RespondFn,
     except CatchableError as exc:
       log(exc.msg)
       return 1
+    # one cell, shared by the three mic seams and the recycle closure: a
+    # restart swaps the recorder under them without rebuilding the rig
+    var cell = mic
     let read: SampleFn =
-      proc(frameCount: int): seq[float32] {.closure.} = micRead(mic, frameCount)
-    let pending: PendingFn = proc(): int {.closure.} = micPending(mic)
-    let drain: DrainFn = proc(): int {.closure.} = micDrain(mic)
+      proc(frameCount: int): seq[float32] {.closure.} = micRead(cell, frameCount)
+    let pending: PendingFn = proc(): int {.closure.} = micPending(cell)
+    let drain: DrainFn = proc(): int {.closure.} = micDrain(cell)
+    let recycle: RecycleFn =
+      proc() {.closure.} =
+        if not needsMicRecycle(cell):
+          return
+        log("(voice) recorder restarted: its audio spool passed " &
+          $spoolCapBytes & " bytes")
+        micClose(cell)
+        cell = openMic()  # a failure here ends the session honestly
     let rig = VoiceRig(config: config, read: read, pending: pending,
       drain: drain, stt: stt, tts: tts, respond: respond, logger: logLine,
-      status: status, trace: trace, stop: stop)
+      status: status, trace: trace, stop: stop, recycle: recycle)
     try:
       wakeLoop(rig)
     except CatchableError as exc:
       log(exc.msg)
-      micClose(mic)
+      micClose(cell)
       log(byeLine)
       return 1
-    micClose(mic)
+    micClose(cell)
     log(byeLine)
     return 0
   let rig = VoiceRig(config: config, stt: stt, tts: tts, respond: respond,

@@ -164,7 +164,8 @@ con la unidad que duena el live loop); cambiarlo rompería
   la transcripción ya hecha (el loop vivo transcribe solo si el gate
   pasa).
 
-## 7d1 — live loops de telegram + whatsapp + voz (HECHO, d5bc35c)
+## 7d1 — live loops de telegram + whatsapp + voz (HECHO, d5bc35c +
+reciclado del spool en el commit siguiente)
 - Se parte 7d en dos unidades (decisión del review: el WebSocket de
   Discord a mano + `waku.nim` + dashboard era demasiado para una sola
   revisión). 7d1 = los tres loops vivos y los motores de voz; 7d2 =
@@ -226,6 +227,15 @@ con la unidad que duena el live loop); cambiarlo rompería
   `waitForSpeech` de 7c ganan un `stop` con default (aditivo: los
   pines de 7c siguen verdes) para que un Ctrl-C aborte una toma de 15s
   en el siguiente bloque.
+- Reciclado del spool (añadido en el commit de gravação, tras
+  encontrar el hueco en revisión): el `wakeLoop` pide un `recycle` una
+  vez por ventana completa (un `stat`), y `voiceMain` lo cablea a un
+  `openMic` que cierra el grabador y abre otro cuando el spool pasa
+  `spoolCapBytes`; `micClose` borra el fichero, que es lo que hace que
+  la siguiente toma de push-to-talk no herede los bytes de la anterior.
+  Sin esto, una sesión siempre-lista crecía un fichero sin tope (32KB/s,
+  y `/tmp` suele ser tmpfs). Tres pines: el recycle se pide una vez por
+  ventana, un rig sin seam no lo pide, y `micClose` borra el spool.
 - Tests: `tests/test_live_gateways.nim` NUEVO, 28 (telegram 16:
   offset/timeout en la URL, refusals, error de turno con error reply,
   `reply delivery`, offset que no retrocede, tabla de faults, retry con
@@ -259,8 +269,8 @@ con la unidad que duena el live loop); cambiarlo rompería
   test del seam de 7b que 7d1 reemplaza). `waku.nim` intacto: el pin 4e
   sigue verde y `waku telegram|discord|whatsapp|voice` sigue siendo
   scaffolding hasta 7d2. Frontend intacto. Evals intactos.
-  `nimble test` verde, 0 warnings, 732 OK (675 - 1 + 28 + 21 + 10),
-  EXIT=0.
+  `nimble test` verde, 0 warnings, 736 OK (675 - 1 + 28 + 22 + 12),
+  EXIT=0, sin ficheros temporales huérfanos en `/tmp`.
 
 ## 7d2 — WebSocket de Discord + dispatch + supervisor (SIGUIENTE)
 - Discord: el receive del gateway WebSocket escrito a mano (RFC 6455:
@@ -323,8 +333,12 @@ con la unidad que duena el live loop); cambiarlo rompería
 - El micro es un spool FICHERO y no una pipe: `drain()` tiene que ser
   exacto (Python lo necesitaba para que el escáner no escuchara la cola
   de la voz de Waku) y una pipe no se puede drenar sin bloquear; el
-  precio es un fichero que crece, con tope de 32MB y reciclado entre
-  tomas.
+  precio es un fichero que crece, con tope de 32MB, reciclado entre
+  ventanas y borrado al cerrar el grabador.
+- Un `stop` no interrumpe un `accept` bloqueante (no hay hilo que lo
+  interrumpa): el dashboard no lo paga porque `TakeConn` devuelve con
+  timeout, que es donde se ve el `stop`; un `waku whatsapp` parado
+  necesita un segundo Ctrl-C. Documentado en `serveWhatsapp`.
 
 ## Divergencias con Python (motivo)
 - `errorStatus` es `""` en sano en vez de `None`: Nim no tiene string

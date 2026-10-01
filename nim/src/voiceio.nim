@@ -346,14 +346,22 @@ proc micReadAll*(m: ExternalMic, chunk = 1600): seq[float32] =
       result.add(got)
 
 proc micClose*(m: ExternalMic) =
-  ## Stop the recorder, once. Idempotent, because the wake loop and the
-  ## command's own cleanup both call it and Python's `with
-  ## sd.InputStream(...)` closed the stream in a `finally` too.
+  ## Stop the recorder, once, and remove its spool. Idempotent, because
+  ## the wake loop and the command's own cleanup both call it and
+  ## Python's `with sd.InputStream(...)` closed the stream in a `finally`
+  ## too. Removing the file is what keeps the next take (push-to-talk
+  ## reuses this process's path) from inheriting the last one's bytes; on
+  ## POSIX the recorder's own handle stays valid until it exits, so the
+  ## unlink cannot truncate audio it is still writing.
   if m.isNil or m.closed:
     return
   m.closed = true
   if not m.process.isNil and m.process.stop != nil:
     m.process.stop()
+  try:
+    removeFile(m.path)
+  except CatchableError:
+    discard
 
 # ── the live adapters (never called in tests) ─────────────────────────
 

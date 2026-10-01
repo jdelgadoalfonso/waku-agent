@@ -547,6 +547,12 @@ proc serveWhatsapp*(live: WhatsappLive, verifyToken, appSecret, allowed,
   ## parallel — the port's stated posture everywhere else), and the
   ## listener is closed by this proc rather than by `server_close()` in
   ## the handle.
+  ##
+  ## A stop cannot interrupt a blocking `accept` here (no threads to
+  ## interrupt it from), so a supervisor stop lands on the next accepted
+  ## request and an idle `waku whatsapp` needs a second Ctrl-C. The
+  ## dashboard does not pay that: an injected `TakeConn` returns on a
+  ## timeout, which is where the stop is observed.
   var owned: Socket
   if take.isNil:
     owned = newSocket()
