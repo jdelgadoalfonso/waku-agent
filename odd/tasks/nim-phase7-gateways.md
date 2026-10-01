@@ -237,24 +237,26 @@ con la unidad que duena el live loop); cambiarlo rompería
   Sin esto, una sesión siempre-lista crecía un fichero sin tope (32KB/s,
   y `/tmp` suele ser tmpfs). Tres pines: el recycle se pide una vez por
   ventana, un rig sin seam no lo pide, y `micClose` borra el spool.
-- Tests: `tests/test_live_gateways.nim` NUEVO, 28 (telegram 16:
+- Tests: `tests/test_live_gateways.nim` NUEVO, 29 (telegram 16:
   offset/timeout en la URL, refusals, error de turno con error reply,
   `reply delivery`, offset que no retrocede, tabla de faults, retry con
   línea, conflicto una sola vez, token muerto, precedencia del status,
   stop entre polls y a mitad de poll, `telegramRun` que muere con el
-  token, starter; whatsapp 12: `parse_qs`, verificación GET (éxito,
+  token, starter; whatsapp 13: `parse_qs`, verificación GET (éxito,
   token malo, challenge ausente, path ajeno, token redactado), paridad
   con la decisión de 7b, 200-antes-del-turno (orden pineado), firma
   sobre el body crudo, tamper, rechazo del remitente, turno fallido con
-  error reply, envío fallido, status/stop/starter, líneas de arranque) +
-  `tests/test_voiceio.nim` NUEVO, 21 (pcm16 con carry, clipping, WAV
-  contra Python, argv de los tres motores, fallo de motor, spool
-  pending/read/drain/timeout/muerto/close/reciclado, take alineado a
-  bloque) + 10 en `tests/test_voice.nim` (heartbeat, ventana muda, near
-  miss con traza, wake con doble drain y línea de followup, comando
-  vacío, Ctrl-C, escalera de push-to-talk, motor sin cablear, boca sin
-  cablear, boca cableada). TDD RED observado (símbolo inexistente en
-  compilación) → GREEN.
+  error reply, envío fallido, handle nil lee parado, status, starter,
+  líneas de arranque) + `tests/test_voiceio.nim` NUEVO, 22 (pcm16 con
+  carry, clipping, WAV contra Python, argv de los tres motores, fallo de
+  motor, spool pending/read/drain/timeout/muerto/close/reciclado, take
+  alineado a bloque, y `micClose` que borra el fichero) + 12 en
+  `tests/test_voice.nim` (heartbeat, ventana muda, near miss con traza,
+  wake con doble drain y línea de followup, comando vacío, Ctrl-C,
+  escalera de push-to-talk, motor sin cablear, boca sin cablear, boca
+  cableada, y los dos pines del reciclado: una vez por ventana, y un
+  rig sin seam que no lo pide). TDD RED observado (símbolo inexistente
+  en compilación) → GREEN. Suite completa tras los follow-ups: 737 OK.
 - El differential de 7c re-ejecutado (follow-up que 7c dejó abierto):
   el artefacto nunca se commiteó, así que se reconstruyó el corpus
   (50 casos: emoji, banderas regionales, markdown, NBSP, espacio
@@ -420,3 +422,11 @@ con la unidad que duena el live loop); cambiarlo rompería
   paridad Python salvo loops vivos documentados.
 - Pendiente tras 7b+7c+7d1: 7d2 (WebSocket de Discord + dispatch en
   `waku.nim` + hookup del supervisor en el dashboard).
+- Hardening que 7d1 dejó abierto y la verificación de 7d1 no bloqueó
+  (decisión del usuario: a 7d2, no son bugs observados): (a)
+  `voiceio.engineFailure` loguea el stderr crudo del motor sin
+  `safeException`, al revés que toda ruta de gateway — solo llegaría si
+  una credencial viaja dentro de `WAKU_STT_COMMAND`/`WAKU_TTS_COMMAND` y
+  el motor la escupe; (b) los `*Stop` de `telegram`/`whatsapp` no tienen
+  guardia nil aunque sus `*Status` hermanos sí — hoy inalcanzable,
+  porque el supervisor solo para lo que figura como running.
