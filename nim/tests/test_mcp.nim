@@ -539,7 +539,7 @@ suite "phase 6b cli helpers":
     assert "No server called 'nope'" in msg1
     let (ok2, msg2) = mcpLogin(home, "o", envOf([]), nil, nil, fixedNow)
     assert not ok2
-    assert "6c" in msg2
+    assert "OAuthFlowFn" in msg2
     removeDir(home)
 
   test "login reconnects stdio and key servers through the bridge":
@@ -572,3 +572,463 @@ suite "phase 6b cli helpers":
     assert not okBad
     assert "MEM_KEY is not set" in msgBad
     removeDir(home)
+
+## Phase 6c tests: OAuth browser flow (DCR + PKCE + loopback callback +
+## FileTokenStorage), offline only.
+##
+## Every interactive effect travels through an injected seam (HttpPostFn /
+## HttpGetFn fakes with recorded responses, BrowserFn, CallbackWaitFn,
+## RandIntFn). No socket is opened, no browser spawned, no clock read:
+## `home` lives under getTempDir() and time travels via fixedNow. The live
+## adapters (waitCallbackLive, openBrowserLive, liveHttpGet, liveRandInt)
+## are never called here.
+
+const rfc7636Verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+const rfc7636Challenge = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+
+proc oauthSpec(): McpServerSpec =
+  McpServerSpec(name: "o", url: "https://rs.example/mcp", oauth: true)
+
+proc cannedGet(url, bearer: string): tuple[status: int, body: string] =
+  if url.endsWith("/.well-known/oauth-protected-resource/mcp"):
+    return (200,
+      """{"authorization_servers": ["https://idp.example"]}""")
+  if url == "https://idp.example/.well-known/oauth-authorization-server":
+    return (200,
+      """{"authorization_endpoint": "https://idp.example/authorize",
+      "token_endpoint": "https://idp.example/token",
+      "registration_endpoint": "https://idp.example/register"}""")
+  return (404, """{"error": "not found"}""")
+
+proc seqRand(vals: seq[int]): RandIntFn =
+  var i = 0
+  result = proc(maxExclusive: int): int {.closure.} =
+    let v = vals[i mod vals.len] mod maxExclusive
+    inc i
+    return v
+
+proc captureBrowser(seen: ref string, opened: bool): BrowserFn =
+  result = proc(url: string): bool {.closure.} =
+    seen[] = url
+    return opened
+
+proc stateOf(url: string): string =
+  let q = url.split('?')
+  if q.len < 2:
+    return ""
+  for part in q[1].split('&'):
+    if part.startsWith("state="):
+      return part[6 .. ^1]
+  return ""
+
+proc echoStateWait(seen: ref string): CallbackWaitFn =
+  result = proc(port: int, path: string,
+      maxAttempts: int): string {.closure.} =
+    assert port == callbackPort
+    assert path == callbackPath
+    assert maxAttempts == callbackPollAttempts()
+    return "/callback?code=authcode123&state=" & stateOf(seen[])
+
+suite "phase 6c sha256 and pkce":
+  test "sha256 matches the NIST vectors for empty and abc":
+    assert sha256Hex("") ==
+      "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    assert sha256Hex("abc") ==
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+
+  test "pkce S256 matches the RFC 7636 appendix B vector":
+    assert pkceChallenge(rfc7636Verifier) == rfc7636Challenge
+
+  test "base64url has no padding and randomToken is deterministic":
+    assert base64urlEncode([byte(ord('f'))]) == "Zg"
+    let tok = randomToken(64, seqRand(@[1, 2, 3]))
+    assert tok.len == 64
+    assert tok[0 .. 5] == "BCDBCD"
+    for c in tok:
+      assert c in {'A' .. 'Z', 'a' .. 'z', '0' .. '9', '-', '.', '_', '~'}
+    for _ in 1 .. 50:
+      assert liveRandInt(66) in 0 ..< 66
+
+suite "phase 6c token storage":
+  test "tokens and client_info round-trip under one file":
+    let home = freshTmpHome("waku-mcp-store")
+    setStoredTokens(home, "o", %*{"access_token": "a1"})
+    setStoredClientInfo(home, "o", %*{"client_id": "cid"})
+    assert fileExists(authFilePath(home, "o"))
+    assert getStoredTokens(home, "o"){"access_token"}.getStr() == "a1"
+    assert getStoredClientInfo(home, "o"){"client_id"}.getStr() == "cid"
+    removeDir(home)
+
+  test "missing and corrupt files read as absent, never raise":
+    let home = freshTmpHome("waku-mcp-store-bad")
+    assert getStoredTokens(home, "o") == nil
+    assert getStoredClientInfo(home, "o") == nil
+    assert readTokenDoc(authFilePath(home, "o")) == newJObject()
+    createDir(home / "mcp-auth")
+    writeFile(authFilePath(home, "o"), "{truncated")
+    assert getStoredTokens(home, "o") == nil
+    assert getStoredClientInfo(home, "o") == nil
+    assert readTokenDoc(authFilePath(home, "o")) == newJObject()
+    removeDir(home)
+
+  test "writes are 0600 with no tmp file left behind":
+    let home = freshTmpHome("waku-mcp-store-mode")
+    setStoredTokens(home, "o", %*{"access_token": "a1"})
+    let path = authFilePath(home, "o")
+    assert getFilePermissions(path) == {fpUserRead, fpUserWrite}
+    assert not fileExists(path & ".tmp")
+    setStoredClientInfo(home, "o", %*{"client_id": "cid"})
+    assert getStoredTokens(home, "o"){"access_token"}.getStr() == "a1"
+    assert not fileExists(path & ".tmp")
+    removeDir(home)
+
+  test "odd names stay in one safe file":
+    assert sanitizeServerName("a/b c") == "a_b_c"
+    let home = freshTmpHome("waku-mcp-store-name")
+    assert authFilePath(home, "a/b c").endsWith("a_b_c.json")
+    removeDir(home)
+
+suite "phase 6c callback":
+  test "a code callback parses code, state and iss":
+    let p = parseCallbackTarget(
+      "/callback?code=abc&state=s1&iss=https%3A%2F%2Fidp")
+    assert p.status == 200
+    assert p.code == "abc"
+    assert p.state == "s1"
+    assert p.iss == "https://idp"
+    assert p.err == ""
+
+  test "an error callback keeps the server's own words":
+    let p = parseCallbackTarget(
+      "/callback?error=access_denied&error_description=User+denied")
+    assert p.status == 200
+    assert p.err == "access_denied"
+    assert callbackError(p.err, p.errDesc) ==
+      "authorization failed: access_denied \u2014 User denied"
+    assert callbackError("invalid_client", "") ==
+      "authorization failed: invalid_client"
+    assert callbackError("", "") == ""
+
+  test "a wrong path is a 404 and the page reads as signed in":
+    assert parseCallbackTarget("/nope?code=x").status == 404
+    assert "Signed in." in callbackSuccessPage()
+    assert "close this tab" in callbackSuccessPage()
+
+suite "phase 6c oauth http shapes":
+  test "resource metadata url inserts the well-known path":
+    assert resourceMetadataUrl("https://host/mcp") ==
+      "https://host/.well-known/oauth-protected-resource/mcp"
+    assert resourceMetadataUrl("https://host") ==
+      "https://host/.well-known/oauth-protected-resource"
+    assert resourceMetadataUrl("https://host/") ==
+      "https://host/.well-known/oauth-protected-resource"
+    assert redirectUri() == "http://127.0.0.1:41765/callback"
+
+  test "dcr body carries the Waku client metadata":
+    let body = dcrBody()
+    assert body["client_name"].getStr() == "Waku"
+    assert body["redirect_uris"][0].getStr() == redirectUri()
+    assert "authorization_code" in $body["grant_types"]
+    assert "refresh_token" in $body["grant_types"]
+    assert body["response_types"][0].getStr() == "code"
+    assert body["token_endpoint_auth_method"].getStr() == "none"
+
+  test "the authorize url carries S256, challenge and state":
+    let url = authorizeUrl("https://idp.example/authorize", "cid123",
+      rfc7636Challenge, "st8")
+    assert url.startsWith("https://idp.example/authorize?")
+    assert "response_type=code" in url
+    assert "client_id=cid123" in url
+    assert "code_challenge=" & rfc7636Challenge in url
+    assert "code_challenge_method=S256" in url
+    assert "state=st8" in url
+    assert "redirect_uri=http%3A%2F%2F127.0.0.1%3A41765%2Fcallback" in url
+
+  test "token and refresh bodies carry grant types and verifier":
+    let ex = tokenExchangeBody("code1", "ver1", "cid")
+    assert ex["grant_type"].getStr() == "authorization_code"
+    assert ex["code"].getStr() == "code1"
+    assert ex["code_verifier"].getStr() == "ver1"
+    assert ex["client_id"].getStr() == "cid"
+    assert ex["redirect_uri"].getStr() == redirectUri()
+    let rf = refreshBody("r1", "cid")
+    assert rf["grant_type"].getStr() == "refresh_token"
+    assert rf["refresh_token"].getStr() == "r1"
+
+  test "parsers refuse shapes without ids, tokens or endpoints":
+    expect ValueError:
+      discard parseDcrResponse("""{"no": 1}""")
+    expect ValueError:
+      discard parseTokenResponse("""{"no": 1}""")
+    expect ValueError:
+      discard parseServerMetadata("""{"token_endpoint": "t"}""")
+    expect ValueError:
+      discard parseResourceMetadata("""{"authorization_servers": []}""")
+
+suite "phase 6c sign-in flow":
+  test "a full sign-in stores client_info and tokens":
+    let home = freshTmpHome("waku-mcp-oauth-ok")
+    let jwt = jwtWith("""{"email": "o@x"}""")
+    let dcrCount = new(int)
+    dcrCount[] = 0
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      if url == "https://idp.example/register":
+        inc dcrCount[]
+        return HttpResult(status: 201,
+          body: """{"client_id": "cid123"}""", sessionId: "")
+      assert url == "https://idp.example/token"
+      let node = parseJson(body)
+      assert node["grant_type"].getStr() == "authorization_code"
+      assert node["code"].getStr() == "authcode123"
+      assert node["code_verifier"].getStr().len >= 43
+      assert node["client_id"].getStr() == "cid123"
+      return HttpResult(status: 200, body: "{\"access_token\": \"" &
+        jwt & "\", \"refresh_token\": \"r123\"}", sessionId: "")
+    let seen = new(string)
+    seen[] = ""
+    let (ok, _, timedOut) = oauthSignIn(home, oauthSpec(), post,
+      cannedGet, captureBrowser(seen, true), echoStateWait(seen),
+      seqRand(@[7]))
+    assert ok
+    assert not timedOut
+    assert seen[].startsWith("https://idp.example/authorize?")
+    assert getStoredClientInfo(home, "o"){"client_id"}.getStr() ==
+      "cid123"
+    assert getStoredClientInfo(home,
+      "o"){"token_endpoint"}.getStr() == "https://idp.example/token"
+    assert getStoredTokens(home, "o"){"access_token"}.getStr() == jwt
+    assert getStoredTokens(home, "o"){"refresh_token"}.getStr() == "r123"
+    assert dcrCount[] == 1
+    removeDir(home)
+
+  test "a second sign-in reuses the stored client without DCR":
+    let home = freshTmpHome("waku-mcp-oauth-reuse")
+    var dcrCalls = 0
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      if url == "https://idp.example/register":
+        inc dcrCalls
+        return HttpResult(status: 201,
+          body: """{"client_id": "cid123"}""", sessionId: "")
+      return HttpResult(status: 200,
+        body: """{"access_token": "tok"}""", sessionId: "")
+    let seen = new(string)
+    seen[] = ""
+    for _ in 1 .. 2:
+      let (ok, _, _) = oauthSignIn(home, oauthSpec(), post, cannedGet,
+        captureBrowser(seen, true), echoStateWait(seen), seqRand(@[7]))
+      assert ok
+    assert dcrCalls == 1
+    removeDir(home)
+
+  test "a denied authorization surfaces the server's words":
+    let home = freshTmpHome("waku-mcp-oauth-deny")
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      return HttpResult(status: 201,
+        body: """{"client_id": "cid"}""", sessionId: "")
+    let denied: CallbackWaitFn = proc(port: int, path: string,
+        maxAttempts: int): string {.closure.} =
+      "/callback?error=access_denied&error_description=No+way"
+    let seen = new(string)
+    seen[] = ""
+    let (ok, msg, timedOut) = oauthSignIn(home, oauthSpec(), post,
+      cannedGet, captureBrowser(seen, true), denied, seqRand(@[7]))
+    assert not ok
+    assert not timedOut
+    assert "authorization failed: access_denied" in msg
+    assert getStoredTokens(home, "o") == nil
+    removeDir(home)
+
+  test "silence from the browser is a timeout naming the retry":
+    let home = freshTmpHome("waku-mcp-oauth-timeout")
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      return HttpResult(status: 201,
+        body: """{"client_id": "cid"}""", sessionId: "")
+    let silent: CallbackWaitFn = proc(port: int, path: string,
+        maxAttempts: int): string {.closure.} = ""
+    let seen = new(string)
+    seen[] = ""
+    let (ok, msg, timedOut) = oauthSignIn(home, oauthSpec(), post,
+      cannedGet, captureBrowser(seen, true), silent, seqRand(@[7]))
+    assert not ok
+    assert timedOut
+    assert "timed out waiting for the browser sign-in" in msg
+    removeDir(home)
+
+  test "headless timeout prints the url as the only way through":
+    let home = freshTmpHome("waku-mcp-oauth-headless")
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      return HttpResult(status: 201,
+        body: """{"client_id": "cid"}""", sessionId: "")
+    let silent: CallbackWaitFn = proc(port: int, path: string,
+        maxAttempts: int): string {.closure.} = ""
+    let seen = new(string)
+    seen[] = ""
+    let (_, msg, timedOut) = oauthSignIn(home, oauthSpec(), post,
+      cannedGet, captureBrowser(seen, false), silent, seqRand(@[7]))
+    assert timedOut
+    assert "If it does not open" in msg
+    assert seen[] in msg
+    removeDir(home)
+
+  test "a wrong state fails closed":
+    let home = freshTmpHome("waku-mcp-oauth-state")
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      return HttpResult(status: 201,
+        body: """{"client_id": "cid"}""", sessionId: "")
+    let evil: CallbackWaitFn = proc(port: int, path: string,
+        maxAttempts: int): string {.closure.} =
+      "/callback?code=abc&state=forged"
+    let seen = new(string)
+    seen[] = ""
+    let (ok, msg, _) = oauthSignIn(home, oauthSpec(), post, cannedGet,
+      captureBrowser(seen, true), evil, seqRand(@[7]))
+    assert not ok
+    assert "state mismatch" in msg
+    assert getStoredTokens(home, "o") == nil
+    removeDir(home)
+
+  test "a busy loopback port fails naming the port":
+    let home = freshTmpHome("waku-mcp-oauth-busy")
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      return HttpResult(status: 201,
+        body: """{"client_id": "cid"}""", sessionId: "")
+    let busy: CallbackWaitFn = proc(port: int, path: string,
+        maxAttempts: int): string {.closure.} =
+      raise newException(IOError,
+        "port 41765 is in use \u2014 the sign-in redirect has nowhere to land.")
+    let seen = new(string)
+    seen[] = ""
+    let (ok, msg, _) = oauthSignIn(home, oauthSpec(), post, cannedGet,
+      captureBrowser(seen, true), busy, seqRand(@[7]))
+    assert not ok
+    assert "is in use" in msg
+    assert seen[].len > 0
+    removeDir(home)
+
+suite "phase 6c stored bearer and login":
+  test "connectAll attaches a fresh stored token":
+    let home = freshTmpHome("waku-mcp-bearer")
+    let jwt = jwtWith(
+      "{\"email\": \"o@x\", \"exp\": " & $(fixedNow + 3600) & "}")
+    writeTokenFile(home, "o",
+      "{\"email\": \"o@x\", \"exp\": " & $(fixedNow + 3600) & "}")
+    var bearers: seq[string] = @[]
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      bearers.add(bearer)
+      let meth = parseJson(extractJsonResponse(body)){"method"}.getStr()
+      case meth
+      of "initialize":
+        HttpResult(status: 200, body: initOkLine, sessionId: "s")
+      of "tools/list":
+        HttpResult(status: 200, body: listOkLine, sessionId: "s")
+      else:
+        raise newException(ValueError, "unexpected: " & meth)
+    let res = connectAll(@[oauthSpec()], envOf([]), home, 30.0, nil,
+      post, fixedNow)
+    assert res.tools.len == 2
+    assert res.warnings.len == 0
+    assert bearers == @[jwt, jwt]
+    removeDir(home)
+
+  test "an expired stored token refreshes through the stored endpoint":
+    let home = freshTmpHome("waku-mcp-refresh")
+    let stale = jwtWith(
+      "{\"email\": \"o@x\", \"exp\": " & $(fixedNow - 10) & "}")
+    let fresh = jwtWith(
+      "{\"email\": \"o@x\", \"exp\": " & $(fixedNow + 3600) & "}")
+    createDir(home / "mcp-auth")
+    writeFile(authFilePath(home, "o"), "{\"tokens\": {\"access_token\": \"" &
+      stale & "\", \"refresh_token\": \"r1\"}, \"client_info\": " &
+      "{\"client_id\": \"cid\", \"token_endpoint\": \"https://tok.example/t\"}}")
+    var bearers: seq[string] = @[]
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      if url == "https://tok.example/t":
+        assert parseJson(body)["grant_type"].getStr() == "refresh_token"
+        assert parseJson(body)["refresh_token"].getStr() == "r1"
+        return HttpResult(status: 200,
+          body: "{\"access_token\": \"" & fresh & "\"}",
+          sessionId: "")
+      bearers.add(bearer)
+      let meth = parseJson(extractJsonResponse(body)){"method"}.getStr()
+      case meth
+      of "initialize":
+        HttpResult(status: 200, body: initOkLine, sessionId: "s")
+      of "tools/list":
+        HttpResult(status: 200, body: listOkLine, sessionId: "s")
+      else:
+        raise newException(ValueError, "unexpected: " & meth)
+    let res = connectAll(@[oauthSpec()], envOf([]), home, 30.0, nil,
+      post, fixedNow)
+    assert res.tools.len == 2
+    assert bearers == @[fresh, fresh]
+    assert getStoredTokens(home, "o"){"access_token"}.getStr() == fresh
+    assert getStoredTokens(home,
+      "o"){"refresh_token"}.getStr() == "r1"
+    removeDir(home)
+
+  test "login with a flow reports the account like python sign_in":
+    let home = freshTmpHome("waku-mcp-login-flow")
+    writeFile(home / "mcp.json", """{"servers": [
+      {"name": "o", "url": "https://rs.example/mcp", "oauth": true}]}""")
+    let jwt = jwtWith(
+      "{\"email\": \"o@x\", \"exp\": " & $(fixedNow + 3600) & "}")
+    let flow: OAuthFlowFn = proc(h: string,
+        spec: McpServerSpec): tuple[ok: bool, msg: string,
+        timedOut: bool] {.closure.} =
+      setStoredTokens(h, spec.name,
+        %*{"access_token": jwt, "token_type": "Bearer"})
+      return (true, "signed in", false)
+    let (ok, msg) = mcpLogin(home, "o", envOf([]), nil, nil, fixedNow,
+      30.0, flow)
+    assert ok
+    assert "o@x" in msg
+    removeDir(home)
+
+  test "login timeout names the account check, failure the missing token":
+    let home = freshTmpHome("waku-mcp-login-flow-bad")
+    writeFile(home / "mcp.json", """{"servers": [
+      {"name": "o", "url": "https://rs.example/mcp", "oauth": true}]}""")
+    let timeoutFlow: OAuthFlowFn = proc(h: string,
+        spec: McpServerSpec): tuple[ok: bool, msg: string,
+        timedOut: bool] {.closure.} =
+      (false, "timed out waiting for the browser sign-in", true)
+    let (okT, msgT) = mcpLogin(home, "o", envOf([]), nil, nil, fixedNow,
+      30.0, timeoutFlow)
+    assert not okT
+    assert "Timed out waiting for the browser sign-in" in msgT
+    let failFlow: OAuthFlowFn = proc(h: string,
+        spec: McpServerSpec): tuple[ok: bool, msg: string,
+        timedOut: bool] {.closure.} =
+      (false, "authorization failed: access_denied", false)
+    let (okF, msgF) = mcpLogin(home, "o", envOf([]), nil, nil, fixedNow,
+      30.0, failFlow)
+    assert not okF
+    assert "has no token" in msgF
+    removeDir(home)
+
+  test "login without a flow names the seam and touches nothing":
+    let home = freshTmpHome("waku-mcp-login-noseam")
+    writeFile(home / "mcp.json", """{"servers": [
+      {"name": "o", "url": "https://rs.example/mcp", "oauth": true}]}""")
+    let (ok, msg) = mcpLogin(home, "o", envOf([]), nil, nil, fixedNow)
+    assert not ok
+    assert "OAuthFlowFn" in msg
+    assert not fileExists(authFilePath(home, "o"))
+    removeDir(home)
+
+suite "phase 6c constants":
+  test "loopback constants match python and share the sign-in timeout":
+    assert callbackPort == 41765
+    assert callbackPath == "/callback"
+    assert redirectUri() == "http://127.0.0.1:41765/callback"
+    assert callbackPollAttempts() == 600
+    assert signInTimeout == 300.0

@@ -1,11 +1,12 @@
-## MCP connector, phases 6a + 6b — config, stdio and streamable HTTP.
+## MCP connector, phases 6a + 6b + 6c — config, stdio, streamable HTTP,
+## OAuth browser flow.
 ##
 ## Port of `waku/tools/mcp_client.py` (`MCPBridge`, `_model_safe_name`,
 ## `_auth_hint`, `_connect_one`/`_connect_all`/`_deadline`) for both
 ## transports plus `waku/tools/mcp_cli.py` (`list`/`login`/`logout`, JWT
-## identity) without the OAuth browser flow (6c owns DCR/PKCE/callback
+## identity) plus `waku/tools/mcp_oauth.py` (DCR/PKCE/loopback callback
 ## and `FileTokenStorage`; `authFilePath`/`sanitizeServerName` here are
-## the path half 6c will reuse).
+## the path half 6c reuses).
 ##
 ## Hand-rolled JSON-RPC with stdlib (`json`, `osproc`, `net` via
 ## `httpclient`), like `http.nim` with SSE: the same three method shapes
@@ -13,21 +14,28 @@
 ## HTTP POSTs with `Mcp-Session-Id` + `Bearer` from `auth_env`.
 ##
 ## Every side effect travels through an injected seam (`ExchangeFn` for
-## stdio lines, `HttpPostFn` for HTTP POSTs) with `env` as a `Table` and
+## stdio lines, `HttpPostFn`/`HttpGetFn` for HTTP, `BrowserFn` /
+## `CallbackWaitFn` / `RandIntFn` for the interactive OAuth half) with `env` as a `Table` and
 ## `home` as a plain path. The live adapters (`startStdioExchange`,
 ## `liveHttpPost`) are never called in tests, which replay recorded
-## responses instead: zero real subprocesses, zero sockets.
+## responses instead: zero real subprocesses, zero sockets, zero browser.
 ## No new dependencies: stdlib only (AGENTS.md rule 3).
 
+import std/asyncdispatch
+import std/asynchttpserver
 import std/base64
+import std/browsers
 import std/httpclient
+import std/httpcore
 import std/json
 import std/os
 import std/osproc
 import std/streams
 import std/strtabs
 import std/strutils
+import std/sysrand
 import std/tables
+import std/times
 
 import ./tools
 
@@ -296,9 +304,10 @@ proc startStdioExchange*(command: string, args: seq[string],
 ##
 ## Port of the remote half of `mcp_client.py` (`_open_streams` HTTP
 ## branch, `_connect_one` remote, `_connect_all`, `_deadline`) and of
-## `mcp_cli.py` (`list`/`login`/`logout`, `_claims`/`_identity`). OAuth
-## (DCR/PKCE/callback/`FileTokenStorage`) stays in 6c: specs with
-## `oauth` parse here, but `mcpLogin` refuses them naming 6c.
+## `mcp_cli.py` (`list`/`login`/`logout`, `_claims`/`_identity`). The
+## bridge prefers a fresh stored oauth token when the spec names no
+## `auth_env` (6c's `storedAccessToken`, refreshed silently like the
+## SDK did); `mcpLogin` runs the injected browser flow for oauth.
 
 const signInTimeout* = 300.0
   ## Port of `SIGN_IN_TIMEOUT` in `mcp_oauth.py`: human time for the
@@ -330,6 +339,16 @@ type
     ## remote), so callers print instead of the bridge printing.
     tools*: seq[Tool]
     warnings*: seq[string]
+
+  OAuthFlowFn* = proc(home: string,
+      spec: McpServerSpec): tuple[ok: bool, msg: string,
+      timedOut: bool] {.closure.}
+    ## One injected browser flow for `mcpLogin` (6c): nil means no
+    ## interactive context is wired — offline tests, and `runMcpCmd`
+    ## until its one-line follow-up passes `oauthFlowWith` over the
+    ## live seams. The triple mirrors `oauthSignIn`: `timedOut` keeps
+    ## the CLI's special-case message honest. Defined here (next to
+    ## the other seams) because `mcpLogin` below takes one.
 
 proc sanitizeServerName*(name: string): string =
   ## Port of `_sanitise` in `mcp_oauth.py`: a user-supplied server name
@@ -403,19 +422,34 @@ proc bearerFor*(spec: McpServerSpec,
     return env[spec.authEnv]
   return ""
 
+proc storedBearerFor(home: string, spec: McpServerSpec,
+    env: Table[string, string], httpPost: HttpPostFn,
+    nowUnix: int64): string
+  ## 6c bearer resolution for the bridge (defined in the 6c section
+  ## below): a fresh-or-refreshed stored oauth token when the spec
+  ## names no `auth_env`, else "". Forward-declared: the bridge
+  ## below runs before the 6c section in file order.
+
 proc listToolsViaHttp*(post: HttpPostFn, spec: McpServerSpec,
-                        env: Table[string, string]): tuple[metas: seq[McpToolMeta],
+                        env: Table[string, string],
+                        storedBearer: string = ""): tuple[metas: seq[McpToolMeta],
                           sessionId: string] =
   ## `initialize` + `tools/list` over one remote server. Port of the
   ## remote half of `_connect_one`: failures raise so the caller (the
   ## bridge) can skip that server with a warning, like `_connect_all`.
   ## A 401 raises `IOError` (never `ValueError`) so the bridge still
   ## appends `authHint` — config refusals stay `ValueError`-free here
-  ## because `connectAll` validates before calling.
+  ## because `connectAll` validates before calling. `storedBearer` is
+  ## 6c's cached oauth token, used only when the spec names no
+  ## `auth_env` (explicit config beats a cached file).
   if post == nil:
     raise newException(IOError,
       "MCP server '" & spec.name & "' is not connected.")
-  let bearer = bearerFor(spec, env)
+  let bearer = block:
+    # Explicit config beats a cached file: `auth_env` first, the
+    # stored oauth token only when the spec names no variable.
+    let fromEnv = bearerFor(spec, env)
+    if fromEnv.len > 0: fromEnv else: storedBearer
   let initRes = post(spec.url, initializeReq(1), "", bearer)
   if initRes.status == 401:
     raise newException(IOError,
@@ -472,24 +506,35 @@ proc toRegistryToolsHttp*(server: string, metas: seq[McpToolMeta],
         callToolViaHttp(pp, uu, ss, bb, server, tname, args)))
 
 proc connectOneHttp(post: HttpPostFn, spec: McpServerSpec,
-                     env: Table[string, string]): tuple[tools: seq[Tool],
+                     env: Table[string, string],
+                     storedBearer: string = ""): tuple[tools: seq[Tool],
                        sessionId: string] =
   ## List one remote server and map its tools (single-attempt helper
   ## for `connectAll`; retry re-calls `listToolsViaHttp` directly).
-  let (metas, sid) = listToolsViaHttp(post, spec, env)
-  let bearer = bearerFor(spec, env)
+  ## `storedBearer` is 6c's cached oauth token, same rule as
+  ## `listToolsViaHttp`: only when the spec names no `auth_env`.
+  let (metas, sid) = listToolsViaHttp(post, spec, env, storedBearer)
+  let fromEnv = bearerFor(spec, env)
+  let bearer = if fromEnv.len > 0: fromEnv else: storedBearer
   return (toRegistryToolsHttp(spec.name, metas, post, spec.url, sid,
     bearer), sid)
 
 proc connectAll*(specs: seq[McpServerSpec], env: Table[string, string],
                   home: string, timeout: float = 30.0,
                   makeExchange: StdioFactory = nil,
-                  httpPost: HttpPostFn = nil): McpConnectResult =
+                  httpPost: HttpPostFn = nil,
+                  nowUnix: int64 = 0): McpConnectResult =
   ## Port of `_connect_all` + the tool mapping in `start`: connect
   ## every server, skip a bad one with a warning (plus `authHint` when
   ## remote), retry once when a token appears after the first failure
   ## (the sign-in completed while the attempt was already failing),
   ## and compute `connectionDeadline` for parity.
+  ##
+  ## 6c: an oauth spec with no `auth_env` bearer first tries its
+  ## stored access token (fresh, else silently refreshed like the SDK
+  ## did) before connecting anonymously into a 401 that reads as an
+  ## outage. `nowUnix` pins time for the expiry check (0 reads the
+  ## clock); homes without a token file behave exactly as in 6b.
   ##
   ## Divergence: Python waits on an asyncio bridge (`fut.result` with
   ## the deadline); this port is synchronous, so the deadline is
@@ -500,6 +545,7 @@ proc connectAll*(specs: seq[McpServerSpec], env: Table[string, string],
   ## instead of branching on the exception type.
   result = McpConnectResult(tools: @[], warnings: @[])
   discard connectionDeadline(specs, home, timeout)
+  let effNow = if nowUnix != 0: nowUnix else: getTime().toUnix()
   for spec in specs:
     let invalid = validateSpec(spec, env)
     if invalid.len > 0:
@@ -511,7 +557,8 @@ proc connectAll*(specs: seq[McpServerSpec], env: Table[string, string],
     var connected = false
     try:
       if spec.isRemote:
-        for t in connectOneHttp(httpPost, spec, env).tools:
+        let stored = storedBearerFor(home, spec, env, httpPost, effNow)
+        for t in connectOneHttp(httpPost, spec, env, stored).tools:
           result.tools.add(t)
       else:
         if makeExchange == nil:
@@ -529,7 +576,8 @@ proc connectAll*(specs: seq[McpServerSpec], env: Table[string, string],
       result.warnings.add("  signed in — reconnecting to '" & spec.name & "'")
       try:
         if spec.isRemote:
-          for t in connectOneHttp(httpPost, spec, env).tools:
+          let stored = storedBearerFor(home, spec, env, httpPost, effNow)
+          for t in connectOneHttp(httpPost, spec, env, stored).tools:
             result.tools.add(t)
         else:
           if makeExchange == nil:
@@ -715,20 +763,24 @@ proc mcpLogout*(home, name: string): tuple[msg: string, code: int] =
 
 proc mcpLogin*(home, name: string, env: Table[string, string],
                 httpPost: HttpPostFn, makeExchange: StdioFactory,
-                nowUnix: int64, timeout: float = 30.0): tuple[ok: bool,
+                nowUnix: int64, timeout: float = 30.0,
+                oauthFlow: OAuthFlowFn = nil): tuple[ok: bool,
                   msg: string] =
   ## Port of `sign_in` in `mcp_cli.py`: forget the token, then connect
-  ## — which is what triggers a sign-in. `nowUnix` is accepted for
-  ## symmetry with `mcpIdentity` (non-oauth logins report the bridge,
-  ## not a token file, so it goes unused there).
+  ## — which is what triggers a sign-in.
   ##
   ## Divergence: Python judges success by "a token now exists", which
   ## is oauth-shaped — a key/stdio server never writes one, so every
   ## such login would read as failed. This port reports the bridge
   ## result for non-oauth servers (tools connected vs warnings) and
-  ## reserves the token-file check for 6c's oauth flow. An `oauth`
-  ## server refuses honestly naming 6c (no DCR/PKCE/callback yet).
-  discard nowUnix
+  ## keeps Python's token-file verdict for oauth: the injected
+  ## `oauthFlow` runs the 6c browser flow, then the file decides — a
+  ## bridge error after a completed sign-in is noise the next run
+  ## will not reproduce (Python's `except Exception: pass` says the
+  ## same). A nil flow refuses honestly naming the seam: offline
+  ## tests and `runMcpCmd` pass none until its one-line follow-up
+  ## wires `oauthFlowWith` over the live adapters — so this path
+  ## never opens a browser or a socket from a test.
   let servers = loadMcpServers(home)
   var spec: McpServerSpec
   var found = false
@@ -751,12 +803,742 @@ proc mcpLogin*(home, name: string, env: Table[string, string],
     except OSError:
       discard
   if spec.oauth:
-    return (false, "server '" & name &
-      "' needs the OAuth browser flow — arrives in 6c " &
-      "(no DCR/PKCE/callback/token storage yet)")
+    if oauthFlow == nil:
+      return (false, "server '" & name &
+        "' needs the OAuth browser flow — no OAuthFlowFn is wired " &
+        "in this client (the flow itself lives in oauthSignIn)")
+    var timedOut = false
+    try:
+      timedOut = oauthFlow(home, spec).timedOut
+    except CatchableError:
+      # A raising flow is a broken seam, not a verdict: the token
+      # file below is the thing that was asked for, and it is either
+      # on disk or it is not (mirrors sign_in's swallowed bridge).
+      discard
+    if hasToken(home, spec):
+      return (true, "\n  " & name & " \u2014 " &
+        mcpIdentity(authFilePath(home, name), nowUnix))
+    if timedOut:
+      # Port of sign_in's TimeoutError branch: the callback may still
+      # have landed the token after the wait gave up, so say what to
+      # check rather than what broke.
+      return (false, "\n  Timed out waiting for the browser sign-in.\n" &
+        "  If you did finish it, `waku mcp` will show the account. " &
+        "Otherwise run this again.")
+    return (false, "\n  Sign-in did not complete — '" & name &
+      "' has no token.")
   let res = connectAll(@[spec], env, home, timeout, makeExchange, httpPost)
   if res.warnings.len == 0:
     return (true, "\n  " & name & " connected (" & $res.tools.len &
       " tools).")
   return (false, "\n  Sign-in did not complete — '" & name &
     "' has no token.\n" & res.warnings.join("\n"))
+
+## Phase 6c — OAuth browser flow: DCR + PKCE + loopback callback +
+## FileTokenStorage. Port of `waku/tools/mcp_oauth.py` plus the PKCE
+## math and the three HTTP shapes the Python SDK drove on our behalf
+## (discovery, DCR, code exchange), replayed here over injected seams.
+##
+## SHA-256 decision (AGENTS.md rule 3): `std/sha1` is deprecated — a
+## deprecation warning fails this repo's zero-warning gate — and the
+## `checksums` package would be a new dependency, so SHA-256 is
+## vendored below in pure stdlib (~60 lines, FIPS 180-4), pinned by
+## the NIST `""`/`"abc"` vectors and the RFC 7636 appendix-B vector
+## (same precedent as the vendored FNV-1a in `memory_arena.nim`).
+## `std/md5` cannot stand in: PKCE `S256` names SHA-256 exactly.
+
+func ror32(x: uint32, n: int): uint32 =
+  ## 32-bit rotate-right for the digest below (`bitops` has wider
+  ## helpers but nothing this small without an import, and this file
+  ## owns its crypto anyway).
+  (x shr n) or (x shl (32 - n))
+
+const sha256K: array[64, uint32] = [
+  0x428a2f98'u32, 0x71374491'u32, 0xb5c0fbcf'u32, 0xe9b5dba5'u32,
+  0x3956c25b'u32, 0x59f111f1'u32, 0x923f82a4'u32, 0xab1c5ed5'u32,
+  0xd807aa98'u32, 0x12835b01'u32, 0x243185be'u32, 0x550c7dc3'u32,
+  0x72be5d74'u32, 0x80deb1fe'u32, 0x9bdc06a7'u32, 0xc19bf174'u32,
+  0xe49b69c1'u32, 0xefbe4786'u32, 0x0fc19dc6'u32, 0x240ca1cc'u32,
+  0x2de92c6f'u32, 0x4a7484aa'u32, 0x5cb0a9dc'u32, 0x76f988da'u32,
+  0x983e5152'u32, 0xa831c66d'u32, 0xb00327c8'u32, 0xbf597fc7'u32,
+  0xc6e00bf3'u32, 0xd5a79147'u32, 0x06ca6351'u32, 0x14292967'u32,
+  0x27b70a85'u32, 0x2e1b2138'u32, 0x4d2c6dfc'u32, 0x53380d13'u32,
+  0x650a7354'u32, 0x766a0abb'u32, 0x81c2c92e'u32, 0x92722c85'u32,
+  0xa2bfe8a1'u32, 0xa81a664b'u32, 0xc24b8b70'u32, 0xc76c51a3'u32,
+  0xd192e819'u32, 0xd6990624'u32, 0xf40e3585'u32, 0x106aa070'u32,
+  0x19a4c116'u32, 0x1e376c08'u32, 0x2748774c'u32, 0x34b0bcb5'u32,
+  0x391c0cb3'u32, 0x4ed8aa4a'u32, 0x5b9cca4f'u32, 0x682e6ff3'u32,
+  0x748f82ee'u32, 0x78a5636f'u32, 0x84c87814'u32, 0x8cc70208'u32,
+  0x90befffa'u32, 0xa4506ceb'u32, 0xbef9a3f7'u32, 0xc67178f2'u32]
+
+proc sha256Digest*(data: string): array[32, byte] =
+  ## FIPS 180-4 SHA-256 over the string's bytes. PKCE verifiers and
+  ## challenges are ASCII, so one byte per char is exact.
+  var h: array[8, uint32] = [0x6a09e667'u32, 0xbb67ae85'u32,
+    0x3c6ef372'u32, 0xa54ff53a'u32, 0x510e527f'u32, 0x9b05688c'u32,
+    0x1f83d9ab'u32, 0x5be0cd19'u32]
+  var msg = newSeq[byte](data.len)
+  for i, c in data:
+    msg[i] = byte(ord(c))
+  let bitLen = uint64(data.len) * 8'u64
+  msg.add(0x80'u8)
+  while msg.len mod 64 != 56:
+    msg.add(0'u8)
+  for i in countdown(7, 0):
+    msg.add(byte((bitLen shr (i * 8)) and 0xff'u64))
+  var w: array[64, uint32]
+  var i = 0
+  while i < msg.len:
+    for t in 0 .. 15:
+      w[t] = (uint32(msg[i + t * 4]) shl 24) or
+        (uint32(msg[i + t * 4 + 1]) shl 16) or
+        (uint32(msg[i + t * 4 + 2]) shl 8) or uint32(msg[i + t * 4 + 3])
+    for t in 16 .. 63:
+      let s0 = ror32(w[t-15], 7) xor ror32(w[t-15], 18) xor (w[t-15] shr 3)
+      let s1 = ror32(w[t-2], 17) xor ror32(w[t-2], 19) xor (w[t-2] shr 10)
+      w[t] = w[t-16] + s0 + w[t-7] + s1
+    var a = h[0]; var b = h[1]; var c = h[2]; var d = h[3]
+    var e = h[4]; var f = h[5]; var g = h[6]; var hh = h[7]
+    for t in 0 .. 63:
+      let s1 = ror32(e, 6) xor ror32(e, 11) xor ror32(e, 25)
+      let ch = (e and f) xor ((not e) and g)
+      let t1 = hh + s1 + ch + sha256K[t] + w[t]
+      let s0 = ror32(a, 2) xor ror32(a, 13) xor ror32(a, 22)
+      let maj = (a and b) xor (a and c) xor (b and c)
+      let t2 = s0 + maj
+      hh = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2
+    h[0] += a; h[1] += b; h[2] += c; h[3] += d
+    h[4] += e; h[5] += f; h[6] += g; h[7] += hh
+    i += 64
+  for i, v in h:
+    for j in 0 .. 3:
+      result[i * 4 + j] = byte((v shr ((3 - j) * 8)) and 0xff'u32)
+
+proc sha256Hex*(data: string): string =
+  ## Lowercase hex of the digest (how the NIST vectors are printed).
+  for b in sha256Digest(data):
+    result.add(toHex(int(b), 2).toLowerAscii())
+
+proc base64urlEncode*(data: openArray[byte]): string =
+  ## `base64.encode` with the URL alphabet and no padding (RFC 7636
+  ## section 2: the `S256` challenge transform).
+  var raw = newString(data.len)
+  for i, b in data:
+    raw[i] = char(b)
+  result = encode(raw).replace("+", "-").replace("/", "_")
+  while result.endsWith("="):
+    result = result[0 .. ^2]
+
+proc formEncode*(s: string): string =
+  ## Percent-encoding for one OAuth query value: RFC 3986 unreserved
+  ## passes through, everything else is uppercase `%XX`.
+  for c in s:
+    if c.isAlphaNumeric() or c in {'-', '_', '.', '~'}:
+      result.add(c)
+    else:
+      result.add('%')
+      result.add(toHex(ord(c), 2).toUpperAscii())
+
+proc formDecode*(s: string): string =
+  ## The inverse, plus `+` as space (how servers word
+  ## `error_description`). Malformed `%` passes through untouched.
+  var i = 0
+  while i < s.len:
+    if s[i] == '%' and i + 2 < s.len and s[i+1] in HexDigits and
+        s[i+2] in HexDigits:
+      result.add(char(parseHexInt($s[i+1] & $s[i+2])))
+      i += 3
+    elif s[i] == '+':
+      result.add(' ')
+      inc i
+    else:
+      result.add(s[i])
+      inc i
+
+const pkceAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ" &
+  "abcdefghijklmnopqrstuvwxyz0123456789-._~"
+  ## RFC 7636 section 2 unreserved characters: verifiers and states
+  ## drawn from here never need encoding inside the authorize URL.
+
+proc pkceChallenge*(verifier: string): string =
+  ## `S256`: base64url of SHA-256 of the verifier. The server checks
+  ## the code against this; the verifier itself travels only in the
+  ## back-channel token call, never through the browser.
+  base64urlEncode(sha256Digest(verifier))
+
+type RandIntFn* = proc(maxExclusive: int): int {.closure.}
+  ## One draw below `maxExclusive`. Tests pin it; the binary passes
+  ## `liveRandInt` — randomness, like the clock, travels by seam.
+
+proc randomToken*(n: int, rng: RandIntFn): string =
+  ## `n` PKCE-alphabet characters (verifiers are 43-128 chars per the
+  ## RFC; states just need to be unguessable).
+  if rng == nil:
+    raise newException(IOError, "oauth seam 'rng' is missing")
+  for _ in 0 ..< n:
+    result.add(pkceAlphabet[rng(pkceAlphabet.len)])
+
+proc liveRandInt*(maxExclusive: int): int =
+  ## One unbiased draw from the OS CSPRNG. Never called in tests.
+  ## Rejection sampling: 256 is a multiple of nothing interesting, so
+  ## the biased `mod` tail is redrawn, not kept.
+  doAssert maxExclusive > 0 and maxExclusive <= 256
+  let limit = 256 - (256 mod maxExclusive)
+  while true:
+    let b = int(urandom(1)[0])
+    if b < limit:
+      return b mod maxExclusive
+
+const callbackPort* = 41765
+  ## Port of `CALLBACK_PORT`: fixed, not ephemeral, because the
+  ## redirect URI is registered at DCR time and must still be true on
+  ## the next run — a random port would force re-registration every
+  ## time, and some servers pin the URI.
+const callbackPath* = "/callback"
+  ## Port of `CALLBACK_PATH`: the one path the loopback server answers.
+
+proc redirectUri*(): string =
+  ## Port of the `redirect_uri` in `build_provider`.
+  "http://127.0.0.1:" & $callbackPort & callbackPath
+
+proc callbackPollAttempts*(): int =
+  ## Port of `range(int(SIGN_IN_TIMEOUT / 0.5))`: 0.5s slices of human
+  ## time (consent screens, picking between two accounts), sharing
+  ## 6b's `connectionDeadline` through `signInTimeout`.
+  int(signInTimeout / 0.5)
+
+proc readTokenDoc*(path: string): JsonNode =
+  ## Port of `FileTokenStorage._read`: a missing, corrupt or
+  ## non-object file reads as an empty document, never raises — one
+  ## bad file costs a sign-in, not a harness that will not start.
+  try:
+    let node = parseJson(readFile(path))
+    if node.kind == JObject:
+      return node
+    return newJObject()
+  except CatchableError:
+    return newJObject()
+
+proc writeTokenDoc*(path: string, doc: JsonNode) =
+  ## Port of `FileTokenStorage._write`: parents first, write-then-
+  ## rename so an interrupted write cannot halve a valid file, chmod
+  ## 0600 BEFORE the rename so the secret is never briefly readable.
+  let parent = parentDir(path)
+  if parent.len > 0:
+    createDir(parent)
+  let tmp = path & ".tmp"
+  writeFile(tmp, pretty(doc))
+  setFilePermissions(tmp, {fpUserRead, fpUserWrite})
+  moveFile(tmp, path)
+
+proc getStoredTokens*(home, server: string): JsonNode =
+  ## Port of `FileTokenStorage.get_tokens` (shape only): the stored
+  ## `tokens` object, or nil when the server never signed in or the
+  ## file went bad. Callers check `!= nil`, like the SDK's `| None`.
+  let doc = readTokenDoc(authFilePath(home, server))
+  if doc.hasKey("tokens") and doc["tokens"].kind == JObject:
+    return doc["tokens"]
+  return nil
+
+proc setStoredTokens*(home, server: string, tokens: JsonNode) =
+  ## Port of `FileTokenStorage.set_tokens`: merge under `tokens` and
+  ## keep the sibling `client_info` — a token write must not forget
+  ## the DCR that minted it.
+  var doc = readTokenDoc(authFilePath(home, server))
+  doc["tokens"] = tokens
+  writeTokenDoc(authFilePath(home, server), doc)
+
+proc getStoredClientInfo*(home, server: string): JsonNode =
+  ## Port of `FileTokenStorage.get_client_info`: the stored
+  ## registration, or nil when this client never registered.
+  let doc = readTokenDoc(authFilePath(home, server))
+  if doc.hasKey("client_info") and doc["client_info"].kind == JObject:
+    return doc["client_info"]
+  return nil
+
+proc setStoredClientInfo*(home, server: string, info: JsonNode) =
+  ## Port of `FileTokenStorage.set_client_info`: merge under
+  ## `client_info`, keep the sibling `tokens`.
+  var doc = readTokenDoc(authFilePath(home, server))
+  doc["client_info"] = info
+  writeTokenDoc(authFilePath(home, server), doc)
+
+proc parseCallbackTarget*(target: string): tuple[status: int, code: string,
+    state: string, iss: string, err: string, errDesc: string] =
+  ## Port of `_CallbackHandler.do_GET` without the socket: the one
+  ## redirect is accepted, anything else is a 404. `error` params are
+  ## kept verbatim — the caller reports the server's own words.
+  result = (status: 404, code: "", state: "", iss: "", err: "",
+    errDesc: "")
+  let q = target.split('?', maxsplit = 1)
+  if q[0] != callbackPath:
+    return
+  result.status = 200
+  if q.len < 2:
+    return
+  for part in q[1].split('&'):
+    let kv = part.split('=', maxsplit = 1)
+    let val = if kv.len > 1: formDecode(kv[1]) else: ""
+    case kv[0]
+    of "code": result.code = val
+    of "state": result.state = val
+    of "iss": result.iss = val
+    of "error": result.err = val
+    of "error_description": result.errDesc = val
+    else: discard
+
+proc callbackError*(err, errDesc: string): string =
+  ## Port of the `authorization failed` raise in `callback_handler`:
+  ## the server said no, in its own words (`access_denied` and
+  ## `invalid_client` send you to completely different places).
+  if err.len == 0:
+    return ""
+  if errDesc.len > 0:
+    return "authorization failed: " & err & " \u2014 " & errDesc
+  return "authorization failed: " & err
+
+proc callbackSuccessPage*(): string =
+  ## Port of the 200 body in `do_GET`: the tab you can close.
+  "<html><body style='font-family:system-ui;padding:3rem'>" &
+    "<h2>Signed in.</h2><p>You can close this tab and return to the terminal.</p>" &
+    "</body></html>"
+
+type
+  BrowserFn* = proc(url: string): bool {.closure.}
+    ## Open `url` for sign-in; false when there is no browser (headless
+    ## or SSH) and the printed URL is the only way through — the honest
+    ## signal Python reads from `webbrowser.open_new_tab`.
+  CallbackWaitFn* = proc(port: int, path: string,
+      maxAttempts: int): string {.closure.}
+    ## The raw callback target (`/callback?code=...`), or "" when the
+    ## browser never came back. Raises `IOError` when the loopback port
+    ## is already held.
+  HttpGetFn* = proc(url, bearer: string): tuple[status: int,
+      body: string] {.closure.}
+    ## GET one OAuth metadata document. Tests inject recorded bodies;
+    ## the binary passes `liveHttpGet`. Never a socket in tests.
+
+proc openBrowserLive*(url: string): bool =
+  ## Port of `redirect_handler`: always print the URL (a headless or
+  ## SSH session has no browser, and the line below is then the only
+  ## way through), then ask the OS. Real process — never in tests.
+  echo "\n  Opening your browser to sign in\u2026"
+  echo "  If it does not open: " & url & "\n"
+  openDefaultBrowser(url)
+  return true
+
+proc waitCallbackLive*(port: int, path: string,
+    maxAttempts: int): string =
+  ## Port of `callback_handler`: serve the one loopback request, in
+  ## 0.5s slices up to `maxAttempts` (300s of human time), then stop.
+  ## Real socket — never called in tests. Raises `IOError` naming the
+  ## port when it is held (Python's `RuntimeError` for the same case).
+  doAssert path == callbackPath
+  var target = ""
+  var server = newAsyncHttpServer()
+  proc onReq(req: Request) {.async.} =
+    let got = req.url.path &
+      (if req.url.query.len > 0: "?" & req.url.query else: "")
+    if parseCallbackTarget(got).status != 200:
+      await req.respond(Http404, "not found")
+      return
+    target = got
+    await req.respond(Http200, callbackSuccessPage(),
+      newHttpHeaders([("Content-Type", "text/html; charset=utf-8")]))
+    server.close()
+  proc watchdog() {.async.} =
+    await sleepAsync(maxAttempts * 500)
+    server.close()
+  asyncCheck watchdog()
+  try:
+    waitFor server.serve(Port(port), onReq, "127.0.0.1")
+  except OSError:
+    raise newException(IOError, "port " & $port &
+      " is in use \u2014 the sign-in redirect has nowhere to land. " &
+      "Close whatever holds it and try again.")
+  return target
+
+proc liveHttpGet*(url, bearer: string): tuple[status: int, body: string] =
+  ## Live GET for OAuth metadata (discovery documents are GETs; the
+  ## MCP wire stays on `liveHttpPost`). Real socket — never in tests.
+  var client = newHttpClient(timeout = 30000)
+  try:
+    var hdrs = newHttpHeaders([("Accept", "application/json")])
+    if bearer.len > 0:
+      hdrs["Authorization"] = "Bearer " & bearer
+    let resp = client.request(url, HttpGet, "", hdrs)
+    var code = 0
+    try:
+      code = parseInt(resp.status.split(' ')[0])
+    except ValueError:
+      discard
+    var text = ""
+    try:
+      text = resp.body
+    except CatchableError as exc:
+      raise newException(IOError, exc.msg)
+    return (code, text)
+  finally:
+    try:
+      client.close()
+    except CatchableError:
+      discard
+
+proc resourceMetadataUrl*(serverUrl: string): string =
+  ## The RFC 9728 well-known lookup the SDK did: insert
+  ## `/.well-known/oauth-protected-resource` between host and path.
+  var base = serverUrl
+  for cut in ['?', '#']:
+    let i = base.find(cut)
+    if i >= 0:
+      base = base[0 ..< i]
+  let schemeEnd = base.find("://")
+  var host = base
+  var path = ""
+  if schemeEnd >= 0:
+    let rest = base[schemeEnd + 3 .. ^1]
+    let slash = rest.find('/')
+    if slash >= 0:
+      host = base[0 ..< schemeEnd + 3 + slash]
+      path = rest[slash .. ^1]
+  if path.len == 0 or path == "/":
+    return host & "/.well-known/oauth-protected-resource"
+  return host & "/.well-known/oauth-protected-resource" & path
+
+type OAuthEndpoints* = object
+  authEndpoint*: string
+  tokenEndpoint*: string
+  regEndpoint*: string
+
+proc parseResourceMetadata*(body: string): seq[string] =
+  ## The `authorization_servers` of an RFC 9728 resource document.
+  ## Raises `ValueError`: without one, discovery has nowhere to go.
+  var node: JsonNode
+  try:
+    node = parseJson(body.strip())
+  except JsonParsingError as e:
+    raise newException(ValueError,
+      "OAuth resource metadata is not valid JSON: " & e.msg)
+  if node.kind == JObject and node.hasKey("authorization_servers") and
+      node["authorization_servers"].kind == JArray:
+    for s in node["authorization_servers"]:
+      if s.kind == JString and s.getStr().len > 0:
+        result.add(s.getStr())
+  if result.len == 0:
+    raise newException(ValueError,
+      "OAuth resource metadata names no authorization_servers")
+
+proc parseServerMetadata*(body: string): OAuthEndpoints =
+  ## The endpoints of an authorization-server metadata document.
+  ## Registration is optional: without it DCR is honestly refused at
+  ## sign-in time. Raises `ValueError` naming a missing endpoint.
+  var node: JsonNode
+  try:
+    node = parseJson(body.strip())
+  except JsonParsingError as e:
+    raise newException(ValueError,
+      "OAuth server metadata is not valid JSON: " & e.msg)
+  if node.kind != JObject:
+    raise newException(ValueError, "OAuth server metadata is not an object")
+  for key in ["authorization_endpoint", "token_endpoint"]:
+    if not node.hasKey(key) or node[key].kind != JString or
+        node[key].getStr().len == 0:
+      raise newException(ValueError,
+        "OAuth server metadata has no " & key)
+  result.authEndpoint = node["authorization_endpoint"].getStr()
+  result.tokenEndpoint = node["token_endpoint"].getStr()
+  if node.hasKey("registration_endpoint") and
+      node["registration_endpoint"].kind == JString:
+    result.regEndpoint = node["registration_endpoint"].getStr()
+
+proc dcrBody*(): JsonNode =
+  ## Port of the `OAuthClientMetadata` in `build_provider`: this
+  ## client, named, loopback-bound, public (no secret — `none`).
+  %*{"client_name": "Waku",
+     "redirect_uris": [redirectUri()],
+     "grant_types": ["authorization_code", "refresh_token"],
+     "response_types": ["code"],
+     "token_endpoint_auth_method": "none"}
+
+proc parseDcrResponse*(body: string): tuple[clientId: string,
+    clientSecret: string] =
+  ## The registered client: `client_id` is required, the secret is
+  ## public-client-optional. Raises `ValueError` without an id.
+  var node: JsonNode
+  try:
+    node = parseJson(body.strip())
+  except JsonParsingError as e:
+    raise newException(ValueError,
+      "dynamic client registration is not valid JSON: " & e.msg)
+  if node.kind != JObject or not node.hasKey("client_id") or
+      node["client_id"].kind != JString or
+      node["client_id"].getStr().len == 0:
+    raise newException(ValueError,
+      "dynamic client registration did not return a client_id")
+  result.clientId = node["client_id"].getStr()
+  if node.hasKey("client_secret") and
+      node["client_secret"].kind == JString:
+    result.clientSecret = node["client_secret"].getStr()
+
+proc authorizeUrl*(authEndpoint, clientId, challenge,
+    state: string): string =
+  ## The browser URL: code flow with the `S256` challenge. Port of
+  ## what the SDK built before calling `redirect_handler`.
+  result = authEndpoint & (if '?' in authEndpoint: "&" else: "?") &
+    "response_type=code" &
+    "&client_id=" & formEncode(clientId) &
+    "&redirect_uri=" & formEncode(redirectUri()) &
+    "&code_challenge=" & formEncode(challenge) &
+    "&code_challenge_method=S256" &
+    "&state=" & formEncode(state)
+
+proc tokenExchangeBody*(code, verifier, clientId: string): JsonNode =
+  ## The back-channel code swap (the verifier travels here, never
+  ## through the browser).
+  %*{"grant_type": "authorization_code", "code": code,
+     "redirect_uri": redirectUri(), "client_id": clientId,
+     "code_verifier": verifier}
+
+proc refreshBody*(refreshToken, clientId: string): JsonNode =
+  ## The silent swap the SDK did before retrying a 401.
+  %*{"grant_type": "refresh_token", "refresh_token": refreshToken,
+     "client_id": clientId}
+
+proc parseTokenResponse*(body: string): JsonNode =
+  ## A token endpoint answer: the whole object, stored as-is (like the
+  ## SDK's `model_dump`), refused when it carries no `access_token`.
+  var node: JsonNode
+  try:
+    node = parseJson(body.strip())
+  except JsonParsingError as e:
+    raise newException(ValueError,
+      "token response is not valid JSON: " & e.msg)
+  if node.kind != JObject or not node.hasKey("access_token") or
+      node["access_token"].kind != JString or
+      node["access_token"].getStr().len == 0:
+    raise newException(ValueError, "token response has no access_token")
+  return node
+
+proc discoverOAuth*(get: HttpGetFn, serverUrl: string): OAuthEndpoints =
+  ## Ports the SDK's discovery: the resource's metadata, then the
+  ## named authorization server's metadata. Raises `IOError` on
+  ## transport, `ValueError` on shapes without endpoints.
+  if get == nil:
+    raise newException(IOError,
+      "MCP server '" & serverUrl & "' is not connected.")
+  let rmUrl = resourceMetadataUrl(serverUrl)
+  let rm = get(rmUrl, "")
+  if rm.status != 200:
+    raise newException(IOError, "could not discover the authorization " &
+      "server for '" & serverUrl & "': HTTP " & $rm.status & " at " & rmUrl)
+  let servers = parseResourceMetadata(rm.body)
+  let base = servers[0].strip(leading = false, trailing = true,
+    chars = {'/'})
+  let smUrl = base & "/.well-known/oauth-authorization-server"
+  let sm = get(smUrl, "")
+  if sm.status != 200:
+    raise newException(IOError, "could not read the authorization " &
+      "server metadata for '" & serverUrl & "': HTTP " & $sm.status &
+      " at " & smUrl)
+  return parseServerMetadata(sm.body)
+
+proc dcrRegister*(post: HttpPostFn,
+    regEndpoint: string): tuple[clientId: string, clientSecret: string] =
+  ## One dynamic-client registration. Raises `IOError` on transport,
+  ## `ValueError` when the answer carries no `client_id`.
+  if post == nil:
+    raise newException(IOError, "no HTTP transport for registration")
+  let res = post(regEndpoint, $dcrBody(), "", "")
+  if res.status < 200 or res.status >= 300:
+    raise newException(IOError,
+      "dynamic client registration failed with status " & $res.status &
+      " at " & regEndpoint)
+  return parseDcrResponse(res.body.strip())
+
+proc exchangeCode*(post: HttpPostFn, tokenEndpoint, code, verifier,
+    clientId: string): JsonNode =
+  ## Port of the SDK's code exchange, PKCE `code_verifier` included.
+  ## Raises `IOError`, naming the server's `error` when it says no.
+  if post == nil:
+    raise newException(IOError, "no HTTP transport for token exchange")
+  let res = post(tokenEndpoint,
+    $tokenExchangeBody(code, verifier, clientId), "", "")
+  if res.status < 200 or res.status >= 300:
+    var detail = "HTTP " & $res.status
+    try:
+      let node = parseJson(res.body.strip())
+      if node.kind == JObject and node.hasKey("error") and
+          node["error"].kind == JString:
+        detail = node["error"].getStr()
+        if node.hasKey("error_description") and
+            node["error_description"].kind == JString:
+          detail &= " \u2014 " & node["error_description"].getStr()
+    except CatchableError:
+      discard
+    raise newException(IOError, "token exchange failed: " & detail)
+  return parseTokenResponse(res.body.strip())
+
+proc storedAccessToken*(home: string, spec: McpServerSpec,
+    nowUnix: int64): string =
+  ## The stored access token while it is good for more than a minute
+  ## (60s skew margin), else "": the bridge then refreshes or signs
+  ## in. Tokens without `exp` return as-is — like `mcpIdentity`, which
+  ## still names their account instead of judging them.
+  let toks = getStoredTokens(home, spec.name)
+  if toks == nil or not toks.hasKey("access_token") or
+      toks["access_token"].kind != JString:
+    return ""
+  let access = toks["access_token"].getStr()
+  if access.len == 0:
+    return ""
+  let claims = decodeClaims(access)
+  if not claims.hasKey("exp"):
+    return access
+  let expNode = claims["exp"]
+  var exp: int64 = 0
+  var known = true
+  if expNode.kind == JInt:
+    exp = expNode.getBiggestInt()
+  elif expNode.kind == JFloat:
+    exp = int64(expNode.getFloat())
+  else:
+    known = false
+  if not known or exp == 0:
+    return access
+  if exp - nowUnix > 60:
+    return access
+  return ""
+
+proc refreshAccessToken*(post: HttpPostFn, home: string,
+    spec: McpServerSpec): string =
+  ## Port of the SDK's silent refresh: swap the stored `refresh_token`
+  ## for a fresh access token and store the answer. Never raises — ""
+  ## means the caller falls through to a full sign-in. A refreshed
+  ## answer that omits `refresh_token` keeps the old one (servers
+  ## rotate access tokens far more eagerly than refresh tokens).
+  if post == nil:
+    return ""
+  let info = getStoredClientInfo(home, spec.name)
+  let toks = getStoredTokens(home, spec.name)
+  if info == nil or toks == nil:
+    return ""
+  if not info.hasKey("token_endpoint") or
+      info["token_endpoint"].kind != JString or
+      info["token_endpoint"].getStr().len == 0:
+    return ""
+  if not toks.hasKey("refresh_token") or
+      toks["refresh_token"].kind != JString or
+      toks["refresh_token"].getStr().len == 0:
+    return ""
+  let oldRefresh = toks["refresh_token"].getStr()
+  var clientId = ""
+  if info.hasKey("client_id") and info["client_id"].kind == JString:
+    clientId = info["client_id"].getStr()
+  var answer: JsonNode
+  try:
+    let res = post(info["token_endpoint"].getStr(),
+      $refreshBody(oldRefresh, clientId), "", "")
+    if res.status < 200 or res.status >= 300:
+      return ""
+    answer = parseTokenResponse(res.body.strip())
+  except CatchableError:
+    return ""
+  if not answer.hasKey("refresh_token"):
+    answer["refresh_token"] = %oldRefresh
+  setStoredTokens(home, spec.name, answer)
+  return answer["access_token"].getStr()
+
+proc storedBearerFor(home: string, spec: McpServerSpec,
+    env: Table[string, string], httpPost: HttpPostFn,
+    nowUnix: int64): string =
+  ## 6c bearer resolution for `connectAll` (forward-declared above
+  ## it): a fresh-or-refreshed stored oauth token when the spec names
+  ## no `auth_env`, else "". Never raises and never touches the net
+  ## without both a stored refresh token and its endpoint — homes
+  ## without a token file behave exactly as in 6b.
+  if not spec.oauth or bearerFor(spec, env) != "":
+    return ""
+  result = storedAccessToken(home, spec, nowUnix)
+  if result == "" and httpPost != nil:
+    result = refreshAccessToken(httpPost, home, spec)
+
+proc oauthSignIn*(home: string, spec: McpServerSpec, post: HttpPostFn,
+    get: HttpGetFn, openBrowser: BrowserFn, waitCode: CallbackWaitFn,
+    randInt: RandIntFn): tuple[ok: bool, msg: string, timedOut: bool] =
+  ## The browser flow `build_provider` drove through the SDK, replayed
+  ## here over injected seams: discover, reuse-or-register the client,
+  ## open the browser at the `S256` authorize URL, catch the loopback
+  ## code, exchange it, store both halves. Never raises — every failure
+  ## reads as a triple, like the SDK's `RuntimeError`s read as text in
+  ## `sign_in`. `timedOut` keeps the CLI's special-case message honest
+  ## (the token may still land after the wait gives up).
+  ##
+  ## Divergence: the stored `client_info` also keeps the discovered
+  ## endpoints (the SDK re-discovered per run; persisting them lets a
+  ## later refresh skip the GETs). The `state` check the SDK did
+  ## internally is explicit here: a mismatch fails closed.
+  try:
+    if post == nil or get == nil or openBrowser == nil or
+        waitCode == nil or randInt == nil:
+      raise newException(IOError, "oauth seams are missing")
+    let eps = discoverOAuth(get, spec.url)
+    var clientId = ""
+    let stored = getStoredClientInfo(home, spec.name)
+    if stored != nil and stored.hasKey("client_id") and
+        stored["client_id"].kind == JString and
+        stored["client_id"].getStr().len > 0:
+      clientId = stored["client_id"].getStr()
+    else:
+      if eps.regEndpoint.len == 0:
+        raise newException(IOError, "server '" & spec.name &
+          "' does not advertise dynamic client registration — " &
+          "ask its operator for a client_id")
+      let (cid, csec) = dcrRegister(post, eps.regEndpoint)
+      var info = %*{"client_id": cid,
+        "authorization_endpoint": eps.authEndpoint,
+        "token_endpoint": eps.tokenEndpoint}
+      if csec.len > 0:
+        info["client_secret"] = %csec
+      if eps.regEndpoint.len > 0:
+        info["registration_endpoint"] = %eps.regEndpoint
+      setStoredClientInfo(home, spec.name, info)
+      clientId = cid
+    let verifier = randomToken(64, randInt)
+    let state = randomToken(32, randInt)
+    let url = authorizeUrl(eps.authEndpoint, clientId,
+      pkceChallenge(verifier), state)
+    let opened = openBrowser(url)
+    let target = waitCode(callbackPort, callbackPath,
+      callbackPollAttempts())
+    if target.len == 0:
+      var msg = "timed out waiting for the browser sign-in to come back"
+      if not opened:
+        msg &= "\n  If it does not open: " & url
+      return (false, msg, true)
+    let parsed = parseCallbackTarget(target)
+    if parsed.err.len > 0:
+      return (false, callbackError(parsed.err, parsed.errDesc), false)
+    if parsed.status != 200 or parsed.code.len == 0:
+      raise newException(IOError,
+        "sign-in response had no code — try again")
+    if parsed.state != state:
+      raise newException(IOError,
+        "sign-in state mismatch — not the browser run this client started")
+    let tokens = exchangeCode(post, eps.tokenEndpoint, parsed.code,
+      verifier, clientId)
+    setStoredTokens(home, spec.name, tokens)
+    return (true, "signed in to '" & spec.name & "'", false)
+  except CatchableError as exc:
+    return (false, exc.msg, false)
+
+proc oauthFlowWith*(post: HttpPostFn, get: HttpGetFn,
+    openBrowser: BrowserFn, waitCode: CallbackWaitFn,
+    randInt: RandIntFn): OAuthFlowFn =
+  ## Wrap the real `oauthSignIn` into an `OAuthFlowFn`: the future
+  ## `runMcpCmd` wiring is this one line over the live adapters
+  ## (`liveHttpPost`, `liveHttpGet`, `openBrowserLive`,
+  ## `waitCallbackLive`, `liveRandInt`).
+  result = proc(home: string,
+      spec: McpServerSpec): tuple[ok: bool, msg: string,
+      timedOut: bool] {.closure.} =
+    oauthSignIn(home, spec, post, get, openBrowser, waitCode, randInt)

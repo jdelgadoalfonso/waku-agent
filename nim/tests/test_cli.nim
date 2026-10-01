@@ -5,6 +5,7 @@
 
 import std/os
 import std/strutils
+import std/tables
 import std/unittest
 
 import db_connector/db_sqlite
@@ -14,6 +15,7 @@ import ../src/client
 import ../src/config
 import ../src/db
 import ../src/integrations
+import ../src/mcp
 import ../src/memory
 import ../src/providers
 import ../src/waku
@@ -230,4 +232,60 @@ suite "phase 6b mcp dispatch":
     assert runCommand(@["mcp", "login"]) == 1
     assert runCommand(@["mcp", "bogus", "extra", "args"]) == 1
     restoreEnv(saved)
+    removeDir(home)
+
+## Phase 6c wiring: `runMcpCmd` passes `oauthFlowWith` over the live
+## adapters, so an oauth login reaches the browser flow instead of the
+## honest no-seam refusal. Offline only: the flow below is the exact
+## `oauthFlowWith` constructor the binary passes, over recorded seams
+## (no socket, no browser, no clock) — the live adapters are never
+## called here.
+
+suite "phase 6c oauth wiring":
+  test "oauthFlowWith over recorded seams signs in without the seam error":
+    let home = freshHome("waku-cli-oauth-wired")
+    writeFile(home / "mcp.json", """{"servers": [
+      {"name": "o", "url": "https://rs.example/mcp", "oauth": true}]}""")
+    let get: HttpGetFn = proc(url, bearer: string): tuple[status: int,
+        body: string] {.closure.} =
+      if url.endsWith("/.well-known/oauth-protected-resource/mcp"):
+        return (200,
+          """{"authorization_servers": ["https://idp.example"]}""")
+      if url == "https://idp.example/.well-known/oauth-authorization-server":
+        return (200,
+          """{"authorization_endpoint": "https://idp.example/authorize",
+          "token_endpoint": "https://idp.example/token",
+          "registration_endpoint": "https://idp.example/register"}""")
+      return (404, "{}")
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      if url == "https://idp.example/register":
+        return HttpResult(status: 201,
+          body: """{"client_id": "cid123"}""", sessionId: "")
+      assert url == "https://idp.example/token"
+      return HttpResult(status: 200,
+        body: """{"access_token": "tok"}""", sessionId: "")
+    var browserUrl = ""
+    let browser: BrowserFn = proc(url: string): bool {.closure.} =
+      browserUrl = url
+      return true
+    let wait: CallbackWaitFn = proc(port: int, path: string,
+        maxAttempts: int): string {.closure.} =
+      var state = ""
+      let q = browserUrl.split('?')
+      if q.len > 1:
+        for part in q[1].split('&'):
+          if part.startsWith("state="):
+            state = part[6 .. ^1]
+      return "/callback?code=authcode123&state=" & state
+    let rng: RandIntFn = proc(maxExclusive: int): int {.closure.} =
+      7 mod maxExclusive
+    var env = initTable[string, string]()
+    let flow = oauthFlowWith(post, get, browser, wait, rng)
+    let (ok, msg) = mcpLogin(home, "o", env, nil, nil, 1700000000'i64,
+      30.0, flow)
+    assert ok
+    assert "unknown account" in msg
+    assert "OAuthFlowFn" notin msg
+    assert browserUrl.startsWith("https://idp.example/authorize?")
     removeDir(home)

@@ -254,7 +254,8 @@ proc runMcpCmd*(argv: seq[string]): int =
         proc(spec: McpServerSpec): ExchangeFn {.closure.} =
           startStdioExchange(spec.command, spec.args, spec.env)
       let (ok, msg) = mcpLogin(home, argv[1], env, livePost,
-        liveFactory, nowUnix)
+        liveFactory, nowUnix, oauthFlow = oauthFlowWith(liveHttpPost,
+          liveHttpGet, openBrowserLive, waitCallbackLive, liveRandInt))
       echo msg
       return if ok: 0 else: 1
     except ValueError as exc:
