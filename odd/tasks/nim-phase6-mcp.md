@@ -59,22 +59,36 @@ dispatch llega con la unidad que lo necesite); cambiarlo rompería
 - Surfaces: `nim/src/mcp.nim` (nuevo) + `nim/tests/test_mcp.nim`
   (nuevo). `waku.nim` intacto. Frontend intacto. Evals intactos.
 
-## 6b — HTTP streamable + `waku mcp` CLI (siguiente)
+## 6b — HTTP streamable + `waku mcp` CLI (HECHO, sin commits)
 - POST `initialize` + `tools/list` + `tools/call` contra `url` con
   `Mcp-Session-Id`, `Authorization: Bearer` desde `authEnv` (tabla
   env, nunca el secreto en `mcp.json`), y el `authHint` de 6a ante
   401; el SSE-stream de respuesta se parsea si el servidor lo usa
-  (el viejo HTTP+SSE queda sin soporte, como en Python).
-- Seam `HttpPostFn` propio (localhost stub en tests, patrón phase
-  3e) + bridge `connectAll` (un servidor malo no tumba al resto,
-  retry tras primer sign-in, `deadline` ×2 como Python).
-- CLI `mcp` (`mcp_cli.py`): `list` (qué hay + quién eres), `login`
-  (olvida el token y reconecta), `logout` (borra el fichero);
-  identidad desde claims JWT sin verificar (es tu propia
-  credencial descrita de vuelta, no un token en quien confiar) +
-  texto de expiración (`42m left` / `3h left` / `expired, refreshes
-  on next use`); `home` por parámetro, ficheros reales solo bajo
-  `tmp` en tests.
+  (`extractJsonResponse`: último `data:` no vacío, `[DONE]` salteado;
+  el viejo HTTP+SSE queda sin soporte, como en Python).
+- Seam `HttpPostFn` propio (`url/body/sessionId/bearer` →
+  `status/body/sessionId`; fakes grabados en tests, nunca socket;
+  `liveHttpPost` con `std/httpclient` jamás llamado en tests,
+  patrón phase 3e) + bridge `connectAll` (un servidor malo no tumba
+  al resto, retry una vez cuando aparece el token tras el primer
+  fallo, `connectionDeadline` ×2 o `signInTimeout + 60` con oauth sin
+  token, como `_deadline`). `connectError` levanta la puerta 6a:
+  remoto válido → `""`.
+- CLI `mcp` (`mcp_cli.py`): `list` (qué hay + quién eres),
+  `login` (olvida el token y reconecta), `logout` (borra el fichero);
+  identidad desde claims JWT sin verificar (`decodeClaims` +
+  `mcpIdentity`, `nowUnix` por parámetro) + texto de expiración
+  (`42m left` / `3h left` / `expired, refreshes on next use`);
+  `home` por parámetro, ficheros reales solo bajo `tmp` en tests.
+  `login` con `oauth` da error honesto que nombra 6c (sin
+  DCR/PKCE/callback/storage todavía). `waku.nim` SOLO suma el
+  dispatch `mcp` (`runMcpCmd`); el resto de stubs 4e queda intacto.
+- Tests: `test_mcp.nim` +17 (bearer/session round-trip, SSE,
+  401→hint vía bridge, call/nil, skip-con-warning, auth_env sin
+  hint, retry tras sign-in, deadline ×2/margen, registry http con
+  nombre original, claims/identidad/list/logout/login-6c/login-
+  bridge) y `test_cli.nim` +4 (list vacío, logout, login
+  unknown/oauth, shape sin stub). `nimble test` verde, 0 warnings.
 
 ## 6c — OAuth browser flow (última)
 - DCR + PKCE + callback loopback `127.0.0.1:41765` (`std/net`,
@@ -101,6 +115,10 @@ dispatch llega con la unidad que lo necesite); cambiarlo rompería
   single-thread).
 - `waku.nim` intacto hasta que 6b traiga el bridge: el pin 4e sigue
   verde y el `mcp` del CLI sigue diciendo not-yet-implemented.
+- 6b cablea SOLO `mcp` en `waku.nim` (`runMcpCmd`: list/login/logout;
+  login oauth → error que nombra 6c): el resto de stubs 4e sigue
+  intacto y `test_cli.nim` lo pinna (el shape erróneo de `mcp` da 1,
+  ya no 0 de stub).
 
 ## Divergencias con Python (motivo)
 - Spec sin `url` ni `command` → frase con el nombre en vez del
@@ -111,6 +129,22 @@ dispatch llega con la unidad que lo necesite); cambiarlo rompería
   irrelevante sin SDK.
 - `connectError` remoto honesto en vez de conectar: 6a no abre
   sockets; el 501-honesto es patrón de fase 8, no invención.
+  (6b levanta la puerta: remoto válido → `""`; el test 6a de
+  aplazamiento pasa a assert de puerta abierta.)
+- `connectionDeadline` se calcula pero no se espera: Python aguarda en
+  un bridge asyncio (`fut.result(deadline)`); el port es síncrono,
+  los fakes son instantáneos y el vivo lleva su propio timeout de
+  30s. Misma cifra observable, sin espera inventada.
+- `connectAll` valida upfront (`validateSpec`) en vez de ramificar
+  por tipo de excepción (`ValueError` sin hint): mismos warnings
+  observables, sin depender de que un fallo del servidor sea o no
+  `ValueError`.
+- `mcpLogin` no-oauth reporta el bridge (tools vs warnings): el
+  chequeo Python por fichero-token es oauth-shaped y haría fallar
+  siempre a key/stdio, que nunca escriben uno. OAuth reserva ese
+  chequeo para 6c.
+- `sanitizeServerName` ASCII (Python `isalnum` acepta Unicode): los
+  nombres son claves de config.
 - README de `nim/` sin actualizar (dice "MCP ... are not [ported]"):
   sigue siendo verdad a falta de 6b/6c; se actualiza al cerrar fase
   (regla 9, diferido con motivo, no olvido).
