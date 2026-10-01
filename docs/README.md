@@ -38,6 +38,7 @@ into four groups.
 | [commands.md](commands.md) | every `waku` and `make` command |
 | [evals.md](evals.md) | the two kinds of eval, the Docker tier, the release gate, traces and spend |
 | [roadmap.md](roadmap.md) | what is live, what is still a skeleton, upgrade paths |
+| [nim-port-design.md](nim-port-design.md) | the Nim port: one binary, same `.waku/`, and the phase list with its gates |
 
 ## Whiteboards
 
