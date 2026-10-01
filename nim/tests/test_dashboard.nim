@@ -34,7 +34,8 @@ proc testDeps(home, staticDir: string): DashboardDeps =
     today: "2026-10-01", nowIso: "2026-10-01T00:00:00+00:00",
     dotenvPath: "", hostOs: "linux",
     chatFn: nil, chatStreamFn: nil, graphStreamFn: nil, voiceFn: nil,
-    sessionFn: nil, revealProbe: nil, revealOpen: nil, store: nil,
+    sessionFn: nil, revealProbe: nil, revealOpen: nil, raceFn: nil,
+    judgeFn: nil, store: nil,
     probes: initTable[string, ProbeFn](), providerProbe: nil,
     rebuild: nil, gatewayReload: nil, gatewayStatus: nil)
 
@@ -874,17 +875,16 @@ suite "phase 8b POST route surface":
         assert status == 200, r
     removeDir(root)
 
-  test "arena POST routes stay honest 501s until 8c/8d":
+  test "8d arena POST routes stay honest 501s (8c compare is real now)":
     let root = freshDir("waku-dash-arena501")
     createDir(root / "static")
     var d = testDeps(root, root / "static")
-    for r in ["/api/compare/clear", "/api/compare/regrade",
-        "/api/compare/delete_run", "/api/judgment-arena/key",
+    for r in ["/api/judgment-arena/key",
         "/api/memory-arena/clean"]:
       let (status, _, body) = handlePost(d, r, "{}")
       assert status == 501, r
       assert r in body
-    for r in ["/api/compare/stream", "/api/judgment-arena/stream",
+    for r in ["/api/judgment-arena/stream",
         "/api/memory-arena/stream"]:
       let (handled, frames) = collectFrames(d, r, "{}")
       assert handled, r
@@ -901,13 +901,13 @@ suite "phase 8b POST route surface":
     removeDir(root)
 
 suite "phase 8a pinned-but-later GET branches":
-  test "arena GETs are honest 501s, never the SPA shell":
+  test "8d arena GETs are honest 501s, never the SPA shell":
     let root = freshDir("waku-dash-get501")
     let web = root / "static"
     createDir(web)
     writeFile(web / "index.html", "<html></html>")
     var d = testDeps(root, web)
-    for r in ["/api/compare/history", "/api/judgment-arena",
+    for r in ["/api/judgment-arena",
         "/api/memory-arena", "/api/memory-arena/stores"]:
       let (status, ctype, body) = handleGet(d, r)
       assert status == 501, r
@@ -966,6 +966,89 @@ suite "phase 8b server loop":
     assert reconciled
     assert shutdown
     assert servedPort == srv.port
+    removeDir(root)
+
+suite "phase 8c compare wiring":
+  test "history is a real GET inside the pinned surface":
+    assert "/api/compare/history" in readGetRoutes()
+    for r in readGetRoutes():
+      assert r in pythonPinnedGet
+    for r in readPostRoutes():
+      assert r in pythonPinnedPost
+
+  test "history answers 200 with the repriced shape on an empty home":
+    let root = freshDir("waku-dash-chist")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    let (status, ctype, body) = handleGet(d, "/api/compare/history")
+    assert status == 200
+    assert ctype == "application/json"
+    let node = parseJson(body)
+    assert node["runs"].len == 0
+    assert node["aggregate"].len == 0
+    removeDir(root)
+
+  test "clear, regrade and delete_run answer 200 on an empty home":
+    let root = freshDir("waku-dash-cpost")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    for r in ["/api/compare/clear", "/api/compare/regrade",
+        "/api/compare/delete_run"]:
+      let (status, _, body) = handlePost(d, r, "{}")
+      assert status == 200, r
+      assert parseJson(body)["runs"].len == 0, r
+    removeDir(root)
+
+  test "a stored race round-trips through clear and delete":
+    let root = freshDir("waku-dash-chist2")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    d.nowIso = "2026-10-01T00:00:00+00:00"
+    d.raceFn = proc(message: string, specs: seq[string],
+                     emit: SseEmit): JsonNode =
+      var outp = newJArray()
+      outp.add(%*{"spec": "a:m", "provider": "a", "model": "m",
+        "reply": "done", "tokens_in": 10, "tokens_out": 5})
+      outp
+    let (_, frames) = collectFrames(d, "/api/compare/stream",
+      """{"message": "hi", "models": ["a:m"]}""")
+    assert frames.len == 1
+    assert frameKind(frames[0]) == "done"
+    let hist = parseJson(handleGet(d, "/api/compare/history")[2])
+    assert hist["runs"].len == 1
+    assert hist["runs"][0]["ts"].getStr() ==
+      "2026-10-01T00:00:00+00:00"
+    let ts = hist["runs"][0]["ts"].getStr()
+    let del = parseJson(handlePost(d, "/api/compare/delete_run",
+      $(%*{"ts": ts}))[2])
+    assert del["runs"].len == 0
+    removeDir(root)
+
+  test "compare/stream validates before racing":
+    let root = freshDir("waku-dash-cstream")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    var raced = false
+    d.raceFn = proc(message: string, specs: seq[string],
+                     emit: SseEmit): JsonNode =
+      raced = true
+      newJArray()
+    let (_, frames) = collectFrames(d, "/api/compare/stream",
+      """{"message": "", "models": []}""")
+    assert frames.len == 1
+    assert "message and models required" in frames[0]
+    assert not raced
+    removeDir(root)
+
+  test "compare/stream without a runner is an honest done error":
+    let root = freshDir("waku-dash-cstreamnil")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    let (handled, frames) = collectFrames(d, "/api/compare/stream",
+      """{"message": "hi", "models": ["a:m"]}""")
+    assert handled
+    assert frames.len == 1
+    assert "not wired" in frames[0]
     removeDir(root)
 
   test "a busy block fails fast without serving":

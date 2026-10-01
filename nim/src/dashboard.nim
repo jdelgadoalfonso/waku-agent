@@ -11,10 +11,12 @@
 ## `/api/voice`, the SSE streams (`/api/chat/stream`, `/api/graph/stream`)
 ## and the server loop (port walk, gateway lifecycle, accept loop).
 ##
-## Deliberately OUT (units 8c/8d): the compare POSTs (`clear`, `regrade`,
-## `delete_run`), the judgment-arena key/stream and memory-arena
-## clean/stream POSTs, `/api/compare/history` and both arena GETs. Pinned
-## but later routes answer an honest 501 (GET/POST) or a terminal
+## Unit 8c owns the compare arena through `arena.nim` (the store, the
+## reprice-at-read scoreboard, the race/judge seams): GET
+## `/api/compare/history` plus POST `clear` / `regrade` / `delete_run` /
+## `compare/stream`. Deliberately OUT (unit 8d): the judgment-arena
+## key/stream and memory-arena clean/stream POSTs and both arena GETs.
+## Pinned but later routes answer an honest 501 (GET/POST) or a terminal
 ## done-error frame (streams) — never the SPA shell as data.
 ##
 ## Like 8a, every handler stays pure dispatch over injected deps: the
@@ -53,6 +55,7 @@ import std/times
 import db_connector/db_sqlite
 
 import ./app
+import ./arena
 import ./catalog
 import ./client
 import ./config
@@ -66,6 +69,8 @@ import ./triage
 import ./wire
 
 export catalog.FetchFn
+## The SSE event type lives in `arena.nim` so the race pipeline shares it.
+export arena.SseEmit
 
 const
   defaultHost* = "127.0.0.1"
@@ -125,8 +130,6 @@ const
     ## a SUBSET; the arena entries stay honest 501s until 8c/8d.
 
 type
-  SseEmit* = proc(kind: string, ev: JsonNode) {.closure.}
-    ## One harness event into an SSE stream (`chat_stream`'s `emit`).
   ChatFn* = proc(message: string): JsonNode {.closure.}
     ## One non-streaming turn (`chat`): the final done payload.
   ChatStreamFn* = proc(message: string, emit: SseEmit) {.closure.}
@@ -138,6 +141,12 @@ type
   SessionFn* = proc(payload: JsonNode): JsonNode {.closure.}
     ## The agent-touching half of `session_action` (new/switch against
     ## the live `Waku`); history stays a direct db read.
+  RaceFn* = arena.RaceFn
+    ## One model race behind `/api/compare/stream` (nil until a harness
+    ## runner exists — the honest done error, like the unwired graph).
+  JudgeFn* = arena.JudgeFn
+    ## One referee grade behind `regrade` and judged races (nil until a
+    ## judge backend exists).
   RevealProbeFn* = proc(name: string): bool {.closure.}
     ## `shutil.which` seam: is this editor CLI on PATH?
   RevealOpenFn* = proc(argv: seq[string]) {.closure.}
@@ -180,6 +189,8 @@ type
     graphStreamFn*: GraphStreamFn
     voiceFn*: VoiceFn
     sessionFn*: SessionFn
+    raceFn*: RaceFn
+    judgeFn*: JudgeFn
     revealProbe*: RevealProbeFn
     revealOpen*: RevealOpenFn
     store*: HealthStore
@@ -199,18 +210,21 @@ type
     deps*: DashboardDeps
 
 proc readGetRoutes*(): seq[string] =
-  ## The served GET API surface (8a reads + the 8b `reveal` side effect).
-  ## Each MUST be in `pythonPinnedGet` (there is a test); arena reads
-  ## (`compare/history`, both arenas) arrive with their own units.
-  @["/api/data", "/api/models", "/api/events", "/api/reveal"]
+  ## The served GET API surface (8a reads + the 8b `reveal` side effect +
+  ## the 8c compare history). Each MUST be in `pythonPinnedGet` (there is
+  ## a test); both arena GETs arrive with 8d.
+  @["/api/data", "/api/models", "/api/events", "/api/reveal",
+    "/api/compare/history"]
 
 proc readPostRoutes*(): seq[string] =
-  ## The 8b POST API surface (JSON routes; streams dispatch separately
-  ## via `handleStream`). Each MUST be in `pythonPinnedPost` (there is a
-  ## test); the arena POSTs arrive with 8c/8d.
+  ## The served POST API surface (8b routes + the 8c compare trio; streams
+  ## dispatch separately via `handleStream`). Each MUST be in
+  ## `pythonPinnedPost` (there is a test); the 8d arena POSTs arrive later.
   @["/api/chat", "/api/memory", "/api/settings", "/api/query",
     "/api/session", "/api/pin", "/api/connections",
-    "/api/connections/test", "/api/providers", "/api/voice"]
+    "/api/connections/test", "/api/providers", "/api/voice",
+    "/api/compare/clear", "/api/compare/regrade",
+    "/api/compare/delete_run"]
 
 proc contentTypeFor*(name: string): string =
   ## Port of `STATIC_TYPES.get(target.suffix, "application/octet-stream")`.
@@ -472,11 +486,15 @@ proc handleGet*(d: DashboardDeps, target: string): (int, string, string) =
     return serveIndex(d.staticDir)
   if path.startsWith("/static/"):
     return serveStatic(d.staticDir, path)
+  if path == "/api/compare/history":
+    # The 8c scoreboard: repriced history + aggregate over the arena's own
+    # log (never state.db), via the `arena.nim` store.
+    return (200, "application/json",
+      $historyResponse(loadRuns(d.home), d.providers))
   if path.startsWith("/api/"):
-    # A pinned-but-later GET (arenas, compare/history): honest 501, not
-    # a silent index render — the browser must not mistake the SPA shell
-    # for data.
-    if path in pythonPinnedGet or path == "/api/compare/history":
+    # A pinned-but-later GET (the 8d arenas): honest 501, not a silent
+    # index render — the browser must not mistake the SPA shell for data.
+    if path in pythonPinnedGet:
       return (501, "application/json",
         $ %*{"error": "not yet implemented in the Nim port: " & path})
     return (404, "application/json", $ %*{"error": "unknown api path"})
@@ -983,12 +1001,27 @@ proc streamGraph*(d: DashboardDeps, payload: JsonNode,
   except CatchableError as exc:
     emit("done", %*{"error": errorText(exc)})
 
+proc streamCompare*(d: DashboardDeps, payload: JsonNode,
+                     emitFrame: proc(frame: string) {.closure.}) =
+  ## Port of the `/api/compare/stream` branch: the 8c race as SSE frames
+  ## while the models run, a terminal `done` at the end, and a terminal
+  ## `done` error when the race raises (never a 500). The clock override
+  ## keeps stubbed races deterministic in tests.
+  proc emit(kind: string, ev: JsonNode) =
+    emitFrame(sseFrame(kind, ev))
+  let ts = if d.nowIso.len > 0: d.nowIso else: ""
+  try:
+    compareStreamRun(d.home, payload, d.providers, d.raceFn, d.judgeFn,
+      judgeDisplayName(payload, d.env), ts, emit)
+  except CatchableError as exc:
+    emit("done", %*{"error": errorText(exc)})
+
 proc handleStream*(d: var DashboardDeps, target, body: string,
                    emitFrame: proc(frame: string) {.closure.}): bool =
   ## SSE dispatch. True when `target` is a stream route (frames were — or
   ## will be — emitted); false for everything else, which belongs to
-  ## `handlePost`. Later-unit streams (compare, judgment, memory arenas)
-  ## emit one terminal done-error frame: the SSE shape of the 501.
+  ## `handlePost`. Later-unit streams (judgment, memory arenas) emit one
+  ## terminal done-error frame: the SSE shape of the 501.
   if target == "/api/chat/stream":
     var payload: JsonNode
     try:
@@ -1009,7 +1042,17 @@ proc handleStream*(d: var DashboardDeps, target, body: string,
       return true
     streamGraph(d, payload, emitFrame)
     return true
-  if target in ["/api/compare/stream", "/api/judgment-arena/stream",
+  if target == "/api/compare/stream":
+    var payload: JsonNode
+    try:
+      payload = parseJson(if body.len > 0: body else: "{}")
+    except JsonParsingError as exc:
+      emitFrame(sseFrame("done",
+        %*{"error": "invalid JSON: " & exc.msg}))
+      return true
+    streamCompare(d, payload, emitFrame)
+    return true
+  if target in ["/api/judgment-arena/stream",
       "/api/memory-arena/stream"]:
     emitFrame(sseFrame("done", %*{"error":
       "not yet implemented in the Nim port: " & target}))
@@ -1057,8 +1100,16 @@ proc handlePost*(d: var DashboardDeps, target,
       return (200, "application/json", $connectionsTest(d, payload))
     if target == "/api/providers":
       return (200, "application/json", $providersApply(d, payload))
-    if target in ["/api/compare/clear", "/api/compare/regrade",
-        "/api/compare/delete_run", "/api/judgment-arena/key",
+    if target == "/api/compare/clear":
+      return (200, "application/json", $compareClear(d.home))
+    if target == "/api/compare/regrade":
+      return (200, "application/json",
+        $compareRegrade(d.home, payload, d.providers, d.judgeFn))
+    if target == "/api/compare/delete_run":
+      return (200, "application/json",
+        $compareDeleteRun(d.home, jsonStr(payload.jget("ts")),
+          d.providers))
+    if target in ["/api/judgment-arena/key",
         "/api/memory-arena/clean"]:
       return (501, "application/json", $ %*{"error":
         "not yet implemented in the Nim port: " & target})
@@ -1418,7 +1469,8 @@ proc buildDashboardDeps*(providers: seq[Provider], settings: Settings,
     dotenvPath: dotenvPath, hostOs: "", chatFn: liveChatFn(box),
     chatStreamFn: liveChatStreamFn(box), graphStreamFn: nil, voiceFn: nil,
     sessionFn: liveSessionFn(box), revealProbe: nil, revealOpen: nil,
-    store: nil, probes: initTable[string, ProbeFn](),
+    raceFn: nil, judgeFn: nil, store: nil,
+    probes: initTable[string, ProbeFn](),
     providerProbe: nil, rebuild: nil, gatewayReload: nil,
     gatewayStatus: nil)
 
