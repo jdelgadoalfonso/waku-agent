@@ -53,23 +53,58 @@ con la unidad que duena el live loop); cambiarlo rompería
   intacto. Evals intactos. `nimble test` verde, 0 warnings, 591 OK
   (562 + 29), EXIT=0.
 
-## 7b — discord + whatsapp (PENDIENTE)
-- Discord (`discord.py`): `should_answer` tal cual (deny-by-default,
-  `allowed_channels` vacío = ningún canal), `_strip_mention`
-  (`<@id>`/`<@!id>`), `TurnBudget` (techo/hora con `now` por
-  parámetro), `describe_posture` (4 líneas verbatim). Envío por seam
-  REST (`POST /channels/{id}/messages` con `Authorization: Bot …`);
-  el receive por gateway WebSocket NO se portea: sin SDK, el socket
-  vivo queda para 7d (o proceso externo); los tests pinnarán policy +
-  shapes REST con fakes.
-- WhatsApp (`whatsapp.py`): verificación GET (`hub.mode`/
-  `hub.verify_token`/`hub.challenge`), firma POST `X-Hub-Signature-256`
-  (HMAC-SHA256: reutilizar `sha256Hex` de `mcp.nim` + pads
-  inner/outer, nuevo `hmacSha256Hex` puro pinnado por vector RFC),
-  parse del payload (`entry/changes/value/messages`, `from`/`text`,
-  allowlist de teléfono, 200 rápido siempre), envío por seam contra
-  Graph API (`/{phone_number_id}/messages`). El `ThreadingHTTPServer`
-  vivo queda para 7d.
+## 7b — discord + whatsapp (HECHO, sin commits)
+- Discord `nim/src/discord.nim` (nuevo): `parseDiscordIds` (twin de
+  `parseAllowedIds`, duplicado como Python duplica `_ids` por fichero)
+  + `parseRequireMention` (solo `""`/`"0"` eximen) + `parseTurnCap`
+  (`ValueError` como `int()`) + `shouldAnswer` (deny-by-default
+  verbatim: `allowed_channels` vacío = ningún canal) + `stripMention`
+  (ambas formas `<@id>`/`<@!id>`) + `DiscordBudget`/`newDiscordBudget`/
+  `budgetAllow` (`now` requerido) + `describePosture` (4 líneas
+  verbatim) + envío por seam REST (`discordMessageUrl`,
+  `buildDiscordBody`, `sendDiscordText` con `true` en 2xx) +
+  `liveDiscordPost` (`Authorization: Bot …`, jamás en tests) +
+  `receiveDiscordEvent` (seam honesto: raise nombrando 7d) + const
+  `discordEnvFields` (token primero, para el `isConfigured` de 7d).
+  El receive por gateway WebSocket NO se portea: sin SDK, el socket
+  vivo queda para 7d (o proceso externo).
+- WhatsApp `nim/src/whatsapp.nim` (nuevo): `hmacSha256Hex` (pads RFC
+  2104 sobre `sha256Digest` de `mcp.nim`, sin duplicar SHA-256;
+  pinnado por vectores RFC 4231 casos 1+2 más tres casos cruzados con
+  el `hmac` de Python) + `signaturesEqual` (port de
+  `compare_digest`) + `whatsappSignature` (`sha256=` + hex) +
+  `verifyWhatsappSignature` + `verifyWhatsapp` (200 con challenge /
+  403 `forbidden` / 404) + `parseWhatsappMessages`
+  (`entry/changes/value/messages`, skip sin texto) +
+  `isWhatsappAllowed` (un teléfono) + `handleWhatsappPost` (404/403/
+  400 y 200 rápido siempre con los mensajes allowlistados) + envío
+  por seam Graph API (`graphMessageUrl` v21.0, `buildWhatsappBody`,
+  `sendWhatsappText`) + `liveWhatsappPost` (Bearer, jamás en tests)
+  + `serveWhatsappWebhook` (seam honesto 7d) + const
+  `whatsappEnvFields`. El `ThreadingHTTPServer` vivo queda para 7d.
+- Tests: `nim/tests/test_chat_gateways.nim` nuevo, 38 (discord 20:
+  6 policy + 4 mention/budget + 6 posture/env + 4 wire; whatsapp 18:
+  6 hmac + 4 verify/fields + 5 post + 3 wire). Fichero propio en vez
+  de extender `test_gateway.nim`: ya cubría 3 concerns (29 tests) y
+  dos gateways más lo llevaban past 60; discord+whatsapp forman una
+  unidad coherente (policy chat + seams REST + HMAC webhook) y 7c/7d
+  tendrán el suyo. TDD: RED observado con stubs (cayó además un JSON
+  mal balanceado en un test propio) → GREEN → refactor.
+- Divergencias 7b (motivo): `budgetAllow` exige `now` (Python
+  defaultea a `time.time()`): determinismo; el vivo pasa `epochTime()`.
+  `DiscordHttpFn`/`WhatsappHttpFn` devuelven status `int`, no body:
+  el éxito es 2xx y el 429/throttling es outcome `false` (telegram
+  devuelve body porque su contrato es el flag `ok`). REST Discord
+  hand-rolled (`/api/v10`): el SDK lo esconde; el shape es la
+  superficie documentada, como el Bot API en 7a. HMAC reutiliza
+  `sha256Digest` (solo pads + hex locales: `sha256Hex` hashea
+  strings, no bytes). `handleWhatsappPost` devuelve
+  `(status, body, messages)`: el 200 rápido y los turnos 7d salen de
+  una sola decisión pura.
+- Surfaces: `nim/src/discord.nim` + `nim/src/whatsapp.nim` +
+  `nim/tests/test_chat_gateways.nim` (nuevos). `waku.nim` intacto.
+  Frontend intacto. Evals intactos. `nimble test` verde, 0 warnings,
+  629 OK (591 + 38), EXIT=0.
 
 ## 7c — voice texto+comandos, STT/TTS como seams honestos (PENDIENTE)
 - Puro y testeable (`voice.py`): `_speakable` (strip emoji + marcas
@@ -145,5 +180,5 @@ con la unidad que duena el live loop); cambiarlo rompería
   posturas verbatim, `ok:false` sin raise, rollback del supervisor con
   env deseado restaurado; `waku telegram|discord|whatsapp|voice` con
   paridad Python salvo loops vivos documentados.
-- Pendiente tras 7a: 7b (discord+whatsapp), 7c (voice con seams
-  honestos), 7d (loops vivos + dispatch + hookup dashboard).
+- Pendiente tras 7b: 7c (voice con seams honestos), 7d (loops vivos
+  + dispatch + hookup dashboard).
