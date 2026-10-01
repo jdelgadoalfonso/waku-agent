@@ -31,13 +31,48 @@ unidad que lo necesite); cambiarlo rompería `test_cli.nim`.
 - Surfaces: `nim/src/dashboard.nim` (nuevo) + `nim/tests/test_dashboard.nim`
   (nuevo). `waku.nim` intacto. Frontend intacto.
 
-## 8b — mutaciones + live server (PENDIENTE)
-- POST `/api/chat`, `/api/memory`, `/api/settings`, `/api/query`,
-  `/api/session`, `/api/pin`, `/api/connections`, `/api/connections/test`,
-  `/api/providers`, más `/api/reveal` (side effect: abre el editor).
-- Streams SSE (`/api/chat/stream`, `/api/graph/stream`) y voz (`/api/voice`).
-- El loop servidor (puerto walk 7777+10, supervisor gateways) y el dispatch
-  `dashboard` en `waku.nim`.
+## 8b — mutaciones + live server (HECHO, sin commits)
+- POST JSON vía `handlePost(deps, target, body)`: `/api/chat` (`chat` →
+  `chatFn`), `/api/memory` (`memory_action`), `/api/settings`
+  (`apply_settings`), `/api/query` (`run_query`), `/api/session`
+  (`session_action`), `/api/pin` (`pin_action`), `/api/connections`
+  (`apply_integration`), `/api/connections/test` (`test_integration`),
+  `/api/providers` (`apply_provider` / `apply_provider_disabled`),
+  `/api/voice` (`transcribe_audio` vía `voiceFn`, blob crudo, no SSE).
+  `/api/reveal` (`reveal_path`) vive en `handleGet` — en Python es GET.
+- Errores como Python: ruta conocida → 200 con `{"error"}` (nunca 500);
+  POST desconocido → 404; JSON roto → 400; arena (8c/8d) → 501 honesto.
+- Streams vía `handleStream(..., emitFrame)` + `sseFrame(kind, ev)`
+  (`data: {...}` con merge `{'kind': kind, **ev}`): `/api/chat/stream`
+  (`chat_stream`), `/api/graph/stream` (`graph_stream`, sin runner →
+  `unknown workflow` honesto); arenas → un frame done-error (el 501 en
+  forma SSE).
+- Server loop: `pickPort` (walk base+10, mensaje de Python con en dash),
+  `prepareDashboard` (host/port desde env, probe inyectado),
+  `defaultServe` (accept loop con `net` stdlib, `Connection: close`),
+  `runDashboardCmd` (warning off-loopback del llamador, URL, reconcile →
+  serve → shutdown en `finally`). Supervisor gateway = seams nil.
+- `waku.nim`: `dashboard` → `runDashboard(dotenvStart, serve)`; el
+  binario sirve (`serve=true`), `runCommand` in-process valida sin
+  sockets (`checkDashboardCmd` con probe libre) — el pin 4e sigue verde.
+- Agente vivo: `WakuBox` perezoso (sin global mutable) tras `chatFn`,
+  `chatStreamFn`, `sessionFn`; `donePayload` compartido por ambas
+  puertas (regla one-implementation de Python); `graphStreamFn` nil
+  (runner de comandos pendiente); `voiceFn` nil (sin backend STT).
+- Tests: `test_dashboard.nim` 22 → 74 (52 nuevos: framing SSE, cada POST
+  happy+error, reveal GET, superficie ⊆ `PINNED_POST`, 501/404 directos
+  de 8a, pickPort/prepare/run con stubs). `nimble test` verde, 0 warnings.
+- Divergencias 8b (motivo): accept loop single-threaded, no
+  `ThreadingHTTPServer` (un usuario local; los polls esperan tras un
+  stream largo — threading es follow-up, no cambio silencioso);
+  `settings_info`/vistas de conexiones en subset (el contrato pinea
+  PATHS, como `/api/data` en 8a); `run_query` abre state.db normal pero
+  la gramática no admite escrituras (equivale al `mode=ro`); `save_skill`
+  solo bajo `home/skills` (skills del repo read-only); episodios Notion
+  → error honesto; `statusOf` sin `warn` (el seam `app` no lo tiene);
+  probes de conexiones sin cablear (apply valida+persiste, test dice
+  `no test available`); slash-commands corren como turnos planos;
+  POST desconocido → 404 con JSON (Python: 404 vacío).
 
 ## 8c — arena de modelos (PENDIENTE)
 - `/api/compare/history` (+ `history_response`: reprice + aggregate),
