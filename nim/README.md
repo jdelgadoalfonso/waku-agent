@@ -112,6 +112,6 @@ Full tool wiring (`build_registry` — the
 registry takes injected tools until the remaining tools land), the memory
 layer (gated retrieval, consolidation, MEMORY.md sync), MCP, the `connect`
 flows, the chat gateways (telegram/discord/whatsapp/
-voice), the dashboard, OTel spans, and the evals. The phase list with its
+voice), OTel spans, and the evals. The phase list with its
 gates lives in
 [docs/nim-port-design.md](../docs/nim-port-design.md).

@@ -76,6 +76,7 @@
 - Phase 5d2 integrations stateful landed sin commitear (health store +
   injected probes + apply/test + cliMain + rewire del dispatch
   `connections`, +45 tests en test_integrations): suite 317 OK, cero warnings.
+- Phase 8 dashboard landed sin commitear (dashboard.nim + arena.nim + memory_arena.nim + cableado en waku.nim, test_dashboard 91 + test_arena 25 + test_memory_arena 48): suite 481 OK, cero warnings.
 - Next: phase 6 (MCP stdio+HTTP+OAuth, hand-rolled sin SDK).
 
 ## Next
