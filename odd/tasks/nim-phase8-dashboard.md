@@ -74,10 +74,37 @@ unidad que lo necesite); cambiarlo rompería `test_cli.nim`.
   `no test available`); slash-commands corren como turnos planos;
   POST desconocido → 404 con JSON (Python: 404 vacío).
 
-## 8c — arena de modelos (PENDIENTE)
-- `/api/compare/history` (+ `history_response`: reprice + aggregate),
-  `/api/compare/clear`, `/api/compare/regrade`, `/api/compare/delete_run`,
-  `/api/compare/stream`.
+## 8c — arena de modelos (HECHO, sin commits)
+- Nuevo `nim/src/arena.nim` (la arena posee la carrera, el dashboard el
+  HTTP/SSE — el espejo del split Python `dashboard.py` → `arena.py`):
+  store `<home>/compare/history.jsonl` (`loadRuns`/`saveRuns`/`appendRun`/
+  `clearRuns`, cap 50, `slim` con reply a 1000, gate aplanada, tools a
+  `[nombres]`), `aggregateRuns`, `history_response` (reprice + aggregate
+  con `rate_in`/`rate_out`/`cutoff`), `compareClear`, `compareDeleteRun`,
+  `compareRegrade` (`only_missing` default true, filtro `spec`, nunca
+  grada error/reply-vacía), `compareStreamRun` (valida → race → grado
+  gentil post-carrera → persiste → `done`; hiccup de historial nunca
+  falla la carrera) + `judgeDisplayName`.
+- Seams: `home` por parámetro, `RaceFn`/`JudgeFn` inyectados, reloj vía
+  `ts` explícito (`nowIso` del dashboard); cero red, tests 100% offline.
+- GET `/api/compare/history` + POST `clear`/`regrade`/`delete_run` +
+  `compare/stream` cableados en `dashboard.nim` (`SseEmit` vive ahora en
+  `arena.nim` y se re-exporta; `RaceFn`/`JudgeFn` como alias + campos
+  `raceFn`/`judgeFn` en `DashboardDeps`, nil en el wiring vivo).
+- Tests: `nim/tests/test_arena.nim` nuevo, 25 (store, slim, aggregate,
+  reprice, clear/delete, regrade filtros, pipeline feliz/errores, judge
+  name); `test_dashboard.nim` 74 → 80 (6 de cableado 8c; los tests 501
+  de 8a/8b recortados a rutas 8d). `nimble test` verde, 0 warnings.
+- Divergencias 8c (motivo): sin harness vivo el `RaceFn` es stub/nil →
+  done-error honesto (precedente: graph sin runner en 8b); `judge_model`
+  viaja opaco al `JudgeFn` (la selección del referee vive en el seam);
+  `tools` ya `[nombres]` pasan tal cual en regrade, se extraen al gradar
+  en stream (ambos como Python); single-threaded, sin `ThreadPoolExecutor`
+  (misma razón que 8b); `fieldOf` en vez de `getOrDefault` (el nil de
+  std/json revienta `$` — gotcha para `gotchas.md` en otra unidad).
+- `test_route_contract.py` intacto: misma superficie (consts PINNED sin
+  tocar, asserts ⊆ verdes en Nim); sus 3 fallos locales son ambientales
+  preexistentes (`No module named 'anthropic'` con y sin este cambio).
 
 ## 8d — memory arena + judgment arena (PENDIENTE)
 - GET `/api/memory-arena`, `/api/memory-arena/stores`, `/api/judgment-arena`;
