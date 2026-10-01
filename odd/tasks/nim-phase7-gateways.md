@@ -106,23 +106,65 @@ con la unidad que duena el live loop); cambiarlo rompería
   Frontend intacto. Evals intactos. `nimble test` verde, 0 warnings,
   629 OK (591 + 38), EXIT=0.
 
-## 7c — voice texto+comandos, STT/TTS como seams honestos (PENDIENTE)
-- Puro y testeable (`voice.py`): `_speakable` (strip emoji + marcas
-  markdown + colapso de espacios), `matches_wake` (norm que conserva
-  kana/CJK, substring + ventana deslizante 0.7, variantes por coma),
-  `_mic_threshold` (`WAKU_MIC_THRESHOLD` por parámetro),
-  `record_command`/`wait_for_speech` como máquinas de estado sobre
-  `SampleFn` inyectado (sin `sounddevice`).
-- Estrategia audio (decisión explícita): faster-whisper (red neuronal
-  Whisper, ~74MB de modelo descargado en el primer run) y kokoro
-  (neural 82M, `KPipeline` + `sounddevice`) NO se portan al binario —
-  romperían binario único, stdlib-only y offline. Quedan como seams
-  `SttFn`/`TtsFn`/`RecordFn`: el binario usará motor externo o dirá en
-  texto qué motor falta (patrón 501-honesto de fase 8 / `oauth` de 6b).
-  `_best_say_voice` y `Mouth.say` (subprocess `say` macOS) tampoco se
-  portan: subprocess en el hot path de voz no pertenece al binario.
+## 7c — voice texto+comandos, STT/TTS como seams honestos (HECHO, sin commits)
+- `nim/src/voice.nim` (nuevo, 614 líneas): `speakable` (`_speakable`
+  con los ocho rangos de `_EMOJI`, marcas markdown, colapso `[ \t]{2,}`,
+  `splitLines` con los once saltos de `str.splitlines` y `pyStrip` con
+  el set de `str.strip`), `normalizeWake` (conserva kana/CJK, deja
+  caer el resto), `similarityRatio` (puerto real del
+  `difflib.SequenceMatcher` de Python: `find_longest_match` con las
+  tres extensiones y recursión por bloques, POR RUNE), `matchesWake`
+  (substring + sin espacios + ventana deslizante 0.7 por variantes
+  separadas por coma), `handsFree` + `voiceConfig` (env como `Table`,
+  nunca `os.environ`) + `wakeLanguage`, `parseMicThreshold`,
+  `rms`, `recordCommand`/`waitForSpeech` (máquinas de estado sobre
+  `SampleFn`), `captureUtterance`/`transcribe`/`speak` (los cuatro
+  seams con error honesto cuando son `nil`), `pushToTalkStep`,
+  `shouldTranscribe`/`scanWake`/`wakeStatus`/`wakeScanEvent` (la
+  decisión del escáner de `wake_loop`), `voiceTurn` (un turno hablado
+  con `RespondFn`/`TtsFn`/`LogFn` de `gateway.nim`) y las líneas de
+  terminal verbatim (`banner`, `readyBanner`, `listeningLine`,
+  `heardLine`, `followupLine`, `tooShortReply`, `noSpeechReply`,
+  `byeLine`).
+- Sin audio, sin red, sin subprocess en tests: el audio entra por
+  `SampleFn`/`RecordFn` y sale por `SttFn`/`TtsFn`; `nil` raisea
+  nombrando el seam y el motor que falta (`faster-whisper`,
+  `kokoro`/`say`, `sounddevice`), patrón 501-honesto de fase 8 /
+  `oauth` de 6b. `_best_say_voice` y el `Mouth.say` de macOS no se
+  portan (subprocess en el hot path); `WAKU_TTS`/`WAKU_VOICE` ni se
+  leen, porque serían un knob para un motor que no existe. `WAKU_VOICE`
+  sí queda documentado aquí como no portado.
+- Tests: `nim/tests/test_voice.nim` nuevo, 46 (speakable 6, wake word
+  8, config/env/líneas 10, máquinas de comando 6, seams 6, decisiones
+  6, turno hablado 4). Fichero propio (no extender
+  `test_chat_gateways.nim`): aquel es la policy de los dos gateways de
+  chat y 7b ya le reservó este hueco a 7c. TDD RED observado con un
+  stub de firmas (37 de 40 en rojo) → GREEN → refactor.
+- Verificación: `nimble test` verde, 0 warnings, 675 OK
+  (629 + 46), EXIT=0. Además un differential contra el ground truth
+  Python de `_speakable`/`matches_wake` sobre 56 casos (emoji,
+  banderas regionales, markdown, NBSP, espacio ideográfico, separadores
+  C0, U+2028/U+0085, kana, CJK, cirílico, acentos combinantes, ZWJ,
+  tonos de piel, tabs, espacios dobles) da salida idéntica byte a
+  byte; ese differential cazó el único bug real del unit (el strip de
+  los C0) y ahora está pineado en el suite.
+- Divergencias 7c (motivo): `similarityRatio` no porta `autojunk`
+  (solo aplica a `b` de 200+ elementos y aquí `b` es una variante
+  corta); `pyStrip` = `str.isspace()` (White_Space + U+001C-U+001F),
+  no `unicode.strip`; `speakable` acumula en float64 (numpy
+  acumula en float32) y un bloque vacío vale 0.0 en vez de NaN (NaN
+  compara false, así que ambos quedan en silencio); el umbral de
+  llamada es un parámetro y no `os.getenv`; `wakeLanguage` devuelve
+  `""` donde Python devuelve `None`; `voiceTurn` deja PROPAGAR un turno
+  fallido (`voice.py` no tiene try/except alrededor de
+  `waku.respond`: es un comando en foreground, no un gateway
+  supervisado, así que no hay error reply que mandar y el accounting
+  de `runGatewayTurn` se queda donde Python lo tiene); `shouldTranscribe`
+  es el gate `<` del escáner expuesto aparte porque `scanWake` recibe
+  la transcripción ya hecha (el loop vivo transcribe solo si el gate
+  pasa).
 
-## 7d — live loops + dispatch (POSIBLE, según tamaño de 7b/7c)
+## 7d — live loops + dispatch (SIGUIENTE, siguiente a 7c)
 - Loops vivos: long-poll telegram (offset + timeout, usa
   `fetchTelegramUpdates`/`nextTelegramOffset`/`classifyTelegram` de
   7a), receive discord, servidor webhook whatsapp, mic loop voice;
@@ -133,6 +175,19 @@ con la unidad que duena el live loop); cambiarlo rompería
   reloader, como `dashboard.py` con `INTEGRATIONS` gateway).
 - `cli.py` no necesita unidad propia: `_memory_snapshot` y `_observer`
   ya viven en `cli.nim` (phase 4e los pinna); el REPL es `runRepl`.
+- Voz en 7d (todo lo que 7c dejó como seam/puro): el `InputStream`
+  persistente y `drain()` detrás de `SampleFn` (un solo stream, nunca
+  uno por fase), el `wake_loop` (ventanas de 2.5s con cola de 0.5s,
+  scout `tiny` →motor grande, `ack`, `followup`, y el
+  `recordCommand`/`waitForSpeech` encadenados con `voiceTurn`), el
+  `main()` push-to-talk con sus dos `input()`, `sessionId = "voice"`,
+  y el motor externo: un `SttFn` sobre un proceso faster-whisper (o
+  el texto honesto si no está), un `TtsFn` sobre un motor externo (o
+  el texto honesto de `ttsSeamMissing`) y el `Ctrl-C` que despide con
+  `byeLine`. Sin hooks del supervisor: en Python la voz es un comando
+  en foreground, no un gateway supervisado (no hay fila de voz en las
+  integraciones), así que no hay `voiceEnvFields` ni entrada en el
+  `reconcile` del dashboard.
 
 ## Decisiones
 - Sin SDK y sin dependencias nuevas (regla 3): el Bot API de Telegram
@@ -180,5 +235,4 @@ con la unidad que duena el live loop); cambiarlo rompería
   posturas verbatim, `ok:false` sin raise, rollback del supervisor con
   env deseado restaurado; `waku telegram|discord|whatsapp|voice` con
   paridad Python salvo loops vivos documentados.
-- Pendiente tras 7b: 7c (voice con seams honestos), 7d (loops vivos
-  + dispatch + hookup dashboard).
+- Pendiente tras 7b+7c: 7d (loops vivos + dispatch + hookup dashboard).
