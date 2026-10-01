@@ -106,10 +106,59 @@ unidad que lo necesite); cambiarlo rompería `test_cli.nim`.
   tocar, asserts ⊆ verdes en Nim); sus 3 fallos locales son ambientales
   preexistentes (`No module named 'anthropic'` con y sin este cambio).
 
-## 8d — memory arena + judgment arena (PENDIENTE)
-- GET `/api/memory-arena`, `/api/memory-arena/stores`, `/api/judgment-arena`;
-  POST `/api/memory-arena/clean`, `/api/memory-arena/stream`,
-  `/api/judgment-arena/key`, `/api/judgment-arena/stream`.
+## 8d — memory arena + judgment arena (HECHO, sin commits)
+- Nuevo `nim/src/memory_arena.nim` (las dos arenas son el mismo shape —
+  runner inyectado + resultados en disco bajo el home + grading puro —
+  así que un solo módulo, no dos; espejo del split Python `dashboard.py`
+  → `arena.py`/`memory_arena.py`/`judgment_arena.py`): scorer puro
+  (`memScore` con sus cuatro outcomes + `certain`, `memScoreboard`
+  worst-first, `renderMemBoard`, `leakedProbes` con `probeAssertsRecall`),
+  naming (`arenaKey`/`arenaPartition`/`arenaHome` bajo `.waku-arena/`),
+  fixtures (`probeFiles`/`probeSets`/`loadFixture`/`resolveTrack`: solo
+  sets ofrecidos, nunca un path del navegador), `arenaModels` (pinned +
+  precio, cheapest-first), `availableBackends` (sqlite + configuradas +
+  control último), `storeContents` (sqlite/control leen de verdad vía
+  `listFacts`; hosted sin runner → error honesto, nunca cero),
+  `cleanStores` (solo `*-key` + partición; hosted sin wipe → error dicho,
+  nunca skip silencioso), judgment (`judgmentContestants`, `checkKey`,
+  board `judgment_arena.jsonl` newest-first, `isRight`/`answerShape`,
+  `judgmentRace`/`memoryRace` validan → seam o done-error).
+- Seams: `home` por parámetro, `MemoryRunFn`/`JudgmentRaceFn`/
+  `HostedListFn`/`HostedWipeFn` inyectados, suites como `JsonNode`
+  inyectado, reloj innecesario (sin timestamps propios); cero red, tests
+  100% offline. `judgment_arena.py` leído como spec: tiers y picks haiku
+  viajan verbatim (test los pinea).
+- GETs + POST `key`/`clean` + ambos streams cableados en `dashboard.nim`
+  (nuevos campos en `DashboardDeps`, nil en el wiring vivo;
+  `memoryExample` resuelve `<repo>/evals/memory_arena.json` en checkout
+  y `""` en binario pelado → `available: false`, shape del wheel).
+- Tests: `nim/tests/test_memory_arena.nim` nuevo, 48 (scorer, board,
+  naming, fixtures, models, backends, contestants, key, board store,
+  `is_right`, pipelines, clean, stores); `test_dashboard.nim` 80 → 91
+  (11 de cableado 8d; los 501 de 8a/8b/8c eliminados — ya no queda
+  ninguna ruta pineada sin implementar). `nimble test` verde, 0 warnings
+  (481 OK total, EXIT=0).
+- Divergencias 8d (motivo): `arenaKey` con FNV-1a-64 propio en vez de
+  SHA-256 (`std/sha1` está deprecado = warning prohibido, `checksums`
+  sería dependencia nueva = AGENTS.md lo prohíbe; misma construcción,
+  homes distintos de Python, aislamiento intacto); refusal matching en
+  ASCII (`toLowerAscii`, lista y fixtures son ASCII); runners dueños de
+  sus logs (el seam emite `done` + persiste; el pipeline solo guarda la
+  puerta); suites inyectadas vacías por defecto (el port de
+  `judgment_cases` es follow-up); fixture-load dentro del try (200 con
+  error, nunca 500 — regla 8b).
+- `test_route_contract.py` intacto: misma superficie; 3 failed + 1 passed
+  idénticos con y sin este cambio (ambientales preexistentes).
+
+## Cierre de fase 8 (las cuatro unidades, sin commits)
+- 8a lecturas + 8b mutaciones/server + 8c arena de modelos + 8d arenas de
+  memoria/juicio: toda ruta pineada (GET y POST, streams incluidos)
+  responde de verdad. Quedan como follow-up explícito: embed del
+  frontend (hoy `staticDir` en disco), server multihilo (single-thread
+  documentado desde 8b), runners vivos (harness de compare/memoria,
+  jueces Jev/LLM, lecturas y wipes hosted — todos seams nil con error
+  honesto), y el port de `judgment_cases` (las 44 cases etiquetadas tras
+  el `JsonNode` inyectado). Frontend intacto en toda la fase.
 
 ## Decisiones
 - Static-en-disco por ahora: `staticDir` apunta al checkout
