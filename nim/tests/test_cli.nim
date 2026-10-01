@@ -187,3 +187,47 @@ suite "phase 5d2 connections dispatch":
         delEnv("TELEGRAM_BOT_TOKEN")
       restoreEnv(saved)
       removeDir(home)
+
+## Phase 6b: `mcp` dispatch is real (list/login/logout); every other
+## later-phase command stays an honest stub (pin 4e). Offline only:
+## tmp homes via `WAKU_HOME`, no subprocess, no socket — the login
+## paths exercised here fail before any transport (unknown server,
+## oauth-needs-6c), and success paths live in `test_mcp.nim` with
+## injected `HttpPostFn` fakes.
+
+suite "phase 6b mcp dispatch":
+  test "mcp with no config lists empty with exit 0":
+    let saved = scrubEnv()
+    let home = freshHome("waku-mcp-cli-empty")
+    putEnv("WAKU_HOME", home)
+    assert runCommand(@["mcp"]) == 0
+    restoreEnv(saved)
+    removeDir(home)
+
+  test "mcp logout of an unknown account exits 0":
+    let saved = scrubEnv()
+    let home = freshHome("waku-mcp-cli-logout")
+    putEnv("WAKU_HOME", home)
+    assert runCommand(@["mcp", "logout", "ghost"]) == 0
+    restoreEnv(saved)
+    removeDir(home)
+
+  test "mcp login on unknown and oauth servers exits 1 without transport":
+    let saved = scrubEnv()
+    let home = freshHome("waku-mcp-cli-login")
+    putEnv("WAKU_HOME", home)
+    writeFile(home / "mcp.json", """{"servers": [
+      {"name": "o", "url": "https://h2/m", "oauth": true}]}""")
+    assert runCommand(@["mcp", "login", "nope"]) == 1
+    assert runCommand(@["mcp", "login", "o"]) == 1
+    restoreEnv(saved)
+    removeDir(home)
+
+  test "mcp with the wrong shape exits 1 (no longer a stub)":
+    let saved = scrubEnv()
+    let home = freshHome("waku-mcp-cli-shape")
+    putEnv("WAKU_HOME", home)
+    assert runCommand(@["mcp", "login"]) == 1
+    assert runCommand(@["mcp", "bogus", "extra", "args"]) == 1
+    restoreEnv(saved)
+    removeDir(home)

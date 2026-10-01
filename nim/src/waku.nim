@@ -20,6 +20,7 @@ import std/os
 import std/strutils
 import std/syncio
 import std/tables
+import std/times
 
 import ./brief
 import ./cli
@@ -29,6 +30,7 @@ import ./dashboard
 import ./db
 import ./gather
 import ./integrations
+import ./mcp
 import ./providers
 import ./skills
 import ./triage
@@ -220,6 +222,47 @@ proc runDashboard(dotenvStart: string, serve: bool): int =
     return serveDashboardCmd(rows, loadSettings(), dp)
   return checkDashboardCmd(rows, loadSettings(), dotenvPath)
 
+proc runMcpCmd*(argv: seq[string]): int =
+  ## Port of `cli_main` in `mcp_cli.py`: `mcp` lists, `mcp login` forgets
+  ## the token and reconnects, `mcp logout` forgets it. `home` comes from
+  ## settings (`WAKU_HOME`), `env` from the process — the helpers take
+  ## both by parameter, so tests pin them via `WAKU_HOME` + tmp homes.
+  ## An `oauth` login refuses honestly naming 6c (no browser flow yet).
+  var env = initTable[string, string]()
+  for key, value in envPairs():
+    env[key] = value
+  let home = loadSettings().home
+  let nowUnix = getTime().toUnix()
+  if argv.len == 0:
+    try:
+      for line in mcpListLines(home, nowUnix):
+        echo line
+      return 0
+    except ValueError as exc:
+      stderr.writeLine(exc.msg)
+      return 1
+  if argv.len == 2 and argv[0] == "logout":
+    let (msg, code) = mcpLogout(home, argv[1])
+    echo msg
+    return code
+  if argv.len == 2 and argv[0] == "login":
+    try:
+      let livePost: HttpPostFn =
+        proc(url, body, sessionId, bearer: string): HttpResult {.closure.} =
+          liveHttpPost(url, body, sessionId, bearer)
+      let liveFactory: StdioFactory =
+        proc(spec: McpServerSpec): ExchangeFn {.closure.} =
+          startStdioExchange(spec.command, spec.args, spec.env)
+      let (ok, msg) = mcpLogin(home, argv[1], env, livePost,
+        liveFactory, nowUnix)
+      echo msg
+      return if ok: 0 else: 1
+    except ValueError as exc:
+      stderr.writeLine(exc.msg)
+      return 1
+  echo "Usage: waku mcp / waku mcp login <name> / waku mcp logout <name>"
+  return 1
+
 proc runCommand*(args: seq[string], dotenvStart = "",
                  serve = false): int =
   ## Dispatch one command line. `dotenvStart` pins the `.env` search for
@@ -250,6 +293,8 @@ proc runCommand*(args: seq[string], dotenvStart = "",
   if args[0] == "skill":  # known subcommand, wrong shape: usage + exit 1, like Python
     writeUsage()
     return 1
+  if args[0] == "mcp":  # phase 6b: real list/login/logout (oauth login names 6c)
+    return runMcpCmd(if args.len > 1: args[1 .. ^1] else: @[])
   if args[0] in cliCommands:  # known but later phase: honest stub
     stderr.writeLine "nim port phase 4: " & args[0] & " not yet implemented"
     return 0

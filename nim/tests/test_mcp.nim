@@ -6,7 +6,9 @@
 ## ever opened; the live `osproc` adapter in `src/mcp.nim` is never
 ## called here. HTTP+OAuth+CLI arrive in 6b/6c.
 
+import std/base64
 import std/json
+import std/os
 import std/strutils
 import std/tables
 import std/unittest
@@ -256,14 +258,317 @@ suite "phase 6a registry mapping":
     assert req["params"]["name"].getStr() == "memory.remember"
 
 suite "phase 6a remote deferral":
-  test "stdio connects clean, remote waits for 6b, invalid explains":
+  test "stdio and valid remote connect clean, invalid explains (6b lifts the gate)":
     assert connectError(stdioSpec(), envOf([])) == ""
     let remote = McpServerSpec(name: "m", url: "https://host/mcp",
       authEnv: "K")
-    let deferred = connectError(remote, envOf([("K", "v")]))
-    assert "6b" in deferred
-    assert "https://host/mcp" in deferred
+    assert connectError(remote, envOf([("K", "v")])) == ""
     var both = stdioSpec()
     both.url = "https://host/mcp"
     assert connectError(both, envOf([])) ==
       "server has both 'url' and 'command' — pick one transport"
+
+## Phase 6b tests: streamable HTTP + bridge + `waku mcp` CLI helpers.
+##
+## Offline only: every HTTP interaction travels through the injected
+## `HttpPostFn` (recorded request/response, never a socket); `home` and
+## `env` travel by parameter; real files live only under `getTempDir()`.
+## The live `liveHttpPost` adapter is never called here.
+
+proc b64url(s: string): string =
+  result = encode(s).replace("+", "-").replace("/", "_")
+  while result.endsWith("="):
+    result = result[0 .. ^2]
+
+proc jwtWith(payload: string): string =
+  "h." & b64url(payload) & ".s"
+
+proc freshTmpHome(name: string): string =
+  result = getTempDir() / name
+  if dirExists(result):
+    removeDir(result)
+  createDir(result)
+
+proc writeTokenFile(home, server, payload: string) =
+  let dir = home / "mcp-auth"
+  createDir(dir)
+  writeFile(dir / (sanitizeServerName(server) & ".json"),
+    "{\"tokens\": {\"access_token\": \"" & jwtWith(payload) & "\"}}")
+
+const fixedNow: int64 = 1700000000'i64
+
+proc remoteKeySpec(): McpServerSpec =
+  McpServerSpec(name: "mem", url: "https://host/mcp", authEnv: "MEM_KEY")
+
+suite "phase 6b http transport":
+  test "list posts carry bearer and the session id round-trips":
+    var seenBearer = ""
+    var seenSessions: seq[string] = @[]
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      let node = parseJson(extractJsonResponse(body))
+      let meth = node{"method"}.getStr()
+      case meth
+      of "initialize":
+        seenBearer = bearer
+        assert url == "https://host/mcp"
+        assert sessionId == ""
+        HttpResult(status: 200, body: initOkLine, sessionId: "sess-1")
+      of "tools/list":
+        seenSessions.add(sessionId)
+        HttpResult(status: 200, body: listOkLine, sessionId: "sess-1")
+      else:
+        raise newException(ValueError, "unexpected method: " & meth)
+    let (metas, sid) = listToolsViaHttp(post, remoteKeySpec(),
+      envOf([("MEM_KEY", "tok123")]))
+    assert sid == "sess-1"
+    assert seenBearer == "tok123"
+    assert seenSessions == @["sess-1"]
+    assert metas.len == 2
+    assert metas[0].name == "word_count"
+
+  test "an sse stream body parses to the json-rpc result":
+    let sseList = "event: message\n" & "data: " & listOkLine & "\n\n"
+    let sseCall = "data: " & callOkLine & "\n\n"
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      let meth = parseJson(extractJsonResponse(body)){"method"}.getStr()
+      case meth
+      of "initialize":
+        HttpResult(status: 200, body: initOkLine, sessionId: "s")
+      of "tools/list":
+        HttpResult(status: 200, body: sseList, sessionId: "s")
+      of "tools/call":
+        HttpResult(status: 200, body: sseCall, sessionId: "s")
+      else:
+        raise newException(ValueError, "unexpected: " & meth)
+    let (metas, _) = listToolsViaHttp(post, remoteKeySpec(),
+      envOf([("MEM_KEY", "t")]))
+    assert metas.len == 2
+    let text = callToolViaHttp(post, "https://host/mcp", "s", "t",
+      "mem", "word_count", %*{"text": "hi"})
+    assert text == "3 words\n[non-text content]\ntail"
+
+  test "a 401 raises, and the bridge warning carries the auth hint":
+    let post401: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      HttpResult(status: 401, body: """{"error": "unauthorized"}""",
+        sessionId: "")
+    expect IOError:
+      discard listToolsViaHttp(post401, remoteKeySpec(),
+        envOf([("MEM_KEY", "stale")]))
+    let home = freshTmpHome("waku-mcp-401")
+    let res = connectAll(@[remoteKeySpec()], envOf([("MEM_KEY", "stale")]),
+      home, 30.0, nil, post401)
+    assert res.tools.len == 0
+    assert res.warnings.len == 2
+    assert "failed to connect" in res.warnings[0]
+    assert "MEM_KEY" in res.warnings[1]
+    removeDir(home)
+
+  test "a failing http call reads as text, nil reads as not connected":
+    let failing: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      raise newException(IOError, "boom")
+    assert callToolViaHttp(failing, "https://host/mcp", "s", "t",
+      "mem", "word_count", %*{}) ==
+      "MCP call mem_word_count failed: boom"
+    let noPost: HttpPostFn = nil
+    assert callToolViaHttp(noPost, "https://host/mcp", "", "", "mem",
+      "word_count", %*{}) == "MCP server 'mem' is not connected."
+
+suite "phase 6b bridge connectAll":
+  test "one bad server does not stop the rest":
+    let seen = newSeen()
+    let good = stdioSpec()
+    let bad = remoteKeySpec()
+    let badPost: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      raise newException(IOError, "down")
+    let factory: StdioFactory = proc(spec: McpServerSpec): ExchangeFn {.closure.} =
+      recordExchange(seen)
+    let home = freshTmpHome("waku-mcp-skip")
+    let res = connectAll(@[good, bad], envOf([("MEM_KEY", "t")]), home,
+      30.0, factory, badPost)
+    assert res.tools.len == 2
+    assert res.tools[0].name == "fs_word_count"
+    assert res.warnings.len == 2
+    assert "'mem'" in res.warnings[0]
+    assert "MEM_KEY" in res.warnings[1]
+    removeDir(home)
+
+  test "a missing auth_env is a config warning with no hint":
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      raise newException(IOError, "must not be called")
+    let home = freshTmpHome("waku-mcp-nokey")
+    let res = connectAll(@[remoteKeySpec()], envOf([]), home, 30.0,
+      nil, post)
+    assert res.tools.len == 0
+    assert res.warnings.len == 1
+    assert "MEM_KEY is not set" in res.warnings[0]
+    removeDir(home)
+
+  test "retry fires once when a token appears after the first failure":
+    let home = freshTmpHome("waku-mcp-retry")
+    var calls = 0
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      let meth = parseJson(extractJsonResponse(body)){"method"}.getStr()
+      if calls == 0 and meth == "initialize":
+        inc calls
+        createDir(home / "mcp-auth")
+        writeFile(home / "mcp-auth" / (sanitizeServerName("o") & ".json"),
+          """{"tokens": {}}""")
+        raise newException(IOError, "browser still open")
+      case meth
+      of "initialize":
+        HttpResult(status: 200, body: initOkLine, sessionId: "s")
+      of "tools/list":
+        HttpResult(status: 200, body: listOkLine, sessionId: "s")
+      else:
+        raise newException(ValueError, "unexpected: " & meth)
+    let spec = McpServerSpec(name: "o", url: "https://host/mcp", oauth: true)
+    let res = connectAll(@[spec], envOf([]), home, 30.0, nil, post)
+    assert res.tools.len == 2
+    assert res.warnings.len == 1
+    assert "reconnecting" in res.warnings[0]
+    removeDir(home)
+
+  test "deadline doubles the timeout, oauth without token waits for sign-in":
+    let home = freshTmpHome("waku-mcp-deadline")
+    assert connectionDeadline(@[remoteKeySpec()], home, 30.0) == 60.0
+    let oauth = McpServerSpec(name: "o", url: "https://h/m", oauth: true)
+    assert connectionDeadline(@[oauth], home, 30.0) == signInTimeout + 60.0
+    createDir(home / "mcp-auth")
+    writeFile(home / "mcp-auth" / (sanitizeServerName("o") & ".json"), "{}")
+    assert connectionDeadline(@[oauth], home, 30.0) == 60.0
+    removeDir(home)
+
+  test "registry http tools dispatch under the original name":
+    var seenName = ""
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      seenName = parseJson(extractJsonResponse(body))["params"]["name"].getStr()
+      HttpResult(status: 200, body: callOkLine, sessionId: "s")
+    let tools = toRegistryToolsHttp("demo", parseToolList(listOkLine),
+      post, "https://host/mcp", "s", "t")
+    assert tools[1].name == "demo_memory_remember"
+    assert tools[1].description == "[MCP:demo] Store it"
+    assert tools[1].fn(%*{}) == "3 words\n[non-text content]\ntail"
+    assert seenName == "memory.remember"
+
+suite "phase 6b jwt identity":
+  test "claims decode unverified, garbage decodes to empty":
+    let claims = decodeClaims(jwtWith("""{"email": "a@x", "exp": 99}"""))
+    assert claims{"email"}.getStr() == "a@x"
+    assert decodeClaims("abc").len == 0
+    assert decodeClaims("h.!!!.s").len == 0
+
+  test "identity covers signed-out, unreadable and bare accounts":
+    let home = freshTmpHome("waku-mcp-ident")
+    assert mcpIdentity(home / "mcp-auth" / "m.json", fixedNow) ==
+      "not signed in"
+    createDir(home / "mcp-auth")
+    writeFile(home / "mcp-auth" / "m.json", "{nope")
+    assert mcpIdentity(home / "mcp-auth" / "m.json", fixedNow) ==
+      "unreadable — will sign in again"
+    writeTokenFile(home, "n", """{"sub": "u123"}""")
+    assert mcpIdentity(authFilePath(home, "n"), fixedNow) == "u123"
+    removeDir(home)
+
+  test "identity renders minutes, hours and expiry like python":
+    let home = freshTmpHome("waku-mcp-exp")
+    writeTokenFile(home, "a",
+      "{\"email\": \"a@x\", \"exp\": " & $(fixedNow + 42 * 60) & "}")
+    assert mcpIdentity(authFilePath(home, "a"), fixedNow) ==
+      "a@x — 42m left"
+    writeTokenFile(home, "b",
+      "{\"email\": \"b@x\", \"exp\": " & $(fixedNow + 3 * 3600) & "}")
+    assert mcpIdentity(authFilePath(home, "b"), fixedNow) ==
+      "b@x — 3h left"
+    writeTokenFile(home, "c",
+      "{\"email\": \"c@x\", \"exp\": " & $(fixedNow - 10) & "}")
+    assert mcpIdentity(authFilePath(home, "c"), fixedNow) ==
+      "c@x — token expired, refreshes on next use"
+    removeDir(home)
+
+suite "phase 6b cli helpers":
+  test "list with no servers points at the config path":
+    let home = freshTmpHome("waku-mcp-list-empty")
+    let lines = mcpListLines(home, fixedNow)
+    assert lines.len == 1
+    assert "No MCP servers configured" in lines[0]
+    assert (home / "mcp.json") in lines[0]
+    removeDir(home)
+
+  test "list shows local, key and oauth rows with identity":
+    let home = freshTmpHome("waku-mcp-list")
+    writeFile(home / "mcp.json", """{"servers": [
+      {"name": "fs", "command": "npx"},
+      {"name": "mem", "url": "https://host/mcp", "auth_env": "MEM_KEY"},
+      {"name": "o", "url": "https://h2/m", "oauth": true}]}""")
+    writeTokenFile(home, "o",
+      "{\"email\": \"o@x\", \"exp\": " & $(fixedNow + 3600) & "}")
+    let text = mcpListLines(home, fixedNow).join("\n")
+    assert "fs" in text
+    assert "(local process)" in text
+    assert "api key · $MEM_KEY" in text
+    assert "oauth · o@x" in text
+    removeDir(home)
+
+  test "logout removes the file, unknown stays signed-out":
+    let home = freshTmpHome("waku-mcp-logout")
+    let (msg1, code1) = mcpLogout(home, "o")
+    assert code1 == 0
+    assert "not signed in" in msg1
+    createDir(home / "mcp-auth")
+    writeFile(authFilePath(home, "o"), "{}")
+    let (msg2, code2) = mcpLogout(home, "o")
+    assert code2 == 0
+    assert "Signed out" in msg2
+    assert not fileExists(authFilePath(home, "o"))
+    removeDir(home)
+
+  test "login on unknown servers and oauth names 6c honestly":
+    let home = freshTmpHome("waku-mcp-login")
+    writeFile(home / "mcp.json", """{"servers": [
+      {"name": "o", "url": "https://h2/m", "oauth": true}]}""")
+    let (ok1, msg1) = mcpLogin(home, "nope", envOf([]), nil, nil, fixedNow)
+    assert not ok1
+    assert "No server called 'nope'" in msg1
+    let (ok2, msg2) = mcpLogin(home, "o", envOf([]), nil, nil, fixedNow)
+    assert not ok2
+    assert "6c" in msg2
+    removeDir(home)
+
+  test "login reconnects stdio and key servers through the bridge":
+    let home = freshTmpHome("waku-mcp-login-ok")
+    writeFile(home / "mcp.json", """{"servers": [
+      {"name": "fs", "command": "npx"},
+      {"name": "mem", "url": "https://host/mcp", "auth_env": "MEM_KEY"}]}""")
+    let seen = newSeen()
+    let factory: StdioFactory = proc(spec: McpServerSpec): ExchangeFn {.closure.} =
+      recordExchange(seen)
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      let meth = parseJson(extractJsonResponse(body)){"method"}.getStr()
+      case meth
+      of "initialize":
+        HttpResult(status: 200, body: initOkLine, sessionId: "s")
+      of "tools/list":
+        HttpResult(status: 200, body: listOkLine, sessionId: "s")
+      else:
+        raise newException(ValueError, "unexpected: " & meth)
+    let (okFs, msgFs) = mcpLogin(home, "fs", envOf([]), post, factory,
+      fixedNow)
+    assert okFs
+    assert "2 tools" in msgFs
+    let (okMem, _) = mcpLogin(home, "mem", envOf([("MEM_KEY", "t")]),
+      post, factory, fixedNow)
+    assert okMem
+    let (okBad, msgBad) = mcpLogin(home, "mem", envOf([]), post, factory,
+      fixedNow)
+    assert not okBad
+    assert "MEM_KEY is not set" in msgBad
+    removeDir(home)
