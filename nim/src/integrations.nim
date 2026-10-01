@@ -1,4 +1,4 @@
-## Integrations registry, pure core — port of `waku/integrations.py` (phase 5d1).
+## Integrations registry plus stateful seams — port of `waku/integrations.py` (phases 5d1+5d2).
 ##
 ## Covers the registry types, the 13 static `INTEGRATIONS` rows, the provider
 ## row derivation, the `_configured`/`_status` state machine, the list views
@@ -19,7 +19,26 @@
 ##   the status directly (`nil` = no stored health).
 ## - Provider visibility is evaluated against the injected `env`, not the
 ##   process environment `providers.isVisible` reads.
-## - Probes, dotenv apply, health on disk and the CLI surface arrive in 5d2.
+## - Health lives in an injected `HealthStore` (one per home dir) instead of
+##   the process-global `_HEALTH`; probes, dotenv edits, the agent rebuild
+##   and the gateway reloader all arrive as injected closures, so the whole
+##   apply/test path runs offline. `Phase 5d2.`
+## - Minimal dotenv writer: `NAME=value` lines, verbatim, no quoting and no
+##   `export` preservation (python-dotenv quotes on write). Appended keys go
+##   in sorted order for determinism.
+## - No pip-extra installed check on the apply path either (single binary).
+## - Provider probes are caller-injected per key; the built-in HTTP/catalog
+##   probe bodies (`_tavily_probe`, `_provider_probe`, ...) are not ported —
+##   wiring to a live client comes with a later phase.
+## - `recordHealth` stamps `checked_at` as `%Y-%m-%dT%H:%M:%SZ` (no micros,
+##   `Z` instead of `+00:00`); tests inject the clock anyway.
+## - The corruption policy is per-entry (a bad row is skipped, the rest
+##   loads) where Python aborts the loop mid-file; observable behavior only
+##   differs for files with a bad row before good ones.
+## - The `cliMain` Waku Memory line is absent: it needs the settings home
+##   plus the `waku_memory.status` seam, both outside this unit's surfaces.
+## - The apply-path tracer event (`config` provider switch) has no seam
+##   and is skipped.
 ##
 ## Name mapping for the underscored Python helpers: `_configured` is
 ## `fieldConfigured`, `_status` is `integrationStatus`, `_positive_int` is
@@ -27,9 +46,14 @@
 ## `normalize_database_id` is `normalizeDatabaseId`. Nim identifiers cannot
 ## start with an underscore.
 
+import std/algorithm
+import std/json
+import std/os
 import std/strutils
 import std/tables
+import std/times
 
+import ./catalog
 import ./providers
 
 type
@@ -543,3 +567,693 @@ proc renderEnvExampleBlock*(providers: seq[Provider]): string =
   lines.add("# END GENERATED CONNECTIONS")
   lines.add("")
   lines.join("\n")
+
+# ---------------------------------------------------------------------------
+# Phase 5d2: stateful seams. Health on disk, injected probes, dotenv apply
+# with rollback, provider save/disable and the plain-text connections CLI.
+# Every process interaction the Python module hides (os.environ, the dotenv
+# file, browser_agent.rebuild, the gateway hooks, the network probes) is an
+# explicit parameter here, so tests run fully offline.
+
+type
+  ProbeFn* = proc(values: Table[string, string]) {.closure.}
+    ## Injected connection test for one integration key. Raises
+    ## `CatchableError` on failure. A missing table entry means the row has
+    ## no test, like a Python row with `probe=None`. The built-in HTTP
+    ## bodies are deliberately not ported: wiring to a live client comes
+    ## with a later phase; callers pass stubs (tests) or a real client.
+
+  AgentRebuildFn* = proc(): string {.closure.}
+    ## Injected `browser_agent.rebuild`: "" is success, anything else is
+    ## the error text (Python returns the error or `None`).
+
+  GatewayReloadFn* = proc(
+    keys: seq[string]): Table[string, IntegrationStatus] {.closure.}
+    ## Injected `_gateway_reloader`: statuses for the reloaded keys.
+
+  HealthStore* = ref object
+    ## File-backed `connections_health.json`. Folds Python's lazy global
+    ## `_HEALTH` into one explicit value per home dir, so tests stay
+    ## isolated by construction instead of resetting module state.
+    home*: string
+    loaded*: bool
+    entries*: Table[string, IntegrationStatus]
+
+proc newHealthStore*(home: string): HealthStore =
+  ## An unloaded store for `home`; the file is read on first access.
+  HealthStore(home: home, loaded: false,
+              entries: initTable[string, IntegrationStatus]())
+
+proc healthPath*(home: string): string =
+  ## Port of `_health_path` minus `load_settings`: the caller owns `home`.
+  home / "connections_health.json"
+
+proc parseHealthStatus(node: JsonNode): (bool, IntegrationStatus) =
+  ## One decoded file entry. Unknown states and non-objects are skipped
+  ## per-entry; a JSON `null`/missing `checked_at` reads back as "".
+  var empty: IntegrationStatus
+  if node.kind != JObject or not node.hasKey("state") or
+      node["state"].kind != JString:
+    return (false, empty)
+  var state: IntegrationState
+  try:
+    state = parseEnum[IntegrationState](node["state"].getStr())
+  except ValueError:
+    return (false, empty)
+  var message = ""
+  if node.hasKey("message") and node["message"].kind == JString:
+    message = node["message"].getStr()
+  var checkedAt = ""
+  if node.hasKey("checked_at") and node["checked_at"].kind == JString:
+    checkedAt = node["checked_at"].getStr()
+  (true, IntegrationStatus(state: state, message: message,
+                           checkedAt: checkedAt))
+
+proc loadHealth*(store: HealthStore) =
+  ## Lazy read of the health file. Any failure (missing file, bad JSON,
+  ## wrong shape) leaves the store empty, like `_health` swallowing
+  ## `OSError`/`ValueError`/`KeyError`/`JSONDecodeError`.
+  if store.loaded:
+    return
+  store.loaded = true
+  var raw = ""
+  try:
+    raw = readFile(healthPath(store.home))
+  except CatchableError:
+    return
+  var data: JsonNode
+  try:
+    data = parseJson(raw)
+  except CatchableError:
+    return
+  if data.kind != JObject:
+    return
+  for key, node in data:
+    let (ok, status) = parseHealthStatus(node)
+    if ok:
+      store.entries[key] = status
+
+proc saveHealth*(store: HealthStore) =
+  ## Tmp-file-plus-replace write, like `_save_health`; `OSError` is
+  ## swallowed. `checked_at` writes back as JSON `null` when empty, so a
+  ## Nim-written file still reads as "never checked" from Python.
+  var data = newJObject()
+  for key, status in store.entries:
+    var node = newJObject()
+    node["state"] = %($status.state)
+    node["message"] = %status.message
+    if status.checkedAt.len > 0:
+      node["checked_at"] = %status.checkedAt
+    else:
+      node["checked_at"] = newJNull()
+    data[key] = node
+  try:
+    createDir(store.home)
+    let path = healthPath(store.home)
+    let tmp = changeFileExt(path, "tmp")
+    writeFile(tmp, $data)
+    moveFile(tmp, path)
+  except OSError:
+    discard
+
+proc nowUtcIso(): string =
+  ## `checked_at` stamp for fresh records. Format differs from Python's
+  ## `datetime.now(UTC).isoformat()` (no micros, `Z` suffix); tests inject
+  ## the clock through `nowIso` instead of depending on this.
+  now().utc.format("yyyy-MM-dd'T'HH:mm:ss") & "Z"
+
+proc recordHealth*(store: HealthStore, key: string, status: IntegrationStatus,
+    nowIso = "") =
+  ## Port of `record_health`: keeps an explicit `checked_at`, otherwise
+  ## stamps now, then persists.
+  store.loadHealth()
+  let checkedAt =
+    if status.checkedAt.len > 0: status.checkedAt
+    elif nowIso.len > 0: nowIso
+    else: nowUtcIso()
+  store.entries[key] = IntegrationStatus(state: status.state,
+    message: status.message, checkedAt: checkedAt)
+  store.saveHealth()
+
+proc invalidateHealth*(store: HealthStore, key: string) =
+  ## Port of `invalidate_health`: drop the entry and persist.
+  store.loadHealth()
+  store.entries.del(key)
+  store.saveHealth()
+
+proc storedHealth*(store: HealthStore, key: string): (bool, IntegrationStatus) =
+  ## Read one entry; `false` means no stored health for `key`.
+  store.loadHealth()
+  if key in store.entries:
+    (true, store.entries[key])
+  else:
+    var empty: IntegrationStatus
+    (false, empty)
+
+proc storeHealthFn*(store: HealthStore): HealthFn =
+  ## The store as the `HealthFn` seam `integrationStatus` already takes. A
+  ## miss answers the CONFIGURED fallback itself, mirroring `_health().get`
+  ## with its default — so a store-backed status never changes what 5d1
+  ## renders for a fresh checkout.
+  result = proc(key: string): IntegrationStatus {.closure.} =
+    let (found, status) = storedHealth(store, key)
+    if found:
+      status
+    else:
+      IntegrationStatus(state: configured,
+                        message: "configured — not tested yet")
+
+proc safeError*(message: string, values: Table[string, string],
+    integration: Integration): string =
+  ## Port of `_safe_error`: every secret value is scrubbed to `***` before
+  ## the message reaches a view. An empty message becomes the generic
+  ## failure, like Python's `or "connection test failed"`.
+  var scrubbed = message
+  for field in integration.env:
+    if field.secret:
+      let secret = values.getOrDefault(field.name, "")
+      if secret.len > 0:
+        scrubbed = scrubbed.replace(secret, "***")
+  if scrubbed.len > 0:
+    scrubbed
+  else:
+    "connection test failed"
+
+proc findIntegration*(key: string, providers: seq[Provider],
+    env: Table[string, string]): (bool, Integration) =
+  ## Port of `_find_integration`: registry lookup with provider visibility
+  ## evaluated against the injected `env`.
+  for integration in registry(providers, env):
+    if integration.key == key:
+      return (true, integration)
+  var empty: Integration
+  (false, empty)
+
+proc currentView(key: string, providers: seq[Provider],
+    env: Table[string, string], store: HealthStore, hostOs: string,
+    gatewayStatus: GatewayStatusFn): IntegrationView =
+  ## Port of `_current_view`: rebuild the row's view from the caller's
+  ## (possibly just mutated) env and the store.
+  for view in listIntegrations(providers, env, hostOs,
+      storeHealthFn(store), gatewayStatus):
+    if view.key == key:
+      return view
+  var empty: IntegrationView
+  empty
+
+proc failResult(error: string, canForce = false): ApplyResult =
+  ## A failed apply: no view, just the message (and whether retrying with
+  ## `force` could skip the failing test).
+  var empty: IntegrationView
+  ApplyResult(ok: false, view: empty, error: error, canForce: canForce)
+
+proc dotenvKeyOf(line: string): string =
+  ## The variable a dotenv line sets, or "" for blanks, comments and
+  ## keyless lines. `export NAME=...` counts as NAME.
+  var s = line.strip()
+  if s.startsWith("export "):
+    s = s[7 .. ^1].strip()
+  if s.len == 0 or s.startsWith("#"):
+    return ""
+  let eq = s.find('=')
+  if eq <= 0:
+    return ""
+  s[0 ..< eq].strip()
+
+proc applyDotenvEdits(path: string, updates: Table[string, string],
+    clear: seq[string]) =
+  ## Minimal dotenv set/unset: rewrite matching `NAME=` lines in place,
+  ## append missing names in sorted order, drop cleared names, keep every
+  ## other byte. A no-op edit leaves the file (and its absence) alone.
+  if updates.len == 0 and clear.len == 0:
+    return
+  var lines: seq[string] = @[]
+  if fileExists(path):
+    let text = readFile(path)
+    lines = text.split('\n')
+    if lines.len > 0 and lines[^1] == "":
+      discard lines.pop()
+  var seen: seq[string] = @[]
+  var kept: seq[string] = @[]
+  for line in lines:
+    let name = dotenvKeyOf(line)
+    if name.len > 0 and name in clear:
+      continue
+    if name.len > 0 and name in updates:
+      if name notin seen:
+        seen.add(name)
+        kept.add(name & "=" & updates[name])
+      continue
+    kept.add(line)
+  var missing: seq[string] = @[]
+  for name in updates.keys:
+    if name notin seen:
+      missing.add(name)
+  missing.sort()
+  for name in missing:
+    kept.add(name & "=" & updates[name])
+  let parent = parentDir(path)
+  if parent.len > 0:
+    createDir(parent)
+  var text = kept.join("\n")
+  if kept.len > 0:
+    text.add("\n")
+  writeFile(path, text)
+
+proc snapshotEnv(env: Table[string, string],
+    names: seq[string]): (Table[string, string], seq[string]) =
+  ## Pre-write env values plus the names that were absent, for rollback.
+  var before = initTable[string, string]()
+  var wasMissing: seq[string] = @[]
+  for name in names:
+    if name in env:
+      before[name] = env[name]
+    else:
+      wasMissing.add(name)
+  (before, wasMissing)
+
+proc restoreEnv(env: var Table[string, string],
+    before: Table[string, string], wasMissing: seq[string]) =
+  ## Port of `_restore`'s environment half: put every touched var back.
+  for name in wasMissing:
+    env.del(name)
+  for name, value in before:
+    env[name] = value
+
+proc testIntegration*(key: string, providers: seq[Provider],
+    env: Table[string, string], store: HealthStore,
+    probes: Table[string, ProbeFn], hostOs: string = hostOS,
+    gatewayStatus: GatewayStatusFn = nil): IntegrationView =
+  ## Port of `test_integration`. A disabled row keeps its not-ready states
+  ## and otherwise drops to CONFIGURED; a row with no injected probe reports
+  ## "no test available"; otherwise the probe runs against env-merged values
+  ## and its outcome is recorded. Unknown keys raise `ValueError`.
+  let (found, integration) = findIntegration(key, providers, env)
+  if not found:
+    raise newException(ValueError, "unknown integration")
+  var values = initTable[string, string]()
+  for field in integration.env:
+    values[field.name] = env.getOrDefault(field.name, field.default)
+  let enabled =
+    integration.enabled != nil and integration.enabled(values, hostOs)
+  if not enabled:
+    let view = currentView(key, providers, env, store, hostOs, gatewayStatus)
+    let state =
+      if view.status.state == notConfigured or
+          view.status.state == installedButUnconfigured:
+        view.status.state
+      else:
+        configured
+    return IntegrationView(key: view.key, group: view.group, name: view.name,
+      what: view.what,
+      status: IntegrationStatus(state: state,
+        message: "integration is disabled",
+        checkedAt: view.status.checkedAt),
+      fields: view.fields, installCommand: view.installCommand,
+      setupUrl: view.setupUrl)
+  if key notin probes:
+    let view = currentView(key, providers, env, store, hostOs, gatewayStatus)
+    return IntegrationView(key: view.key, group: view.group, name: view.name,
+      what: view.what,
+      status: IntegrationStatus(state: view.status.state,
+        message: "no test available", checkedAt: view.status.checkedAt),
+      fields: view.fields, installCommand: view.installCommand,
+      setupUrl: view.setupUrl)
+  var probed = false
+  try:
+    probes[key](values)
+    probed = true
+  except CatchableError as exc:
+    recordHealth(store, key, IntegrationStatus(state: error,
+      message: safeError(exc.msg, values, integration)))
+  if probed:
+    recordHealth(store, key, IntegrationStatus(state: connected))
+  currentView(key, providers, env, store, hostOs, gatewayStatus)
+
+proc applyIntegration*(key: string, values: Table[string, string],
+    providers: seq[Provider], env: var Table[string, string],
+    store: HealthStore, dotenvPath: string, probes: Table[string, ProbeFn],
+    clear: seq[string] = @[], force: bool = false, hostOs: string = hostOS,
+    rebuild: AgentRebuildFn = nil, gatewayReload: GatewayReloadFn = nil,
+    gatewayStatus: GatewayStatusFn = nil): ApplyResult =
+  ## Port of `apply_integration`: validate names, fold values over
+  ## env-plus-defaults (empty secrets keep their stored value, bools fold to
+  ## "1"/"", choices validate), run the row normalize, enforce
+  ## required-when-enabled, probe unless `force`, then write the minimal
+  ## dotenv diff, run the reload hook and record health. Reload/rebuild
+  ## failures restore the file and the env, record ERROR health and retry
+  ## the gateway once — exactly the Python rollback shape.
+  let (found, integration) = findIntegration(key, providers, env)
+  if not found:
+    return failResult("unknown integration")
+  if integration.group == "AI Providers":
+    return failResult("use apply_provider for AI Providers")
+  var fields = initTable[string, EnvField]()
+  for field in integration.env:
+    fields[field.name] = field
+  for name in values.keys:
+    if name notin fields:
+      return failResult("unknown configuration field")
+  for name in clear:
+    if name notin fields:
+      return failResult("unknown configuration field")
+  var merged = initTable[string, string]()
+  for field in integration.env:
+    merged[field.name] = env.getOrDefault(field.name, field.default)
+  var updates = initTable[string, string]()
+  for name, raw in values:
+    let field = fields[name]
+    var value = raw
+    if field.secret and value.len == 0:
+      continue
+    if field.kind == boolField:
+      let s = value.strip()
+      value = if s.len > 0 and s != "0": "1" else: ""
+    elif field.kind == choiceField and value notin field.options:
+      return failResult(name & " must be one of: " & field.options.join(", "))
+    merged[name] = value
+    updates[name] = value
+  for name in clear:
+    merged[name] = ""
+    updates.del(name)
+  var tested = false
+  try:
+    if integration.normalize != nil:
+      merged = integration.normalize(merged)
+      var rekeyed = initTable[string, string]()
+      for name in updates.keys:
+        rekeyed[name] = merged.getOrDefault(name, "")
+      updates = rekeyed
+    let enabled =
+      integration.enabled != nil and integration.enabled(merged, hostOs)
+    if enabled:
+      var missing: seq[string] = @[]
+      for field in integration.env:
+        if field.required and merged.getOrDefault(field.name, "").len == 0:
+          missing.add(field.name)
+      if missing.len > 0:
+        return failResult("missing " & missing.join(", "))
+    if enabled and key in probes and not force:
+      probes[key](merged)
+      tested = true
+  except CatchableError as exc:
+    return failResult(safeError(exc.msg, merged, integration), true)
+  var changed: seq[string] = @[]
+  for name in updates.keys:
+    changed.add(name)
+  for name in clear:
+    if name notin changed:
+      changed.add(name)
+  let existed = fileExists(dotenvPath)
+  let contents = if existed: readFile(dotenvPath) else: ""
+  let (before, wasMissing) = snapshotEnv(env, changed)
+  try:
+    invalidateHealth(store, key)
+    applyDotenvEdits(dotenvPath, updates, clear)
+    for name, value in updates:
+      env[name] = value
+    for name in clear:
+      env.del(name)
+    if integration.reload == agent and rebuild != nil:
+      let err = rebuild()
+      if err.len > 0:
+        raise newException(CatchableError, err)
+    elif integration.reload == gateway and gatewayReload != nil:
+      let statuses = gatewayReload(@[key])
+      if key in statuses:
+        let status = statuses[key]
+        if status.state == error:
+          raise newException(CatchableError,
+            if status.message.len > 0: status.message
+            else: "gateway failed to start")
+        recordHealth(store, key, status)
+    if force:
+      recordHealth(store, key, IntegrationStatus(state: error,
+        message: "Saved without a successful test"))
+    elif tested or integration.reload == gateway:
+      recordHealth(store, key, IntegrationStatus(state: connected))
+  except CatchableError as exc:
+    if existed:
+      writeFile(dotenvPath, contents)
+    else:
+      try:
+        removeFile(dotenvPath)
+      except CatchableError:
+        discard
+    restoreEnv(env, before, wasMissing)
+    recordHealth(store, key, IntegrationStatus(state: error,
+      message: safeError(exc.msg, merged, integration)))
+    if integration.reload == gateway and gatewayReload != nil:
+      discard gatewayReload(@[key])
+    return failResult(safeError(exc.msg, merged, integration))
+  ApplyResult(ok: true,
+    view: currentView(key, providers, env, store, hostOs, gatewayStatus))
+
+proc providerCanServe*(name: string, providers: seq[Provider],
+    env: Table[string, string]): bool =
+  ## Port of `_provider_can_serve`: the row exists and its key var is set —
+  ## the same test the Models grid colours a card with.
+  for p in providers:
+    if p.name == name:
+      return env.getOrDefault(p.keyEnv, "").len > 0
+  false
+
+proc adoptable*(selected: Provider, key: string, env: Table[string, string],
+    providers: seq[Provider]): bool =
+  ## Port of `_adoptable`: a save carries a key while the current provider
+  ## cannot serve a turn — the first working key becomes current.
+  key.len > 0 and not providerCanServe(
+    env.getOrDefault("WAKU_PROVIDER", ""), providers, env)
+
+proc selectedBaseUrl(p: Provider, env: Table[string, string]): string =
+  ## The provider-scoped endpoint against the injected env, falling back to
+  ## the row default — like `catalog.configuredBaseUrl`, which reads the
+  ## process env and so cannot serve this offline path.
+  let override = env.getOrDefault(p.baseUrlEnv, "").strip()
+  if override.len > 0:
+    override
+  else:
+    p.baseUrl
+
+proc stripSlash(s: string): string =
+  var i = s.len
+  while i > 0 and s[i - 1] == '/':
+    dec i
+  s[0 ..< i]
+
+proc applyProvider*(provider: string, providers: seq[Provider],
+    env: var Table[string, string], store: HealthStore,
+    dotenvPath, home: string, probe: ProbeFn = nil,
+    key = "", model = "", smallModel = "", baseUrl = "",
+    customKey = "", force = false, activate = true,
+    rebuild: AgentRebuildFn = nil, agentActive = false,
+    hostOs: string = hostOS,
+    gatewayStatus: GatewayStatusFn = nil): ApplyResult =
+  ## Port of `apply_provider`: save provider fields and optionally make
+  ## that provider active. A newly supplied key is probed before anything
+  ## is persisted ("" means "argument absent" for every optional); a first
+  ## working key is adopted even under `activate=false`; switching resets
+  ## the model to `catalog.defaultModelFor` and clears the small model. The
+  ## agent rebuild only runs for the live agent behind the `agentActive`
+  ## seam, and the `config` tracer event has no seam here — it is skipped.
+  var selected = Provider()
+  var known = false
+  for p in providers:
+    if p.name == provider:
+      selected = p
+      known = true
+      break
+  if not known:
+    return failResult("unknown provider")
+  let previous = env.getOrDefault("WAKU_PROVIDER", "")
+  var active = activate
+  if not active and adoptable(selected, key, env, providers):
+    active = true
+  let switching = active and provider != previous
+  var updates = initTable[string, string]()
+  if active:
+    updates["WAKU_PROVIDER"] = provider
+  if model.len > 0:
+    updates["WAKU_MODEL"] = model
+  elif switching:
+    updates["WAKU_MODEL"] = defaultModelFor(provider, home, providers)
+  if smallModel.len > 0:
+    updates["WAKU_SMALL_MODEL"] = smallModel
+  elif switching:
+    updates["WAKU_SMALL_MODEL"] = ""
+  if key.len > 0 and selected.keyEnv.len > 0:
+    updates[selected.keyEnv] = key
+  if selected.baseUrlEnv.len > 0 and (baseUrl.len > 0 or switching):
+    let legacy =
+      if provider == previous: env.getOrDefault("WAKU_BASE_URL", "")
+      else: ""
+    var candidate = baseUrl
+    if candidate.len == 0:
+      candidate = legacy
+    if candidate.len == 0:
+      candidate = selectedBaseUrl(selected, env)
+    candidate = candidate.strip()
+    if candidate.len > 0:
+      updates[selected.baseUrlEnv] = candidate
+    updates["WAKU_BASE_URL"] = ""
+  elif baseUrl.len > 0:
+    updates["WAKU_BASE_URL"] = baseUrl
+  if customKey.len > 0:
+    updates["WAKU_API_KEY"] = customKey
+  let currentKey = env.getOrDefault(selected.keyEnv, "")
+  let legacyBase =
+    if provider == previous: env.getOrDefault("WAKU_BASE_URL", "")
+    else: ""
+  var currentBase = legacyBase
+  if currentBase.len == 0:
+    currentBase = selectedBaseUrl(selected, env)
+  var candidateBase = currentBase
+  if selected.baseUrlEnv.len > 0:
+    candidateBase = updates.getOrDefault(selected.baseUrlEnv, currentBase)
+  elif "WAKU_BASE_URL" in updates:
+    candidateBase = updates["WAKU_BASE_URL"]
+  let keyChanged = key.len > 0 and key != currentKey
+  let baseChanged = baseUrl.len > 0 and
+    stripSlash(candidateBase) != stripSlash(currentBase)
+  var changed = initTable[string, string]()
+  for name, value in updates:
+    if env.getOrDefault(name, "") != value:
+      changed[name] = value
+  let existed = fileExists(dotenvPath)
+  let contents = if existed: readFile(dotenvPath) else: ""
+  var changedNames: seq[string] = @[]
+  for name in changed.keys:
+    changedNames.add(name)
+  let (before, wasMissing) = snapshotEnv(env, changedNames)
+  try:
+    let candidateKey =
+      if key.len > 0: key
+      else: currentKey
+    if candidateKey.len > 0 and (keyChanged or baseChanged) and not force and
+        probe != nil:
+      var probeValues = initTable[string, string]()
+      probeValues[selected.keyEnv] = candidateKey
+      if selected.baseUrlEnv.len > 0 and selected.baseUrlEnv in updates:
+        probeValues[selected.baseUrlEnv] = updates[selected.baseUrlEnv]
+        probeValues["WAKU_BASE_URL"] = ""
+      elif baseUrl.len > 0:
+        probeValues["WAKU_BASE_URL"] = baseUrl
+      probe(probeValues)
+    if changed.len > 0:
+      applyDotenvEdits(dotenvPath, changed, @[])
+      for name, value in changed:
+        env[name] = value
+    let affectsAgent =
+      changed.len > 0 and (provider == previous or active)
+    if affectsAgent and agentActive and rebuild != nil:
+      let err = rebuild()
+      if err.len > 0:
+        raise newException(CatchableError, err)
+    if force:
+      recordHealth(store, provider, IntegrationStatus(state: error,
+        message: "Saved without a successful test"))
+    else:
+      recordHealth(store, provider, IntegrationStatus(state: connected))
+  except CatchableError as exc:
+    if existed:
+      writeFile(dotenvPath, contents)
+    else:
+      try:
+        removeFile(dotenvPath)
+      except CatchableError:
+        discard
+    restoreEnv(env, before, wasMissing)
+    let (okRow, row) = findIntegration(provider, providers, env)
+    let scrubRow =
+      if okRow: row
+      elif providers.len > 0: integrationFromProvider(providers[0])
+      else: INTEGRATIONS[0]
+    return failResult(safeError(exc.msg, changed, scrubRow),
+                      key.len > 0 or currentKey.len > 0)
+  ApplyResult(ok: true,
+    view: currentView(provider, providers, env, store, hostOs, gatewayStatus))
+
+proc applyProviderDisabled*(provider: string, providers: seq[Provider],
+    env: var Table[string, string], store: HealthStore, dotenvPath: string,
+    disabled: bool, hostOs: string = hostOS,
+    gatewayStatus: GatewayStatusFn = nil): ApplyResult =
+  ## Port of `apply_provider_disabled`: hide a provider from pickers while
+  ## keeping its key. The active provider cannot be disabled.
+  var known = false
+  for p in providers:
+    if p.name == provider:
+      known = true
+      break
+  if not known:
+    return failResult("unknown provider")
+  if disabled and env.getOrDefault("WAKU_PROVIDER", "") == provider:
+    return failResult("cannot disable the current provider — " &
+      "switch to another provider first")
+  var current: seq[string] = @[]
+  for part in env.getOrDefault("WAKU_DISABLED_PROVIDERS", "").split(','):
+    let name = part.strip()
+    if name.len > 0:
+      current.add(name)
+  if disabled:
+    if provider notin current:
+      current.add(provider)
+  else:
+    var kept: seq[string] = @[]
+    for name in current:
+      if name != provider:
+        kept.add(name)
+    current = kept
+  current.sort()
+  let joined = current.join(",")
+  var updates = initTable[string, string]()
+  updates["WAKU_DISABLED_PROVIDERS"] = joined
+  applyDotenvEdits(dotenvPath, updates, @[])
+  env["WAKU_DISABLED_PROVIDERS"] = joined
+  ApplyResult(ok: true,
+    view: currentView(provider, providers, env, store, hostOs, gatewayStatus))
+
+proc renderConnections*(providers: seq[Provider], env: Table[string, string],
+    hostOs: string = hostOS, health: HealthFn = nil,
+    gatewayStatus: GatewayStatusFn = nil): string =
+  ## Port of `cli_main`'s listing in plain text (the Nim CLI has no rich):
+  ## groups as headers, one `name state · detail (checked …)` line per row.
+  var lines: seq[string] = @[]
+  var group = ""
+  for view in listIntegrations(providers, env, hostOs, health, gatewayStatus):
+    if view.group != group:
+      group = view.group
+      lines.add("")
+      lines.add(group)
+    let label = ($view.status.state).replace("_", " ")
+    var detail = ""
+    if view.status.state != notConfigured and
+        view.status.message.len > 0:
+      detail = " · " & view.status.message
+    var checked = ""
+    if view.status.checkedAt.len > 0:
+      checked = " (checked " & view.status.checkedAt & ")"
+    lines.add("  " & view.name.alignLeft(20) & " " & label & detail & checked)
+  lines.join("\n")
+
+proc connectionsFailed*(providers: seq[Provider], env: Table[string, string],
+    hostOs: string = hostOS, health: HealthFn = nil,
+    gatewayStatus: GatewayStatusFn = nil): bool =
+  ## Port of `cli_main`'s exit rule: an ERROR row with configured fields
+  ## fails the command.
+  for view in listIntegrations(providers, env, hostOs, health, gatewayStatus):
+    if view.status.state == error:
+      for field in view.fields:
+        if field.configured:
+          return true
+  false
+
+proc cliMain*(providers: seq[Provider], env: Table[string, string],
+    hostOs: string = hostOS, health: HealthFn = nil,
+    gatewayStatus: GatewayStatusFn = nil): int =
+  ## Print the connections surface; 1 when a configured row is in ERROR.
+  ## The Waku Memory line is out of scope here (see the module header).
+  echo renderConnections(providers, env, hostOs, health, gatewayStatus)
+  if connectionsFailed(providers, env, hostOs, health, gatewayStatus):
+    1
+  else:
+    0

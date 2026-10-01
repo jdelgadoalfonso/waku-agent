@@ -13,6 +13,7 @@ import ../src/cli
 import ../src/client
 import ../src/config
 import ../src/db
+import ../src/integrations
 import ../src/memory
 import ../src/providers
 import ../src/waku
@@ -152,4 +153,37 @@ suite "phase 4e dispatch":
     assert not dirExists(home)
     restoreEnv(saved)
     if dirExists(home):
+      removeDir(home)
+
+suite "phase 5d2 connections dispatch":
+  test "connections exits 0 on a fresh health store":
+    if findProvidersToml().len == 0:
+      skip()
+    else:
+      let saved = scrubEnv()
+      let home = freshHome("waku-conn-fresh")
+      putEnv("WAKU_HOME", home)
+      assert runCommand(@["connections"]) == 0
+      restoreEnv(saved)
+      removeDir(home)
+
+  test "connections exits 1 when a configured row has stored ERROR":
+    if findProvidersToml().len == 0:
+      skip()
+    else:
+      let saved = scrubEnv()
+      let tgWasSet = existsEnv("TELEGRAM_BOT_TOKEN")
+      let tgValue = getEnv("TELEGRAM_BOT_TOKEN")
+      let home = freshHome("waku-conn-error")
+      putEnv("WAKU_HOME", home)
+      putEnv("TELEGRAM_BOT_TOKEN", "sk-tg-test")
+      let store = newHealthStore(home)
+      recordHealth(store, "telegram",
+        IntegrationStatus(state: error, message: "synthetic outage"))
+      assert runCommand(@["connections"]) == 1
+      if tgWasSet:
+        putEnv("TELEGRAM_BOT_TOKEN", tgValue)
+      else:
+        delEnv("TELEGRAM_BOT_TOKEN")
+      restoreEnv(saved)
       removeDir(home)

@@ -3,6 +3,7 @@
 ## health/gateway arrive as closures. No network, no `.waku/` writes, and the
 ## tests never touch process env or spawn Python.
 
+import std/os
 import std/sequtils
 import std/strutils
 import std/tables
@@ -439,3 +440,616 @@ suite "phase 5d1 normalize":
         assert false, "expected ValueError for " & bad
       except ValueError as e:
         assert e.msg == "DISCORD_MAX_TURNS_PER_HOUR must be a positive integer"
+
+proc tmpDir5d2(name: string): string =
+  ## Fresh scratch dir per test: health file, dotenv file and models.json
+  ## all live under it, so tests never touch the real home or cwd.
+  result = getTempDir() / ("waku-5d2-" & name)
+  if dirExists(result):
+    removeDir(result)
+  createDir(result)
+
+proc emptyProbes(): Table[string, ProbeFn] =
+  initTable[string, ProbeFn]()
+
+proc okProbe(): ProbeFn =
+  result = proc(values: Table[string, string]) {.closure.} =
+    discard
+
+proc failingProbe(message: string): ProbeFn =
+  let msg = message
+  result = proc(values: Table[string, string]) {.closure.} =
+    raise newException(ValueError, msg)
+
+const testProviders = @[
+  Provider(name: "anthropic", keyEnv: "ANTHROPIC_API_KEY",
+           model: "claude-x", smallModel: "claude-xs"),
+  Provider(name: "openai", keyEnv: "OPENAI_API_KEY"),
+  Provider(name: "minimax", keyEnv: "MINIMAX_API_KEY",
+           baseUrlEnv: "MINIMAX_BASE_URL",
+           baseUrl: "https://api.minimax.example"),
+]
+
+suite "phase 5d2 health store":
+  test "miss falls back to configured, hit returns the stored status":
+    let home = tmpDir5d2("health-hit")
+    let store = newHealthStore(home)
+    let row = findRow(INTEGRATIONS, "telegram")
+    let env = envOf([("TELEGRAM_BOT_TOKEN", "tok")])
+    let miss = integrationStatus(row, env, linuxOs, storeHealthFn(store))
+    assert miss.state == configured
+    recordHealth(store, "telegram", IntegrationStatus(state: connected,
+      message: "probe ok", checkedAt: "2026-09-30T00:00:00Z"))
+    let hit = integrationStatus(row, env, linuxOs, storeHealthFn(store))
+    assert hit.state == connected
+    assert hit.message == "probe ok"
+    assert hit.checkedAt == "2026-09-30T00:00:00Z"
+
+  test "checked_at defaults to the injected clock, explicit wins":
+    let home = tmpDir5d2("health-clock")
+    let store = newHealthStore(home)
+    recordHealth(store, "tavily",
+      IntegrationStatus(state: connected, message: "ok"), "2026-10-01T00:00:00Z")
+    let (found, got) = storedHealth(store, "tavily")
+    assert found
+    assert got.checkedAt == "2026-10-01T00:00:00Z"
+    recordHealth(store, "tavily",
+      IntegrationStatus(state: connected, checkedAt: "keep-me"))
+    let (found2, got2) = storedHealth(store, "tavily")
+    assert found2
+    assert got2.checkedAt == "keep-me"
+
+  test "entries survive through the file with tmp+replace":
+    let home = tmpDir5d2("health-file")
+    let store = newHealthStore(home)
+    recordHealth(store, "telegram", IntegrationStatus(state: connected,
+      message: "ok", checkedAt: "2026-09-30T00:00:00Z"))
+    assert fileExists(healthPath(home))
+    assert not fileExists(healthPath(home) & ".tmp")
+    let raw = readFile(healthPath(home))
+    assert "\"telegram\"" in raw
+    assert "\"connected\"" in raw
+    let reloaded = newHealthStore(home)
+    let (found, got) = storedHealth(reloaded, "telegram")
+    assert found
+    assert got.state == connected
+    assert got.message == "ok"
+    assert got.checkedAt == "2026-09-30T00:00:00Z"
+
+  test "corrupt file, unknown state and null checked_at degrade gracefully":
+    let home = tmpDir5d2("health-corrupt")
+    writeFile(healthPath(home), "{nope")
+    let broken = newHealthStore(home)
+    let (found, gotBroken) = storedHealth(broken, "anything")
+    assert not found
+    assert gotBroken.state == notConfigured
+    writeFile(healthPath(home),
+      """{"a": {"state": "bogus", "message": ""}, """ &
+      """"b": {"state": "connected", "message": "m", "checked_at": null}}""")
+    let lenient = newHealthStore(home)
+    let (foundA, gotA) = storedHealth(lenient, "a")
+    assert not foundA
+    assert gotA.state == notConfigured
+    let (foundB, gotB) = storedHealth(lenient, "b")
+    assert foundB
+    assert gotB.state == connected
+    assert gotB.checkedAt == ""
+
+  test "invalidate drops the entry and persists the removal":
+    let home = tmpDir5d2("health-invalidate")
+    let store = newHealthStore(home)
+    recordHealth(store, "telegram",
+      IntegrationStatus(state: connected, checkedAt: "t"))
+    invalidateHealth(store, "telegram")
+    let (found, gotInv) = storedHealth(store, "telegram")
+    assert not found
+    assert gotInv.state == notConfigured
+    assert "telegram" notin readFile(healthPath(home))
+    let reloaded = newHealthStore(home)
+    let (found2, gotInv2) = storedHealth(reloaded, "telegram")
+    assert not found2
+    assert gotInv2.state == notConfigured
+
+  test "stores are isolated per home":
+    let homeA = tmpDir5d2("health-iso-a")
+    let homeB = tmpDir5d2("health-iso-b")
+    let storeA = newHealthStore(homeA)
+    recordHealth(storeA, "telegram",
+      IntegrationStatus(state: connected, checkedAt: "t"))
+    let storeB = newHealthStore(homeB)
+    let (found, gotIso) = storedHealth(storeB, "telegram")
+    assert not found
+    assert gotIso.state == notConfigured
+
+suite "phase 5d2 safeError":
+  test "secret values are scrubbed, the rest passes through":
+    let wa = findRow(INTEGRATIONS, "whatsapp")
+    let values = envOf([("WHATSAPP_TOKEN", "secret-token-123"),
+                        ("WHATSAPP_PHONE_NUMBER_ID", "pid-9")])
+    assert safeError("call with secret-token-123 failed", values, wa) ==
+      "call with *** failed"
+    assert safeError("secret-token-123", values, wa) == "***"
+    assert safeError("call with pid-9 failed", values, wa) ==
+      "call with pid-9 failed"
+
+  test "empty message becomes the generic failure":
+    let wa = findRow(INTEGRATIONS, "whatsapp")
+    assert safeError("", envOf([]), wa) == "connection test failed"
+
+suite "phase 5d2 findIntegration":
+  test "static rows resolve, provider rows follow visibility":
+    let (found, row) = findIntegration("telegram", @[], envOf([]))
+    assert found
+    assert row.key == "telegram"
+    let seen = @[Provider(name: "seen", keyEnv: "SEEN_API_KEY")]
+    let (foundP, rowP) = findIntegration("seen", seen, envOf([]))
+    assert foundP
+    assert rowP.group == "AI Providers"
+    let hid = @[Provider(name: "hid", keyEnv: "HID_API_KEY",
+                         baseUrlEnv: "HID_URL", hiddenUnlessEnv: true)]
+    let (foundH, _) = findIntegration("hid", hid, envOf([]))
+    assert not foundH
+    let (foundH2, _) = findIntegration("hid", hid,
+      envOf([("HID_URL", "https://proxy.example")]))
+    assert foundH2
+    let (foundM, _) = findIntegration("missing", @[], envOf([]))
+    assert not foundM
+
+suite "phase 5d2 testIntegration":
+  test "unknown key raises ValueError":
+    let home = tmpDir5d2("test-unknown")
+    expect ValueError:
+      discard testIntegration("nope", @[], envOf([]),
+        newHealthStore(home), emptyProbes(), linuxOs)
+
+  test "disabled integrations keep not-ready states, else drop to configured":
+    let home = tmpDir5d2("test-disabled")
+    let store = newHealthStore(home)
+    let nc = testIntegration("telegram", @[], envOf([]),
+      store, emptyProbes(), linuxOs)
+    assert nc.status.state == notConfigured
+    assert nc.status.message == "integration is disabled"
+    let env = envOf([("WAKU_EPISODIC_STORE", "sqlite"),
+                     ("NOTION_TOKEN", "tok"),
+                     ("NOTION_EPISODES_DATABASE_ID", "dbid")])
+    let cfg = testIntegration("notion", @[], env,
+      store, emptyProbes(), linuxOs)
+    assert cfg.status.state == configured
+    assert cfg.status.message == "integration is disabled"
+
+  test "a row without a probe reports no test available":
+    let home = tmpDir5d2("test-noprobe")
+    let view = testIntegration("telegram", @[],
+      envOf([("TELEGRAM_BOT_TOKEN", "tok")]),
+      newHealthStore(home), emptyProbes(), linuxOs)
+    assert view.status.state == configured
+    assert view.status.message == "no test available"
+    assert view.key == "telegram"
+
+  test "a passing probe records connected health":
+    let home = tmpDir5d2("test-pass")
+    let store = newHealthStore(home)
+    var probes = emptyProbes()
+    probes["tavily"] = okProbe()
+    let view = testIntegration("tavily", @[],
+      envOf([("TAVILY_API_KEY", "k")]), store, probes, linuxOs)
+    assert view.status.state == connected
+    let (found, got) = storedHealth(store, "tavily")
+    assert found
+    assert got.state == connected
+
+  test "a failing probe records a scrubbed error":
+    let home = tmpDir5d2("test-fail")
+    let store = newHealthStore(home)
+    var probes = emptyProbes()
+    probes["tavily"] = failingProbe("bad key SECRETXYZ")
+    let view = testIntegration("tavily", @[],
+      envOf([("TAVILY_API_KEY", "SECRETXYZ")]), store, probes, linuxOs)
+    assert view.status.state == error
+    assert view.status.message == "bad key ***"
+    let (found, got) = storedHealth(store, "tavily")
+    assert found
+    assert got.message == "bad key ***"
+
+  test "the probe receives values merged with field defaults":
+    let home = tmpDir5d2("test-values")
+    let store = newHealthStore(home)
+    var seen = initTable[string, string]()
+    var probes = emptyProbes()
+    probes["notion"] = proc(values: Table[string, string]) {.closure.} =
+      seen = values
+    let env = envOf([("WAKU_EPISODIC_STORE", "notion"),
+                     ("NOTION_TOKEN", "t"),
+                     ("NOTION_EPISODES_DATABASE_ID", "d")])
+    discard testIntegration("notion", @[], env, store, probes, linuxOs)
+    assert seen["NOTION_TOKEN"] == "t"
+    assert seen["WAKU_EPISODIC_STORE"] == "notion"
+
+suite "phase 5d2 applyIntegration":
+  test "unknown key and provider rows are rejected":
+    let home = tmpDir5d2("apply-unknown")
+    var env = envOf([])
+    var res = applyIntegration("nope", envOf([]), @[], env,
+      newHealthStore(home), home / ".env", emptyProbes())
+    assert not res.ok
+    assert res.error == "unknown integration"
+    assert not res.canForce
+    res = applyIntegration("anthropic", envOf([]), testProviders, env,
+      newHealthStore(home), home / ".env", emptyProbes())
+    assert not res.ok
+    assert res.error == "use apply_provider for AI Providers"
+
+  test "unknown fields in values and clear are rejected":
+    let home = tmpDir5d2("apply-fields")
+    var env = envOf([])
+    var res = applyIntegration("telegram", envOf([("NOPE", "1")]), @[], env,
+      newHealthStore(home), home / ".env", emptyProbes())
+    assert not res.ok
+    assert res.error == "unknown configuration field"
+    res = applyIntegration("telegram", envOf([]), @[], env,
+      newHealthStore(home), home / ".env", emptyProbes(), @["NOPE"])
+    assert not res.ok
+    assert res.error == "unknown configuration field"
+
+  test "choice fields validate against their options":
+    let home = tmpDir5d2("apply-choice")
+    var env = envOf([])
+    let res = applyIntegration("notion",
+      envOf([("WAKU_EPISODIC_STORE", "bogus")]), @[], env,
+      newHealthStore(home), home / ".env", emptyProbes())
+    assert not res.ok
+    assert res.error == "WAKU_EPISODIC_STORE must be one of: sqlite, notion"
+    assert not res.canForce
+
+  test "normalize failures surface with force allowed":
+    let home = tmpDir5d2("apply-normalize")
+    var env = envOf([])
+    let res = applyIntegration("discord",
+      envOf([("DISCORD_BOT_TOKEN", "tok-discord"),
+             ("DISCORD_MAX_TURNS_PER_HOUR", "0")]), @[], env,
+      newHealthStore(home), home / ".env", emptyProbes())
+    assert not res.ok
+    assert res.error ==
+      "DISCORD_MAX_TURNS_PER_HOUR must be a positive integer"
+    assert res.canForce
+
+  test "required fields are enforced only when enabled":
+    let home = tmpDir5d2("apply-required")
+    var env = envOf([])
+    let res = applyIntegration("whatsapp",
+      envOf([("WHATSAPP_TOKEN", "t")]), @[], env,
+      newHealthStore(home), home / ".env", emptyProbes())
+    assert not res.ok
+    assert res.error == "missing WHATSAPP_PHONE_NUMBER_ID, " &
+      "WHATSAPP_APP_SECRET, WHATSAPP_VERIFY_TOKEN"
+    assert not res.canForce
+
+  test "a disabled save writes dotenv and env, skipping required":
+    let dir = tmpDir5d2("apply-disabled")
+    var env = envOf([("TELEGRAM_ALLOWED_USER", "me")])
+    let res = applyIntegration("telegram",
+      envOf([("TELEGRAM_ALLOWED_USER", "you")]), @[], env,
+      newHealthStore(dir), dir / ".env", emptyProbes(), @[], false, linuxOs)
+    assert res.ok, res.error
+    assert res.view.key == "telegram"
+    assert env["TELEGRAM_ALLOWED_USER"] == "you"
+    assert "TELEGRAM_ALLOWED_USER=you" in readFile(dir / ".env")
+
+  test "empty secrets keep their old value, other fields update":
+    let dir = tmpDir5d2("apply-secret")
+    var env = envOf([("TELEGRAM_BOT_TOKEN", "old"),
+                     ("TELEGRAM_ALLOWED_USER", "me")])
+    let res = applyIntegration("telegram",
+      envOf([("TELEGRAM_BOT_TOKEN", ""),
+             ("TELEGRAM_ALLOWED_USER", "you")]), @[], env,
+      newHealthStore(dir), dir / ".env", emptyProbes(), @[], false, linuxOs)
+    assert res.ok, res.error
+    assert env["TELEGRAM_BOT_TOKEN"] == "old"
+    assert env["TELEGRAM_ALLOWED_USER"] == "you"
+    let text = readFile(dir / ".env")
+    assert "TELEGRAM_BOT_TOKEN" notin text
+    assert "TELEGRAM_ALLOWED_USER=you" in text
+
+  test "bool fields normalize 0 to empty":
+    let dir = tmpDir5d2("apply-bool")
+    var env = envOf([])
+    let res = applyIntegration("google_calendar",
+      envOf([("WAKU_GOOGLE_CALENDAR", "0")]), @[], env,
+      newHealthStore(dir), dir / ".env", emptyProbes(), @[], false, linuxOs)
+    assert res.ok, res.error
+    assert env["WAKU_GOOGLE_CALENDAR"] == ""
+
+  test "clear drops the field from env and dotenv":
+    let dir = tmpDir5d2("apply-clear")
+    writeFile(dir / ".env",
+      "TELEGRAM_BOT_TOKEN=tok\nTELEGRAM_ALLOWED_USER=me\n")
+    var env = envOf([("TELEGRAM_BOT_TOKEN", "tok"),
+                     ("TELEGRAM_ALLOWED_USER", "me")])
+    let res = applyIntegration("telegram", envOf([]), @[], env,
+      newHealthStore(dir), dir / ".env", emptyProbes(), @["TELEGRAM_BOT_TOKEN"])
+    assert res.ok, res.error
+    assert "TELEGRAM_BOT_TOKEN" notin env
+    assert "TELEGRAM_BOT_TOKEN" notin readFile(dir / ".env")
+    assert "TELEGRAM_ALLOWED_USER=me" in readFile(dir / ".env")
+
+  test "probe failure blocks, force saves with an untested health mark":
+    let dir = tmpDir5d2("apply-probe")
+    var probes = emptyProbes()
+    probes["tavily"] = failingProbe("bad key SECRET1")
+    var env = envOf([])
+    let blocked = applyIntegration("tavily",
+      envOf([("TAVILY_API_KEY", "SECRET1")]), @[], env,
+      newHealthStore(dir), dir / ".env", probes, @[], false, linuxOs)
+    assert not blocked.ok
+    assert blocked.error == "bad key ***"
+    assert blocked.canForce
+    assert "TAVILY_API_KEY" notin env
+    assert not fileExists(dir / ".env")
+    let forced = applyIntegration("tavily",
+      envOf([("TAVILY_API_KEY", "SECRET1")]), @[], env,
+      newHealthStore(dir), dir / ".env", probes, @[], true, linuxOs)
+    assert forced.ok, forced.error
+    assert env["TAVILY_API_KEY"] == "SECRET1"
+    assert forced.view.status.state == error
+    assert forced.view.status.message == "Saved without a successful test"
+
+  test "a passing probe records connected and returns the live view":
+    let dir = tmpDir5d2("apply-pass")
+    let store = newHealthStore(dir)
+    var probes = emptyProbes()
+    probes["tavily"] = okProbe()
+    var env = envOf([])
+    let res = applyIntegration("tavily",
+      envOf([("TAVILY_API_KEY", "k")]), @[], env,
+      store, dir / ".env", probes, @[], false, linuxOs)
+    assert res.ok, res.error
+    assert res.view.status.state == connected
+    let (found, got) = storedHealth(store, "tavily")
+    assert found
+    assert got.state == connected
+
+  test "agent rebuild failure rolls back file and env":
+    let dir = tmpDir5d2("apply-rollback")
+    writeFile(dir / ".env", "TELEGRAM_BOT_TOKEN=old\n")
+    let store = newHealthStore(dir)
+    var env = envOf([("TELEGRAM_BOT_TOKEN", "old")])
+    let rebuild: AgentRebuildFn =
+      proc(): string {.closure.} =
+        "boom REBUILD-FAIL"
+    let res = applyIntegration("google_calendar",
+      envOf([("WAKU_GOOGLE_CALENDAR", "1")]), @[], env,
+      store, dir / ".env", emptyProbes(), @[], false, linuxOs, rebuild)
+    assert not res.ok
+    assert res.error == "boom REBUILD-FAIL"
+    assert readFile(dir / ".env") == "TELEGRAM_BOT_TOKEN=old\n"
+    assert "WAKU_GOOGLE_CALENDAR" notin env
+    let (found, got) = storedHealth(store, "google_calendar")
+    assert found
+    assert got.state == error
+    assert got.message == "boom REBUILD-FAIL"
+
+  test "gateway reload success records health, error fails and retries":
+    let dir = tmpDir5d2("apply-gateway")
+    var calls = 0
+    let good: GatewayReloadFn =
+      proc(keys: seq[string]): Table[string, IntegrationStatus] {.closure.} =
+        assert keys == @["discord"]
+        result = initTable[string, IntegrationStatus]()
+        result["discord"] = IntegrationStatus(state: connected,
+          message: "gateway up")
+    var env = envOf([])
+    let res = applyIntegration("discord",
+      envOf([("DISCORD_BOT_TOKEN", "tok-discord")]), @[], env,
+      newHealthStore(dir), dir / ".env", emptyProbes(),
+      @[], false, linuxOs, nil, good)
+    assert res.ok, res.error
+    let bad: GatewayReloadFn =
+      proc(keys: seq[string]): Table[string, IntegrationStatus] {.closure.} =
+        inc calls
+        result = initTable[string, IntegrationStatus]()
+        result["discord"] = IntegrationStatus(state: error,
+          message: "gateway down")
+    writeFile(dir / ".env", "")
+    var env2 = envOf([])
+    let store2 = newHealthStore(dir)
+    let failed = applyIntegration("discord",
+      envOf([("DISCORD_BOT_TOKEN", "tok-discord")]), @[], env2,
+      store2, dir / ".env", emptyProbes(), @[], false, linuxOs, nil, bad)
+    assert not failed.ok
+    assert failed.error == "gateway down"
+    assert calls == 2
+    assert "DISCORD_BOT_TOKEN" notin env2
+    let (found, got) = storedHealth(store2, "discord")
+    assert found
+    assert got.state == error
+
+suite "phase 5d2 providerCanServe and adoptable":
+  test "canServe needs a known row with a key":
+    assert not providerCanServe("nope", testProviders, envOf([]))
+    assert not providerCanServe("anthropic", testProviders, envOf([]))
+    assert providerCanServe("anthropic", testProviders,
+      envOf([("ANTHROPIC_API_KEY", "k")]))
+
+  test "adoptable takes a key while the current provider cannot serve":
+    let provs = testProviders
+    assert adoptable(provs[0], "k", envOf([]), provs)
+    assert not adoptable(provs[0], "", envOf([]), provs)
+    assert not adoptable(provs[0], "k",
+      envOf([("WAKU_PROVIDER", "anthropic"),
+             ("ANTHROPIC_API_KEY", "k")]), provs)
+
+suite "phase 5d2 applyProvider":
+  test "unknown provider is rejected":
+    let dir = tmpDir5d2("prov-unknown")
+    var env = envOf([])
+    let res = applyProvider("nope", testProviders, env,
+      newHealthStore(dir), dir / ".env", dir)
+    assert not res.ok
+    assert res.error == "unknown provider"
+
+  test "a new key is probed before it is saved":
+    let dir = tmpDir5d2("prov-probe")
+    var probed: seq[Table[string, string]] = @[]
+    let probe: ProbeFn =
+      proc(values: Table[string, string]) {.closure.} =
+        probed.add(values)
+    var env = envOf([])
+    let res = applyProvider("anthropic", testProviders, env,
+      newHealthStore(dir), dir / ".env", dir, probe, key = "k1")
+    assert res.ok, res.error
+    assert env["WAKU_PROVIDER"] == "anthropic"
+    assert env["ANTHROPIC_API_KEY"] == "k1"
+    assert probed.len == 1
+    assert probed[0]["ANTHROPIC_API_KEY"] == "k1"
+    assert res.view.status.state == connected
+    assert "ANTHROPIC_API_KEY=k1" in readFile(dir / ".env")
+
+  test "reopening an unchanged provider probes nothing":
+    let dir = tmpDir5d2("prov-unchanged")
+    var probed = 0
+    let probe: ProbeFn =
+      proc(values: Table[string, string]) {.closure.} =
+        inc probed
+    var env = envOf([("WAKU_PROVIDER", "anthropic"),
+                     ("ANTHROPIC_API_KEY", "k1")])
+    let res = applyProvider("anthropic", testProviders, env,
+      newHealthStore(dir), dir / ".env", dir, probe)
+    assert res.ok, res.error
+    assert probed == 0
+
+  test "switching providers defaults the model from the pinned shortlist":
+    let dir = tmpDir5d2("prov-switch")
+    writeFile(dir / "models.json", """{"pinned": ["openai:gpt-new"]}""")
+    var env = envOf([("WAKU_PROVIDER", "anthropic"),
+                     ("ANTHROPIC_API_KEY", "k")])
+    let res = applyProvider("openai", testProviders, env,
+      newHealthStore(dir), dir / ".env", dir, okProbe(), key = "ok1")
+    assert res.ok, res.error
+    assert env["WAKU_PROVIDER"] == "openai"
+    assert env["WAKU_MODEL"] == "gpt-new"
+    assert env.getOrDefault("WAKU_SMALL_MODEL", "") == ""
+
+  test "the first key is adopted even when the caller says not to":
+    let dir = tmpDir5d2("prov-adopt")
+    var env = envOf([])
+    let res = applyProvider("anthropic", testProviders, env,
+      newHealthStore(dir), dir / ".env", dir, okProbe(),
+      key = "k1", activate = false)
+    assert res.ok, res.error
+    assert env["WAKU_PROVIDER"] == "anthropic"
+
+  test "saving a second provider without activate keeps the current one":
+    let dir = tmpDir5d2("prov-noadopt")
+    var env = envOf([("WAKU_PROVIDER", "anthropic"),
+                     ("ANTHROPIC_API_KEY", "k")])
+    let res = applyProvider("openai", testProviders, env,
+      newHealthStore(dir), dir / ".env", dir, okProbe(),
+      key = "ok1", activate = false)
+    assert res.ok, res.error
+    assert env["WAKU_PROVIDER"] == "anthropic"
+    assert env["OPENAI_API_KEY"] == "ok1"
+
+  test "regional providers keep their endpoint beside the key":
+    let dir = tmpDir5d2("prov-baseurl")
+    var env = envOf([("WAKU_PROVIDER", "minimax")])
+    let res = applyProvider("minimax", testProviders, env,
+      newHealthStore(dir), dir / ".env", dir, okProbe(),
+      baseUrl = "https://x.example")
+    assert res.ok, res.error
+    assert env["MINIMAX_BASE_URL"] == "https://x.example"
+    assert env.getOrDefault("WAKU_BASE_URL", "") == ""
+
+  test "probe failure keeps the old env and allows force":
+    let dir = tmpDir5d2("prov-fail")
+    var env = envOf([])
+    let res = applyProvider("anthropic", testProviders, env,
+      newHealthStore(dir), dir / ".env", dir,
+      failingProbe("nope BADKEY"), key = "BADKEY")
+    assert not res.ok
+    assert res.error == "nope ***"
+    assert res.canForce
+    assert "WAKU_PROVIDER" notin env
+    assert "ANTHROPIC_API_KEY" notin env
+
+  test "force saves without a test and marks the health accordingly":
+    let dir = tmpDir5d2("prov-force")
+    let store = newHealthStore(dir)
+    var env = envOf([("WAKU_PROVIDER", "anthropic"),
+                     ("ANTHROPIC_API_KEY", "k1")])
+    let res = applyProvider("anthropic", testProviders, env,
+      store, dir / ".env", dir, failingProbe("must not run"), force = true)
+    assert res.ok, res.error
+    let (found, got) = storedHealth(store, "anthropic")
+    assert found
+    assert got.state == error
+    assert got.message == "Saved without a successful test"
+
+suite "phase 5d2 applyProviderDisabled":
+  test "disable, re-enable and the current-provider guard":
+    let dir = tmpDir5d2("prov-disabled")
+    var env = envOf([("WAKU_PROVIDER", "anthropic")])
+    let store = newHealthStore(dir)
+    var res = applyProviderDisabled("openai", testProviders, env,
+      store, dir / ".env", true)
+    assert res.ok, res.error
+    assert env["WAKU_DISABLED_PROVIDERS"] == "openai"
+    assert "WAKU_DISABLED_PROVIDERS=openai" in readFile(dir / ".env")
+    res = applyProviderDisabled("anthropic", testProviders, env,
+      store, dir / ".env", true)
+    assert not res.ok
+    assert res.error ==
+      "cannot disable the current provider — switch to another provider first"
+    res = applyProviderDisabled("openai", testProviders, env,
+      store, dir / ".env", false)
+    assert res.ok, res.error
+    assert env["WAKU_DISABLED_PROVIDERS"] == ""
+    res = applyProviderDisabled("nope", testProviders, env,
+      store, dir / ".env", true)
+    assert not res.ok
+    assert res.error == "unknown provider"
+
+  test "the disabled set stays sorted":
+    let dir = tmpDir5d2("prov-sorted")
+    var env = envOf([("WAKU_PROVIDER", "openai")])
+    let store = newHealthStore(dir)
+    assert applyProviderDisabled("minimax", testProviders, env,
+      store, dir / ".env", true).ok
+    assert applyProviderDisabled("anthropic", testProviders, env,
+      store, dir / ".env", true).ok
+    assert env["WAKU_DISABLED_PROVIDERS"] == "anthropic,minimax"
+
+suite "phase 5d2 connections text":
+  test "render carries groups, labels and the checked stamp":
+    let text = renderConnections(@[],
+      envOf([("TELEGRAM_BOT_TOKEN", "tok")]), linuxOs)
+    assert "Channels" in text
+    assert "Telegram" in text
+    assert "configured" in text
+    assert "configured — not tested yet" in text
+
+  test "checked health renders its stamp":
+    let health: HealthFn =
+      proc(key: string): IntegrationStatus {.closure.} =
+        IntegrationStatus(state: connected, message: "probe ok",
+                          checkedAt: "2026-09-30")
+    let text = renderConnections(@[],
+      envOf([("TELEGRAM_BOT_TOKEN", "tok")]), linuxOs, health)
+    assert "(checked 2026-09-30)" in text
+    assert "connected · probe ok" in text
+
+  test "failed is true only for a configured error":
+    assert not connectionsFailed(@[], envOf([]), linuxOs)
+    let failing: HealthFn =
+      proc(key: string): IntegrationStatus {.closure.} =
+        IntegrationStatus(state: error, message: "down")
+    assert connectionsFailed(@[],
+      envOf([("TELEGRAM_BOT_TOKEN", "tok")]), linuxOs, failing)
+    assert not connectionsFailed(@[], envOf([]), linuxOs, failing)
+
+  test "cliMain returns the exit code for the surface":
+    assert cliMain(@[], envOf([]), linuxOs) == 0
+    let failing: HealthFn =
+      proc(key: string): IntegrationStatus {.closure.} =
+        IntegrationStatus(state: error, message: "down")
+    assert cliMain(@[], envOf([("TELEGRAM_BOT_TOKEN", "tok")]),
+                   linuxOs, failing) == 1

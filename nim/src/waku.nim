@@ -17,6 +17,7 @@ import std/json
 import std/os
 import std/strutils
 import std/syncio
+import std/tables
 
 import ./brief
 import ./cli
@@ -24,6 +25,7 @@ import ./client
 import ./config
 import ./db
 import ./gather
+import ./integrations
 import ./providers
 import ./skills
 import ./triage
@@ -49,37 +51,25 @@ proc findProvidersToml*(): string =
     return besideBin
   return ""
 
-proc connectionsOutput*(rows: seq[Provider], globalKey,
-                        dotenvPath: string): string =
-  ## Render the `connections` provider list without network probes.
-  ## One line per visible row: `configured` when its key resolves,
-  ## otherwise the `set VAR` hint. Hidden rows (hosted tier without its
-  ## endpoint) never appear. Pure — no I/O, so tests call this directly.
-  result = "AI Providers\n"
-  for p in rows:
-    if not p.isVisible():
-      continue
-    if p.resolveApiKey(globalKey).len > 0:
-      result &= "  " & p.name & " — configured (" & p.keyEnv & " set)\n"
-    else:
-      result &= "  " & p.name & " — missing key (set " & p.keyEnv & ")\n"
-  if dotenvPath.len > 0:
-    result &= "\nLoaded .env from " & dotenvPath & "\n"
-  else:
-    result &= "\nNo .env found from " & getCurrentDir() & " upward\n"
-
 proc runConnections*(): int =
-  ## Load env, locate the registry, print the provider list. Exit 0:
-  ## phase 0c has no probes, so nothing can report ERROR yet.
-  let dotenvPath = loadDotenv()
+  ## List every integration and its stored health, like
+  ## `waku/integrations.py` `cli_main` in plain text (the Nim CLI has no
+  ## rich): a stored ERROR on a configured row exits 1, else 0. A missing
+  ## registry exits 1 (Nim reads `providers.toml`; Python reads the
+  ## compiled `PROVIDERS`). No probes run here — health is read, never
+  ## tested, so this stays offline.
+  discard loadDotenv()
   let registryPath = findProvidersToml()
   if registryPath.len == 0:
     stderr.writeLine "providers.toml not found from " & getCurrentDir() &
       " upward or beside the binary"
     return 1
   let rows = loadProviders(registryPath)
-  echo connectionsOutput(rows, getEnv("WAKU_API_KEY"), dotenvPath)
-  return 0
+  var env = initTable[string, string]()
+  for key, value in envPairs():
+    env[key] = value
+  let store = newHealthStore(loadSettings().home)
+  return cliMain(rows, env, hostOS, storeHealthFn(store), nil)
 
 proc writeHelp*() =
   ## Print the command list the full port will implement.

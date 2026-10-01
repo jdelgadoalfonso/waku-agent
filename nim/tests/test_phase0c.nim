@@ -1,13 +1,13 @@
-## Phase 0c tests: dotenv cwd-walk and the real `connections` output.
+## Phase 0c tests: dotenv cwd-walk. The `connections` dispatch was rewired
+## in 5d2 to `integrations.cliMain`; its exit codes are covered in
+## `test_cli.nim` and the text surface in `test_integrations.nim`.
 ## Offline only: temp dirs under getTempDir(), no network, no `.waku/` writes.
 ## Env vars touched are snapshotted and restored, never clobbered.
 
 import std/os
-import std/strutils
 import std/unittest
 
 import ../src/config
-import ../src/providers
 import ../src/waku
 
 proc saveEnv(keys: openArray[string]): seq[(string, bool, string)] =
@@ -79,57 +79,17 @@ suite "phase 0c dotenv cwd-walk":
     restoreEnv(saved)
     removeDir(root)
 
-suite "phase 0c connections output":
-  const fixture = """
-[anthropic]
-kind = "anthropic"
-key_env = "ANTHROPIC_API_KEY"
-model = "claude-sonnet-5"
-
-[hosted]
-kind = "anthropic"
-key_env = "WAKU_PLATFORM_KEY"
-model = "waku-free"
-base_url_env = "WAKU_PLATFORM_URL"
-hidden_unless_env = true
-claims_families = false
-scoped_credentials = true
-"""
-
-  test "lists configured and missing rows, hides the hosted row":
-    let saved = saveEnv(["ANTHROPIC_API_KEY", "WAKU_PLATFORM_URL",
-                         "WAKU_PLATFORM_KEY"])
-    let rows = parseProviders(fixture)
-    putEnv("ANTHROPIC_API_KEY", "sk-test")
-    delEnv("WAKU_PLATFORM_URL")
-    delEnv("WAKU_PLATFORM_KEY")
-    let output = connectionsOutput(rows, "", "/proj/.env")
-    assert "anthropic" in output
-    assert "configured" in output
-    assert "ANTHROPIC_API_KEY" in output
-    assert "hosted" notin output
-    assert "/proj/.env" in output
-    restoreEnv(saved)
-
-  test "missing key names the var to set":
-    let saved = saveEnv(["ANTHROPIC_API_KEY"])
-    let rows = parseProviders(fixture)
-    delEnv("ANTHROPIC_API_KEY")
-    let output = connectionsOutput(rows, "", "")
-    assert "missing key" in output
-    assert "ANTHROPIC_API_KEY" in output
-    assert "No .env found" in output
-    restoreEnv(saved)
-
-  test "renders the real registry when reachable":
-    let registryPath = findProvidersToml()
-    if registryPath.len == 0:
+suite "phase 5d2 connections dispatch":
+  test "dispatch exits 0 on a fresh health store":
+    if findProvidersToml().len == 0:
       skip()
     else:
-      let saved = saveEnv(["WAKU_API_KEY"])
-      delEnv("WAKU_API_KEY")
-      let rows = loadProviders(registryPath)
-      let output = connectionsOutput(rows, "", "/proj/.env")
-      assert "anthropic" in output
-      assert "openai" in output
+      let saved = saveEnv(["WAKU_HOME"])
+      let home = getTempDir() / "waku-conn-fresh"
+      if dirExists(home):
+        removeDir(home)
+      createDir(home)
+      putEnv("WAKU_HOME", home)
+      assert runCommand(@["connections"]) == 0
       restoreEnv(saved)
+      removeDir(home)
