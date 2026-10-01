@@ -309,6 +309,9 @@ suite "phase 7d1 telegram handle":
     s.enqueue("!raise401")  # the second poll finds a dead token
     let live = newTelegramLive()
     telegramRun(live, http, noIds(), "t", respondOf(s), loggerOf(s))
+    # Python's two startup lines, in order, before the first poll
+    check s.log[0] == listeningBanner
+    check s.log[1] == posture(noIds())
     check not live.running
     check s.turns == ["hi"]  # the first poll still answered
     check same(telegramStatus(live), GatewayReport(ok: false,
@@ -544,6 +547,12 @@ suite "phase 7d1 whatsapp POST door":
     check "429" in w.log[2]
 
 suite "phase 7d1 whatsapp handle":
+  test "a nil handle reads as stopped, like Python's None":
+    check same(whatsappStatus(nil), GatewayReport(ok: false,
+      message: "gateway stopped unexpectedly"))
+    check same(telegramStatus(nil), GatewayReport(ok: false,
+      message: "gateway stopped unexpectedly"))
+
   test "the status reads healthy, then the last turn error":
     let w = newWire()
     let live = newWhatsappLive()

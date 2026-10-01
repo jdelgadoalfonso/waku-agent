@@ -174,7 +174,8 @@ con la unidad que duena el live loop); cambiarlo rompería
   `TelegramHandle` de Python: runner, offset, flags de conflicto y de
   stop), `telegramPoll` (un ciclo: `getUpdates` desde el offset,
   clasificar, `runGatewayTurn` por update, `nextTelegramOffset`),
-  `telegramFault` + `telegramRun` (loop bloqueante), y
+  `telegramFault` + `telegramRun` (loop bloqueante que imprime el
+  banner de `main` y `posture` como Python), y
   `telegramStatus`/`telegramStop` + los tres adaptadores del
   supervisor (`telegramStarter`/`telegramStatusFn`/
   `telegramStopFn`). `timeoutSecs` es parámetro porque el dashboard
@@ -269,7 +270,7 @@ con la unidad que duena el live loop); cambiarlo rompería
   test del seam de 7b que 7d1 reemplaza). `waku.nim` intacto: el pin 4e
   sigue verde y `waku telegram|discord|whatsapp|voice` sigue siendo
   scaffolding hasta 7d2. Frontend intacto. Evals intactos.
-  `nimble test` verde, 0 warnings, 736 OK (675 - 1 + 28 + 22 + 12),
+  `nimble test` verde, 0 warnings, 737 OK (675 - 1 + 29 + 22 + 12),
   EXIT=0, sin ficheros temporales huérfanos en `/tmp`.
 
 ## 7d2 — WebSocket de Discord + dispatch + supervisor (SIGUIENTE)

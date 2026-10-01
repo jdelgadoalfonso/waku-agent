@@ -196,6 +196,10 @@ const
     ## `on_poll_error`'s one warning, verbatim: another bot is already
     ## polling this token, which is the one poll error a person can act
     ## on. Said once, never with a traceback (Python's exact policy).
+  listeningBanner* = "Waku is listening on Telegram — message your bot. " &
+    "Ctrl-C to stop."
+    ## `main`'s one-line banner, verbatim. `telegramRun` prints it with
+    ## the posture, exactly where Python prints both.
   pollerStoppedLine* = "(telegram) background poller stopped: "
     ## What a dead poller prints, like Python's `run` except arm.
   pollFailedLine* = "(telegram) poll failed: "
@@ -330,6 +334,12 @@ proc telegramRun*(live: TelegramLive, http: TelegramHttpFn,
   ## The blocking poll loop (Python's `app.run_polling` on the poller
   ## thread). It returns when `stop` is observed or the token dies; a
   ## transport blip is not an exit, that is the retry in `telegramPoll`.
+  ## It prints Python's two startup lines first (the banner and the
+  ## posture), because this is the standalone command's loop; the
+  ## dashboard prints its own `(telegram) starting:` line instead and
+  ## pumps `telegramPoll` itself.
+  logger(listeningBanner)
+  logger(posture(ids))
   live.running = not live.stop
   while live.running and not live.stop:
     discard telegramPoll(live, http, ids, token, respond, logger, env,
@@ -341,7 +351,11 @@ proc telegramStatus*(live: TelegramLive): GatewayReport =
   ## that is not running (`gateway stopped unexpectedly`, exactly
   ## Python's message for a dead thread), then the runner's last error,
   ## else healthy. The conflict wins over the runner because Python's
-  ## handle checks it first.
+  ## handle checks it first, and a nil handle (nothing started) reads as
+  ## stopped, which is what Python's `status()` gives for a key with no
+  ## handle.
+  if live.isNil:
+    return GatewayReport(ok: false, message: "gateway stopped unexpectedly")
   if live.conflict:
     return GatewayReport(ok: false,
       message: "another instance is polling this token")

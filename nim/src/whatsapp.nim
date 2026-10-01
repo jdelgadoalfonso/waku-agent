@@ -407,8 +407,9 @@ proc whatsappStatus*(live: WhatsappLive): GatewayReport =
   ## `gateway stopped unexpectedly` (Python's exact message), otherwise
   ## the runner's last turn error, otherwise healthy. Python's handle has
   ## no runner at all — the port reuses the shared one so a broken turn
-  ## shows on the dashboard like it does for the other gateways.
-  if not live.running:
+  ## shows on the dashboard like it does for the other gateways. A nil
+  ## handle (nothing started) reads as stopped, like Python's `None`.
+  if live.isNil or not live.running:
     return GatewayReport(ok: false, message: "gateway stopped unexpectedly")
   let lastError = live.runner.errorStatus()
   if lastError.len > 0:
