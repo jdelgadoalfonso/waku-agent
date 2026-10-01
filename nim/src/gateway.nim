@@ -64,7 +64,9 @@ type
     ## the last dashboard-visible error, and whether it is retired. The
     ## executor, the owned agent and its thread affinity are deliberately
     ## absent (no threads in this port, see the module header): the live
-    ## loop will own the single Waku directly in 7d.
+    ## loop owns the single Waku itself, and every live gateway hands its
+    ## `RespondFn` through `accountedRespond` so the failure lands on this
+    ## runner exactly where Python's `_respond` puts it.
     source*: string
     lastError*: string
     closed*: bool
@@ -109,6 +111,31 @@ type
     ## the send API; tests record. Raises on delivery failure.
   LogFn* = proc(line: string) {.closure.}
     ## Terminal mirror (`you › …` / `waku › …` plus failure lines).
+
+proc accountedRespond*(runner: var RunnerState, respond: RespondFn,
+    env: Table[string, string] = initTable[string, string]()): RespondFn =
+  ## Port of `GatewayAgentRunner._respond` (7d1): run one turn, remember a
+  ## failure as `message handling` and let it propagate, exactly where
+  ## Python records it. `runGatewayTurn` logs the failure and sends the
+  ## error reply, but the STATUS the dashboard shows is recorded HERE, on
+  ## the same runner — so every live gateway passes this as its
+  ## `RespondFn` instead of its bare agent call. Without it a broken turn
+  ## would be visible in the terminal and invisible in the dashboard.
+  # A `var` parameter cannot be captured by a closure (Nim would not know
+  # the caller keeps it alive), so the closure holds its address. Every
+  # live gateway keeps the runner inside a `ref` handle, which outlives
+  # the seam — the same invariant Python gets from the runner's own
+  # lifetime.
+  let self = addr runner
+  result = proc(text: string): string {.closure.} =
+    try:
+      let reply = respond(text)
+      self[].clearError()
+      return reply
+    except CatchableError as exc:
+      discard self[].recordError($exc.name, exc.msg, env,
+        "message handling")
+      raise
 
 proc runGatewayTurn*(runner: var RunnerState, text: string,
     respond: RespondFn, send: SendFn, logger: LogFn,

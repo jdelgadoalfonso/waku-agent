@@ -5,7 +5,7 @@
 ## sockets), and the HMAC is pinned by RFC 4231 vectors plus one
 ## waku-shaped case cross-checked against Python's `hmac`. The live
 ## adapters (`liveDiscordPost`, `liveWhatsappPost`) are never called;
-## the live ends (`receiveDiscordEvent`, `serveWhatsappWebhook`) raise
+## the live end (`receiveDiscordEvent`) raises
 ## honestly naming 7d and are pinned doing exactly that.
 ##
 ## Split from `test_gateway.nim` on purpose: that file already covers
@@ -340,9 +340,6 @@ suite "phase 7b whatsapp wire":
     except IOError:
       discard
 
-  test "serving stays an honest 7d seam":
-    try:
-      serveWhatsappWebhook()
-      assert false, "must raise"
-    except CatchableError as exc:
-      assert "7d" in exc.msg
+  # The 7b "serving stays an honest 7d seam" test left with the seam:
+  # 7d1 ships the server, and its pins live in test_live_gateways.nim
+  # (the door, the GET verification, the 200-before-turn order).

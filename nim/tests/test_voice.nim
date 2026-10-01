@@ -28,6 +28,7 @@ import std/unittest
 
 import ../src/gateway
 import ../src/voice
+import ../src/voiceio
 
 const readBlock = 1600  ## 100ms at SAMPLE_RATE; the one read size
 
@@ -484,3 +485,290 @@ suite "phase 7c voice turn":
     except IOError:
       discard
     assert lines == @["you › hi"]
+
+# ── the live loops (7d1) ──────────────────────────────────────────────
+
+type
+  Rig = ref object
+    ## Everything one scripted voice session records: the transcript the
+    ## ears hand back per take, what the mouth spoke, the lines the
+    ## terminal showed, the wake traces, the heartbeats and the drains.
+    heard: seq[string]
+    spoken: seq[string]
+    lines: seq[string]
+    beats: seq[string]
+    traces: seq[JsonNode]
+    drains: int
+    nextTranscript: int
+    stopAfter: int       ## stop the loop after this many replies
+    replies: int
+    micOpens: int
+
+proc nextHeard(r: Rig): string =
+  ## One scripted transcript per take, then silence: a loop that keeps
+  ## asking after the script runs out gets "" (the "(didn't catch that)"
+  ## branch), which is exactly what an exhausted queue should say.
+  if r.nextTranscript >= r.heard.len:
+    return ""
+  result = r.heard[r.nextTranscript]
+  r.nextTranscript += 1
+
+proc rigOf(blocks: seq[seq[float32]], heard: seq[string],
+    config: VoiceConfig): (VoiceRig, Rig) =
+  ## A rig over a scripted mic, scripted ears and a scripted mouth.
+  var state = Rig(heard: heard, spoken: @[], lines: @[], beats: @[],
+    traces: @[], drains: 0, nextTranscript: 0, stopAfter: 99, replies: 0,
+    micOpens: 0)
+  let (read, script) = readsOf(blocks)
+  let stopFlag = state
+  result[0].config = config
+  result[0].read = read
+  result[0].pending = proc(): int {.closure.} = state.drains * 0
+  result[0].drain = proc(): int {.closure.} =
+    inc state.drains
+    return 0
+  result[0].stt = proc(audio: seq[float32]): string {.closure.} =
+    return state.nextHeard()
+  result[0].tts = proc(text: string) {.closure.} = state.spoken.add(text)
+  result[0].respond = proc(text: string): string {.closure.} =
+    inc state.replies
+    if state.replies >= state.stopAfter:
+      stopFlag.stopAfter = 0
+    return "reply " & $state.replies
+  result[0].logger = proc(line: string) {.closure.} = state.lines.add(line)
+  result[0].status = proc(msg: string) {.closure.} = state.beats.add(msg)
+  result[0].trace = proc(kind: string, payload: JsonNode) {.closure.} =
+    assert kind == "wake_scan"
+    state.traces.add(payload)
+  # the script IS the stop: once every scripted transcript is spent, a
+  # real session would still be listening, so the scripted one ends —
+  # which is what makes each test's block budget exact
+  result[0].stop = proc(): bool {.closure.} =
+    state.stopAfter == 0 or state.nextTranscript >= state.heard.len
+  result[1] = state
+
+proc shortFollowup(wakeWord = wakeWordDefault): VoiceConfig =
+  ## The default config with a 0.3s follow-up window: the real default
+  ## is 8s, which is 80 blocks of scripted silence per test.
+  voiceConfig(envOf([("WAKU_WAKE_WORD", wakeWord),
+    ("WAKU_FOLLOWUP_SECONDS", "0.3"), ("WAKU_MIC_THRESHOLD", "0.005")]))
+
+proc windows(count: int, amp = 0.1f32): seq[seq[float32]] =
+  ## `count` loud 100ms blocks, enough for whole wake windows.
+  result = @[]
+  for _ in 1 .. count:
+    result.add(tone(amp))
+
+suite "phase 7d1 voice heartbeat":
+  test "the status line is one rewritten row, 72 columns wide":
+    let beat = heartbeatLine("· listening…")
+    assert beat.startsWith("\r\x1b[2m· listening…")
+    assert beat.endsWith("\x1b[0m")
+    # padded to the full width, so a shorter line cannot leave the
+    # previous scan's characters on screen
+    assert beat.len == "\r\x1b[2m".len + 72 + "\x1b[0m".len
+    assert beat == "\r\x1b[2m" & "· listening…" &
+      " ".repeat(72 - "· listening…".len) & "\x1b[0m"
+    let long = heartbeatLine("x".repeat(100))
+    assert long.len == "\r\x1b[2m".len + 72 + "\x1b[0m".len
+    assert "x".repeat(72) in long
+    assert "x".repeat(73) notin long
+
+suite "phase 7d1 voice wake loop":
+  test "a quiet window listens, and spends nothing on the ears":
+    let (rig, state) = rigOf(windows(25) & quietBlocks(25), @[],
+      shortFollowup())
+    # the first 25 blocks are loud, so replace them with quiet ones
+    let (quietRig, quietState) = rigOf(quietBlocks(50), @[],
+      shortFollowup())
+    discard rig
+    discard state
+    # a stop that is already true ends before the first read
+    quietState.stopAfter = 0
+    wakeLoop(quietRig)
+    assert quietState.beats.len == 0
+    assert quietState.spoken.len == 0
+    assert quietState.lines == @[banner(wakeWordDefault)]
+
+  test "a near miss is traced and shown, and the loop keeps scanning":
+    let blocks = windows(25) & windows(25) & windows(3) &
+      quietBlocks(12) & quietBlocks(3)
+    let (rig, state) = rigOf(blocks,
+      @["what a nice day", "waku waku", "what is on today"],
+      shortFollowup())
+    state.stopAfter = 1
+    wakeLoop(rig)
+    assert state.beats[0] == "· heard: \"what a nice day\""
+    # only the near miss is traced: a wake is not a near miss
+    assert state.traces.len == 1
+    assert state.traces[0] == %*{"heard": "what a nice day", "matched": false}
+    assert state.spoken[0] == "Yes?"      # the ack, before the question
+    assert state.lines.contains("you › what is on today")
+    assert state.lines.contains("waku › reply 1")
+
+  test "a wake answers, drains twice and shows the follow-up line":
+    # 25 loud (window) + 3 loud + 12 quiet (the command take) +
+    # 3 quiet (wait_for_speech says no) is the whole exchange.
+    let blocks = windows(25) & windows(3) & quietBlocks(12) & quietBlocks(3)
+    let (rig, state) = rigOf(blocks, @["waku waku", "what is on today"],
+      shortFollowup())
+    state.stopAfter = 1
+    wakeLoop(rig)
+    assert "[wake word]" in state.lines
+    assert state.spoken == @["Yes?", "reply 1"]
+    assert state.lines == @["Listening for \"" & wakeWordDefault &
+      "\" — Ctrl-C to quit.", "[wake word]", "you › what is on today",
+      "waku › reply 1"]
+    assert state.drains == 2   # after the ack and after the reply
+    assert state.beats[^1] == "· still here — just talk, or I'll rest in 0s"
+
+  test "an empty command says it did not catch that and moves on":
+    let blocks = windows(25) & windows(3) & quietBlocks(12) & quietBlocks(3)
+    let (rig, state) = rigOf(blocks, @["waku waku", ""], shortFollowup())
+    state.stopAfter = 1
+    wakeLoop(rig)
+    assert "(didn't catch that)" in state.lines
+    assert state.spoken == @["Yes?"]
+    assert state.drains == 2
+
+  test "Ctrl-C ends the loop before the first window":
+    var (rig, state) = rigOf(windows(25) & windows(25), @["waku waku"],
+      shortFollowup())
+    let quitting = true
+    rig.stop = proc(): bool {.closure.} = quitting
+    wakeLoop(rig)
+    assert state.spoken.len == 0
+    assert state.beats.len == 0
+    # the banner, and nothing else: no window was ever read
+    assert state.lines == @[banner(wakeWordDefault)]
+
+suite "phase 7d1 voice push to talk":
+  test "the ladder answers a take, then the Enter prompt ends the session":
+    var lines: seq[string] = @[]
+    var spoken: seq[string] = @[]
+    var prompts: seq[string] = @[]
+    var opens = 0
+    var (rig, _) = rigOf(quietBlocks(2), @["one take"], shortFollowup(""))
+    rig.stop = nil   # this session ends at EOF, not at a stop flag
+    rig.logger = proc(line: string) {.closure.} = lines.add(line)
+    rig.tts = proc(text: string) {.closure.} = spoken.add(text)
+    var takes = 0
+    let openMic: MicOpenFn =
+      proc(): ExternalMic {.closure.} =
+        inc opens
+        return nil
+    let prompt: PromptFn =
+      proc(msg: string) {.closure.} = prompts.add(msg)
+    let readLine: LineFn =
+      proc(): string {.closure.} =
+        inc takes
+        if takes > 2:
+          raise newException(EOFError, "end of input")
+        return ""
+    # take one: long enough and understood. take two: too short.
+    var takesRead = 0
+    var sttCalls = 0
+    let stt: SttFn =
+      proc(audio: seq[float32]): string {.closure.} =
+        # the first take is understood, the second is not
+        result = if sttCalls == 0: "book the dentist" else: ""
+        inc sttCalls
+        return result
+    rig.stt = stt
+    let takeOf: TakeFn =
+      proc(mic: ExternalMic): seq[float32] {.closure.} =
+        result = if takesRead == 0: tone(0.1, shortUtteranceSamples + 10)
+                 else: tone(0.1, shortUtteranceSamples + 10)
+        inc takesRead
+        return result
+    check pushToTalk(rig, openMic, prompt, readLine, takeOf)
+    # three takes were offered, the third Enter press ended the session
+    assert opens == 3
+    assert prompts.len == 3
+    assert prompts[0] == "recording — press Enter when done… "
+    assert lines.contains("you › book the dentist")
+    assert spoken == @["reply 1"]
+    assert "(didn't catch that)" in lines
+    assert lines[^1] == byeLine
+
+suite "phase 7d1 voice command":
+  test "an unwired engine is named and nothing is started":
+    var opens = 0
+    let openMic: MicOpenFn =
+      proc(): ExternalMic {.closure.} =
+        inc opens
+        return nil
+    let respond: RespondFn = proc(text: string): string {.closure.} = "hi"
+    var said: seq[string] = @[]
+    let quiet: LogFn = proc(line: string) {.closure.} = discard
+    assert voiceMain(envOf([]), respond, openMic, run = nil,
+      logger = quiet) == 1
+    assert opens == 0
+    said = @[]
+    let collect: LogFn = proc(line: string) {.closure.} = said.add(line)
+    let code = voiceMain(envOf([("WAKU_STT_COMMAND", "whisper-cli")]),
+      respond, openMic, logger = collect)
+    assert code == 1
+    assert opens == 0
+    assert said.len == 1
+    assert "WAKU_MIC_COMMAND" in said[0]
+
+  test "without a mouth the session says so once and keeps going":
+    var said: seq[string] = @[]
+    var opens = 0
+    let noMic: MicOpenFn =
+      proc(): ExternalMic {.closure.} =
+        inc opens
+        raise newException(CatchableError, "no recorder here")
+    let collect: LogFn = proc(line: string) {.closure.} = said.add(line)
+    let unused: RespondFn = proc(text: string): string {.closure.} = "unused"
+    let code = voiceMain(envOf([("WAKU_STT_COMMAND", "whisper-cli"),
+        ("WAKU_MIC_COMMAND", "arecord -q"), ("WAKU_WAKE_WORD", "")]),
+      unused, noMic, logger = collect)
+    # the mouth notice first, then the ready banner, then the honest mic
+    # error and the goodbye — the ladder never ran
+    assert "WAKU_TTS_COMMAND" in said[0]
+    assert said[1] == readyBanner
+    assert "no recorder here" in said[2]
+    assert said[3] == byeLine
+    assert code == 1
+    assert opens == 1
+
+  test "a mouth is wired and a take is answered, then the mic fails":
+    var said: seq[string] = @[]
+    var spoken: seq[string] = @[]
+    var prompts: seq[string] = @[]
+    var takesRead = 0
+    var opens = 0
+    let openMic: MicOpenFn =
+      proc(): ExternalMic {.closure.} =
+        inc opens
+        return nil
+    let collect: LogFn = proc(line: string) {.closure.} = said.add(line)
+    let run: RunCommandFn =
+      proc(argv: seq[string], stdin: string): (int, string) {.closure.} =
+        if argv[0] == "say":
+          spoken.add(stdin)
+          return (0, "")
+        return (0, "  book it  ")
+    let code = voiceMain(envOf([("WAKU_STT_COMMAND", "whisper-cli"),
+        ("WAKU_MIC_COMMAND", "arecord -q"),
+        ("WAKU_TTS_COMMAND", "say -v Daniel"), ("WAKU_WAKE_WORD", "")]),
+      proc(text: string): string {.closure.} = "booked for friday",
+      openMic, run, logger = collect,
+      takeOf = proc(mic: ExternalMic): seq[float32] {.closure.} =
+        tone(0.1, shortUtteranceSamples + 10),
+      prompt = proc(msg: string) {.closure.} = prompts.add(msg),
+      readLineIn = proc(): string {.closure.} =
+        inc takesRead
+        if takesRead > 1:
+          raise newException(EOFError, "end of input")
+        return "")
+    assert "WAKU_TTS_COMMAND" notin said[0]
+    assert said[0] == readyBanner
+    assert "you › book it" in said
+    assert "waku › booked for friday" in said
+    assert spoken == @["booked for friday"]  # the reply, speakable
+    assert prompts[0] == "recording — press Enter when done… "
+    assert said[^1] == byeLine
+    assert code == 0

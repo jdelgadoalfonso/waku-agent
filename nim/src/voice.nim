@@ -17,22 +17,33 @@
 ## the ears, `TtsFn` for the mouth. A `nil` seam raises an honest
 ## error naming the seam and the engine it waits for, the same
 ## honest-501 policy the arena routes (8c/8d) and the OAuth flow (6b)
-## use; 7d wires an external engine, or says in plain text what is
-## missing. Nothing here pretends to listen.
+## use. Nothing here pretends to listen.
 ##
-## Everything else is pure or seam-injected, so the tests open no
+## 7d1 adds the live half: the always-listening loop (`wakeLoop`, with
+## `VoiceRig` behind it), push-to-talk (`pushToTalk`), the `waku voice`
+## command (`voiceMain`) and the Ctrl-C hook
+## (`installVoiceInterrupt`). The engines behind the seams are in
+## `voiceio.nim`, and they are EXTERNAL COMMANDS
+## (`WAKU_MIC_COMMAND`/`WAKU_STT_COMMAND`/`WAKU_TTS_COMMAND`) because
+## this binary cannot ship a 74MB model, an 82M neural voice or a sound
+## device. A missing engine is named in one line and the command exits
+## 1 — never a session that looks like it is listening.
+##
+## Everything here is pure or seam-injected, so the tests open no
 ## device, spawn no subprocess and touch no network: zero audio in
-## the suite. `wake_loop`'s always-listening loop, the persistent
-## `InputStream`, `drain()` and `main`'s `input()` prompts are 7d,
-## like the live loops of the chat gateways in 7a/7b.
+## the suite. The one real thing a 7d1 test touches is a spool file in
+## the temp dir, which is where the audio would have been.
 
 import std/json
 import std/math
+import std/os
+import std/syncio
 import std/strutils
 import std/tables
 import std/unicode
 
 import ./gateway
+import ./voiceio
 
 const
   sampleRate* = 16000
@@ -366,6 +377,7 @@ type VoiceConfig* = object
   wakeLang*: string
   whisperModel*: string
   whisperLang*: string
+  whisperSampleRate*: int
   followupSeconds*: float
   threshold*: float
 
@@ -399,6 +411,7 @@ proc voiceConfig*(env: Table[string, string]): VoiceConfig =
   result.whisperModel = env.getOrDefault("WAKU_WHISPER_MODEL",
     whisperModelDefault)
   result.whisperLang = env.getOrDefault("WAKU_WHISPER_LANG", "")
+  result.whisperSampleRate = sampleRate
 
 # ── terminal lines ─────────────────────────────────────────────────────
 
@@ -443,6 +456,12 @@ type
   TtsFn* = proc(text: string) {.closure.}
     ## The mouth, minus `speakable` (applied here): speakable text in,
     ## sound out.
+  ShouldStopFn* = proc(): bool {.closure.}
+    ## The Ctrl-C flag, as a seam: `record_command` and
+    ## `wait_for_speech` check it between reads so a 15-second take
+    ## ends on Ctrl-C instead of on its own timeout (7d1). Nil means
+    ## "never stop", which is what 7c's callers mean. Named around
+    ## `gateway.StopFn`, the supervisor's stop, which takes a key.
 
 proc rms*(samples: openArray[float32]): float =
   ## The loudness of one block: `float(np.sqrt((data**2).mean()))`.
@@ -459,7 +478,7 @@ proc rms*(samples: openArray[float32]): float =
   return sqrt(total / samples.len.float64)
 
 proc recordCommand*(read: SampleFn, threshold: float, maxSeconds = 15.0,
-    silenceAfter = 1.2): seq[float32] =
+    silenceAfter = 1.2, stop: ShouldStopFn = nil): seq[float32] =
   ## Port of `record_command`: after the wake word, keep reading the
   ## SAME stream until the speaker goes quiet, and give up after
   ## `maxSeconds` whatever happens. A block counts as speech above
@@ -473,6 +492,8 @@ proc recordCommand*(read: SampleFn, threshold: float, maxSeconds = 15.0,
   var spoke = false
   let quietNeeded = int(silenceAfter * 10)
   for _ in 0 ..< int(maxSeconds * 10):
+    if not stop.isNil and stop():
+      break
     let data = read(micBlock)
     result.add(data)
     let loud = rms(data) > threshold * 2.0
@@ -482,7 +503,7 @@ proc recordCommand*(read: SampleFn, threshold: float, maxSeconds = 15.0,
       break
 
 proc waitForSpeech*(read: SampleFn, threshold: float,
-    timeout: float): bool =
+    timeout: float, stop: ShouldStopFn = nil): bool =
   ## Port of `wait_for_speech`: poll the SAME stream for the onset of
   ## speech, up to `timeout` seconds. `true` the moment a block is
   ## loud, `false` if the room stays quiet — that is what lets a
@@ -490,6 +511,8 @@ proc waitForSpeech*(read: SampleFn, threshold: float,
   if read == nil:
     raise newException(CatchableError, recordSeamMissing)
   for _ in 0 ..< int(timeout * 10):
+    if not stop.isNil and stop():
+      return false
     if rms(read(micBlock)) > threshold * 2.0:
       return true
   return false
@@ -612,3 +635,314 @@ proc voiceTurn*(text: string, respond: RespondFn, tts: TtsFn,
   logger("waku › " & reply)
   speak(tts, reply)
   return true
+
+# ── the live loops (7d1) ──────────────────────────────────────────────
+
+const
+  wakeWindowBlocks* = 25
+    ## 2.5 seconds of 100ms reads (`if len(window) < 25` in
+    ## `wake_loop`). A chunk boundary can split the phrase, which is the
+    ## documented trade-off of a training-free wake word.
+  wakeTailBlocks* = 5
+    ## The 0.5s tail kept across windows (`window = window[-5:]`), so a
+    ## phrase straddling two windows still matches.
+  wakeWordLine* = "[wake word]"
+
+type
+  PendingFn* = proc(): int {.closure.}
+    ## Samples waiting in the mic right now (`stream.read_available`).
+  DrainFn* = proc(): int {.closure.}
+    ## Throw the backlog away and say how many samples it was. The
+    ## load-bearing bit of the always-listening loop: Waku's own voice
+    ## must not be transcribed back as a wake word.
+  TraceFn* = proc(kind: string, payload: JsonNode) {.closure.}
+    ## The `wake_scan` trace line (`waku.tracer.event`).
+  StatusFn* = proc(msg: string) {.closure.}
+    ## The one-row heartbeat (`status` in `wake_loop`): the caller
+    ## rewrites the same terminal row, the port does not append lines.
+  PromptFn* = proc(msg: string) {.closure.}
+    ## `input("… ")`: show a prompt, then block for a line.
+  LineFn* = proc(): string {.closure.}
+    ## One line from the terminal. Raises `EOFError` at Ctrl-D (or
+    ## whatever a scripted `raise` says), which ends the session.
+  TakeFn* = proc(mic: ExternalMic): seq[float32] {.closure.}
+    ## `record_until_enter`: the whole take. The seam is the spool read
+    ## in production and a scripted list in tests.
+  MicOpenFn* = proc(): ExternalMic {.closure.}
+    ## Open a recorder. The hands-free loop opens ONE for the session
+    ## (re-opening the device per phase is the freeze Python's first
+    ## version had); push-to-talk opens one per take, like Python's.
+
+type
+  VoiceRig* = object
+    ## Everything one live voice session drives, so each loop takes one
+    ## value instead of nine closures. `read`/`pending`/`drain` are the
+    ## ONE persistent mic, `stt` the ears and `tts` the mouth: all four
+    ## are seams, which is what keeps the whole loop offline in tests.
+    config*: VoiceConfig
+    read*: SampleFn
+    pending*: PendingFn
+    drain*: DrainFn
+    stt*: SttFn
+    tts*: TtsFn
+    respond*: RespondFn
+    logger*: LogFn
+    status*: StatusFn
+    trace*: TraceFn
+    stop*: ShouldStopFn
+
+proc stopping(rig: VoiceRig): bool =
+  ## True once Ctrl-C asked the session to end. A nil `stop` never
+  ## stops, which is what a caller that did not wire the flag means.
+  not rig.stop.isNil and rig.stop()
+
+proc heartbeatLine*(msg: string): string =
+  ## The scanner's heartbeat, byte shape of Python's
+  ## `sys.stdout.write(f"\r\x1b[2m{msg[:72]:<72}\x1b[0m")`: a carriage
+  ## return, dim, the message truncated and padded to 72 columns, then a
+  ## reset. A scanner that never prints looks dead, and a line per
+  ## 2.5-second window would bury the transcript.
+  const width = 72
+  let shown = if msg.len > width: msg[0 ..< width] else: msg
+  "\r\x1b[2m" & shown & " ".repeat(width - shown.len) & "\x1b[0m"
+
+proc concatBlocks(blocks: seq[seq[float32]]): seq[float32] =
+  ## One 2.5s window as a single block: `np.concatenate(window)[:, 0]`.
+  result = @[]
+  for b in blocks:
+    result.add(b)
+
+proc wakeLoop*(rig: VoiceRig) =
+  ## Port of `wake_loop`: scan the mic in ~2.5s windows with the cheap
+  ## ears until the wake word shows up, ack, then stay in the
+  ## conversation — record the command, answer it, speak the answer,
+  ## drain the tail, and wait for a follow-up until the room goes quiet.
+  ## A quiet stretch drops back to the wake word with an empty window.
+  ##
+  ## The engineering notes in the Python docstring are the design here
+  ## and they are kept: ONE mic for everything, a heartbeat so listening
+  ## never looks dead, and a drain after every Waku utterance so it does
+  ## not wake on the tail of its own voice.
+  ##
+  ## Divergences: the scout and the command ears are the SAME engine
+  ## (Python runs a tiny model for scanning and the full one after the
+  ## wake word; a single configured command cannot be two models, and the
+  ## 2.5s window is what makes the scan affordable), and Ctrl-C is
+  ## observed between blocks — including inside the two command state
+  ## machines, which is why they take a `stop` — rather than as a
+  ## `KeyboardInterrupt` at an arbitrary bytecode.
+  let log: LogFn =
+    if rig.logger.isNil:
+      proc(line: string) = echo line
+    else:
+      rig.logger
+  let beat: StatusFn =
+    if rig.status.isNil:
+      proc(msg: string) =
+        stdout.write(heartbeatLine(msg))
+        flushFile(stdout)
+    else:
+      rig.status
+  log(banner(rig.config.wakeWord))
+  var window: seq[seq[float32]] = @[]
+  while not stopping(rig):
+    let data = rig.read(micBlock)
+    window.add(data)
+    if window.len < wakeWindowBlocks:
+      continue
+    let chunk = concatBlocks(window)
+    window = window[wakeWindowBlocks - wakeTailBlocks .. ^1]
+    let level = rms(chunk)
+    var transcript = ""
+    if shouldTranscribe(level, rig.config.threshold):
+      transcript = transcribe(rig.stt, chunk)
+    let scan = scanWake(level, rig.config.threshold, rig.config.wakeWord,
+      transcript)
+    if scan.action == waWake:
+      log(wakeWordLine)
+      speak(rig.tts, rig.config.ack)
+      discard rig.drain()
+      while not stopping(rig):
+        let take = recordCommand(rig.read, rig.config.threshold,
+          stop = rig.stop)
+        discard voiceTurn(transcribe(rig.stt, take), rig.respond, rig.tts,
+          log)
+        discard rig.drain()
+        beat(followupLine(rig.config.followupSeconds))
+        if not waitForSpeech(rig.read, rig.config.threshold,
+            rig.config.followupSeconds, rig.stop):
+          break
+      window = @[]
+    else:
+      beat(wakeStatus(scan))
+      if scan.action == waNearMiss and not rig.trace.isNil:
+        rig.trace("wake_scan", wakeScanEvent(scan))
+
+proc pushToTalk*(rig: VoiceRig, openMic: MicOpenFn, prompt: PromptFn,
+    readLine: LineFn, takeOf: TakeFn = nil): bool =
+  ## Port of `main`'s push-to-talk loop: press Enter, speak, press Enter
+  ## again. `WAKU_WAKE_WORD=""` is what picks this mode over the
+  ## hands-free one. One recorder per take (a fresh stream, like
+  ## `record_until_enter`), the same ladder as `voiceTurn`'s
+  ## (`pushToTalkStep`), and EOF or Ctrl-C at the Enter prompt ends the
+  ## session with `byeLine`. A take that cannot be captured (no mic
+  ## seam) prints the honest error and ends, because there is nothing
+  ## else a person could do with a voice command.
+  let log: LogFn =
+    if rig.logger.isNil:
+      proc(line: string) = echo line
+    else:
+      rig.logger
+  let take = if takeOf.isNil:
+    proc(mic: ExternalMic): seq[float32] {.closure.} = micReadAll(mic)
+  else:
+    takeOf
+  log(readyBanner)
+  while not stopping(rig):
+    var mic: ExternalMic
+    try:
+      mic = openMic()
+    except CatchableError as exc:
+      log(exc.msg)
+      log(byeLine)
+      return false
+    var audio: seq[float32]
+    try:
+      prompt("recording — press Enter when done… ")
+      discard readLine()
+      audio = take(mic)
+    except EOFError:
+      micClose(mic)
+      log(byeLine)
+      return true
+    finally:
+      micClose(mic)
+    let heard = transcribe(rig.stt, audio)
+    case pushToTalkStep(audio.len, heard)
+    of ptTooShort:
+      log(tooShortReply)
+    of ptNoSpeech:
+      log(noSpeechReply)
+    of ptRespond:
+      discard voiceTurn(heard, rig.respond, rig.tts, log)
+  log(byeLine)
+  return true
+
+# ── the command (7d1) ─────────────────────────────────────────────────
+
+proc voiceMain*(env: Table[string, string], respond: RespondFn,
+    openMic: MicOpenFn, run: RunCommandFn = nil, logger: LogFn = nil,
+    status: StatusFn = nil, trace: TraceFn = nil,
+    stop: ShouldStopFn = nil, prompt: PromptFn = nil,
+    readLineIn: LineFn = nil, takeOf: TakeFn = nil): int =
+  ## `waku voice`: the live voice session, honest about what is missing.
+  ## Python opens `sounddevice` and exits if it is not installed; the
+  ## port has no sound device at all, so the pre-flight is the three
+  ## external commands — no mic or no ears means a clear line and exit
+  ## 1, never a silent session pretending to listen. A missing MOUTH is
+  ## not fatal: replies stay on screen and the line says so once.
+  ##
+  ## Returns 0 for a session that ended normally, 1 for an honest
+  ## refusal (a missing engine, a mic that would not open).
+  let log: LogFn =
+    if logger.isNil:
+      proc(line: string) = echo line
+    else:
+      logger
+  let config = voiceConfig(env)
+  if splitCommand(env.getOrDefault("WAKU_STT_COMMAND", "")).len == 0:
+    log(externalSttMissing)
+    return 1
+  if splitCommand(env.getOrDefault("WAKU_MIC_COMMAND", "")).len == 0:
+    log(externalMicMissing)
+    return 1
+  let mouth = splitCommand(env.getOrDefault("WAKU_TTS_COMMAND", ""))
+  if mouth.len == 0:
+    log(externalTtsMissing)
+  let engine = if run.isNil: runCommandLive else: run
+  let earsCommand = env.getOrDefault("WAKU_STT_COMMAND", "")
+  let mouthCommand = env.getOrDefault("WAKU_TTS_COMMAND", "")
+  let temp = getTempDir() / ("waku-voice-stt-" & $getCurrentProcessId() &
+    ".wav")
+  let stt: SttFn =
+    proc(audio: seq[float32]): string {.closure.} =
+      writeFile(temp, encodeWav(audio, config.whisperSampleRate))
+      try:
+        return externalStt(engine, earsCommand, temp)
+      finally:
+        try:
+          removeFile(temp)
+        except CatchableError:
+          discard
+  let tts: TtsFn =
+    if mouth.len == 0:
+      proc(text: string) {.closure.} = discard  # text on screen is the mouth
+    else:
+      proc(text: string) {.closure.} =
+        discard externalTts(engine, mouthCommand, text)
+  let logLine: LogFn =
+    proc(line: string) {.closure.} = log(line)
+  if handsFree(config.wakeWord):
+    var mic: ExternalMic
+    try:
+      mic = openMic()
+    except CatchableError as exc:
+      log(exc.msg)
+      return 1
+    let read: SampleFn =
+      proc(frameCount: int): seq[float32] {.closure.} = micRead(mic, frameCount)
+    let pending: PendingFn = proc(): int {.closure.} = micPending(mic)
+    let drain: DrainFn = proc(): int {.closure.} = micDrain(mic)
+    let rig = VoiceRig(config: config, read: read, pending: pending,
+      drain: drain, stt: stt, tts: tts, respond: respond, logger: logLine,
+      status: status, trace: trace, stop: stop)
+    try:
+      wakeLoop(rig)
+    except CatchableError as exc:
+      log(exc.msg)
+      micClose(mic)
+      log(byeLine)
+      return 1
+    micClose(mic)
+    log(byeLine)
+    return 0
+  let rig = VoiceRig(config: config, stt: stt, tts: tts, respond: respond,
+    logger: logLine, status: status, trace: trace, stop: stop)
+  let ask: PromptFn =
+    if prompt.isNil:
+      proc(msg: string) =
+        stdout.write(msg)
+        flushFile(stdout)
+    else:
+      prompt
+  let lineIn: LineFn =
+    if readLineIn.isNil:
+      proc(): string {.closure.} =
+        result = stdin.readLine()
+        return result.strip()
+    else:
+      readLineIn
+  try:
+    if not pushToTalk(rig, openMic, ask, lineIn, takeOf):
+      return 1
+  except CatchableError as exc:
+    log(exc.msg)
+    return 1
+  return 0
+
+var voiceInterrupted = false
+
+proc onVoiceCtrlC() {.noconv.} =
+  ## Ctrl-C ends the voice session at the next block instead of killing
+  ## the process mid-sentence, so `byeLine` still prints (Python catches
+  ## `KeyboardInterrupt` around the same loops; `cli.nim`'s REPL does
+  ## this with `setControlCHook`). Signal-safe: one boolean store.
+  voiceInterrupted = true
+
+proc installVoiceInterrupt*(): ShouldStopFn =
+  ## Wire `Ctrl-C` to the voice loops. Returns the `StopFn` to hand to
+  ## `voiceMain`/`wakeLoop`. POSIX-only in effect (the hook is the
+  ## runtime's), and one hook per process, like `cli.nim`'s REPL.
+  voiceInterrupted = false
+  setControlCHook(onVoiceCtrlC)
+  result = proc(): bool {.closure.} = voiceInterrupted

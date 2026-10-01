@@ -164,30 +164,124 @@ con la unidad que duena el live loop); cambiarlo rompería
   la transcripción ya hecha (el loop vivo transcribe solo si el gate
   pasa).
 
-## 7d — live loops + dispatch (SIGUIENTE, siguiente a 7c)
-- Loops vivos: long-poll telegram (offset + timeout, usa
-  `fetchTelegramUpdates`/`nextTelegramOffset`/`classifyTelegram` de
-  7a), receive discord, servidor webhook whatsapp, mic loop voice;
-  handles con `stop`/`status` + `start_in_background` de cada gateway.
+## 7d1 — live loops de telegram + whatsapp + voz (HECHO, sin commits)
+- Se parte 7d en dos unidades (decisión del review: el WebSocket de
+  Discord a mano + `waku.nim` + dashboard era demasiado para una sola
+  revisión). 7d1 = los tres loops vivos y los motores de voz; 7d2 =
+  WebSocket de Discord, dispatch y hookup del supervisor.
+- Telegram (nuevo en `telegram.nim`): `TelegramLive` (el
+  `TelegramHandle` de Python: runner, offset, flags de conflicto y de
+  stop), `telegramPoll` (un ciclo: `getUpdates` desde el offset,
+  clasificar, `runGatewayTurn` por update, `nextTelegramOffset`),
+  `telegramFault` + `telegramRun` (loop bloqueante), y
+  `telegramStatus`/`telegramStop` + los tres adaptadores del
+  supervisor (`telegramStarter`/`telegramStatusFn`/
+  `telegramStopFn`). `timeoutSecs` es parámetro porque el dashboard
+  acorta su long-poll (decisión: sin hilos, el tick va entre requests
+  del navegador; ver Divergencias 7d1).
+- `accountedRespond` NUEVO en `gateway.nim` (7a no lo tenía): es el
+  `_respond` de `GatewayAgentRunner`, el que registra
+  `message handling` en el runner que el dashboard lee. Sin él, un turno
+  roto se veía en la terminal y no en el dashboard. Envuelve el
+  `RespondFn` vivo; el puntero al runner es la única aritmética de
+  punteros del unit (una closure no puede capturar un `var` parámetro).
+- WhatsApp (nuevo en `whatsapp.nim`): `WhatsappRequest`/`WriteFn` +
+  `serveWhatsappRequest` (la puerta: decide, responde 200 rápido, y
+  DESPUÉS corre los turnos — el orden que mantiene vivo el webhook se
+  pinea con dos seams que escriben en un log), `requestPath`/
+  `parseQueryParam` (`parse_qs`), `whatsappRejected` (los rechazos que
+  7b ya no devolvía), `senderLogLine` (el `you › [sender] …` de Python),
+  `readWhatsappRequest`/`writeWhatsappResponse` (framing HTTP mínimo) y
+  `serveWhatsapp` (bind + accept + `TakeConn` para que 7d2 lo
+  multiplexe con el dashboard) más el handle
+  (`whatsappStatus`/`whatsappStop` + adaptadores). El seam honesto
+  `serveWhatsappWebhook` de 7b desaparece (con su test): 7d1 entrega lo
+  que prometía.
+- Voz: `voiceio.nim` NUEVO con los tres motores que este binario no
+  puede llevar dentro (faster-whisper 74MB, kokoro 82M, sounddevice) y
+  que llegan como EXTERNOS: `WAKU_MIC_COMMAND` (un grabador que escribe
+  s16le crudo mono 16kHz en el ÚLTIMO argumento), `WAKU_STT_COMMAND`
+  (lee el WAV del último argumento, imprime la transcripción) y
+  `WAKU_TTS_COMMAND` (lee el texto en stdin). `decodePcm16` (con carry
+  de medio ejemplo), `pcm16Bytes` (escala asimétrica, clip en ±1),
+  `encodeWav`/`wavHeader` (pinnados byte a byte contra `wave` de
+  Python) y el spool del micro (`externalMic`/`micRead`/`micPending`/
+  `micDrain`/`micReadAll`/`needsMicRecycle`/`micClose`).
+  El spool es un FICHERO y no una pipe a propósito: una pipe no se
+  puede drenar sin bloquear, y `drain()` después de que habla Waku es
+  lo que evita que el escáner despierte con la cola de su propia voz
+  (el bug que el propio Python ya Suffrió). El spool se recicla entre
+  tomas al pasar `spoolCapBytes` (32MB ≈ 17min), nunca a mitad de
+  frase.
+- Voz (7d1 en `voice.nim`): `VoiceRig` (un valor con los nueve seams
+  del rig), `heartbeatLine` (el `
+\x1b[2m…` de 72 columnas de Python),
+  `wakeLoop` (ventanas de 2.5s con cola de 0.5s, ack, drain,
+  `recordCommand`+`voiceTurn`+drain+followup, `waitForSpeech` para el
+  seguimiento), `pushToTalk` (las dos `input()`, un grabador por toma,
+  la escalera de `pushToTalkStep`, bye con `byeLine`),
+  `voiceMain` (preflight honesto de los tres comandos + elegir modo +
+  `byeLine` + exit code) e `installVoiceInterrupt` (Ctrl-C con
+  `setControlCHook`, el patrón de `cli.nim`). `recordCommand` y
+  `waitForSpeech` de 7c ganan un `stop` con default (aditivo: los
+  pines de 7c siguen verdes) para que un Ctrl-C aborte una toma de 15s
+  en el siguiente bloque.
+- Tests: `tests/test_live_gateways.nim` NUEVO, 28 (telegram 16:
+  offset/timeout en la URL, refusals, error de turno con error reply,
+  `reply delivery`, offset que no retrocede, tabla de faults, retry con
+  línea, conflicto una sola vez, token muerto, precedencia del status,
+  stop entre polls y a mitad de poll, `telegramRun` que muere con el
+  token, starter; whatsapp 12: `parse_qs`, verificación GET (éxito,
+  token malo, challenge ausente, path ajeno, token redactado), paridad
+  con la decisión de 7b, 200-antes-del-turno (orden pineado), firma
+  sobre el body crudo, tamper, rechazo del remitente, turno fallido con
+  error reply, envío fallido, status/stop/starter, líneas de arranque) +
+  `tests/test_voiceio.nim` NUEVO, 21 (pcm16 con carry, clipping, WAV
+  contra Python, argv de los tres motores, fallo de motor, spool
+  pending/read/drain/timeout/muerto/close/reciclado, take alineado a
+  bloque) + 10 en `tests/test_voice.nim` (heartbeat, ventana muda, near
+  miss con traza, wake con doble drain y línea de followup, comando
+  vacío, Ctrl-C, escalera de push-to-talk, motor sin cablear, boca sin
+  cablear, boca cableada). TDD RED observado (símbolo inexistente en
+  compilación) → GREEN.
+- El differential de 7c re-ejecutado (follow-up que 7c dejó abierto):
+  el artefacto nunca se commiteó, así que se reconstruyó el corpus
+  (50 casos: emoji, banderas regionales, markdown, NBSP, espacio
+  ideográfico, separadores C0, U+2028/U+0085, kana, CJK, cirílico,
+  acentos combinantes, ZWJ, tonos de piel, tabs, espacios dobles,
+  variantes de wake) contra el ground truth Python de `_speakable` y
+  `matches_wake`: salida idéntica, 0 mismatches. El bug que cazó en 7c
+  (el strip de los C0) sigue pineado en el suite.
+- Surfaces: `src/telegram.nim` + `src/whatsapp.nim` + `src/voiceio.nim`
+  (nuevo) + `src/voice.nim` + `src/gateway.nim` (un proc aditivo) +
+  `tests/test_live_gateways.nim` (nuevo) + `tests/test_voiceio.nim`
+  (nuevo) + `tests/test_voice.nim` + `tests/test_chat_gateways.nim` (el
+  test del seam de 7b que 7d1 reemplaza). `waku.nim` intacto: el pin 4e
+  sigue verde y `waku telegram|discord|whatsapp|voice` sigue siendo
+  scaffolding hasta 7d2. Frontend intacto. Evals intactos.
+  `nimble test` verde, 0 warnings, 732 OK (675 - 1 + 28 + 21 + 10),
+  EXIT=0.
+
+## 7d2 — WebSocket de Discord + dispatch + supervisor (SIGUIENTE)
+- Discord: el receive del gateway WebSocket escrito a mano (RFC 6455:
+  handshake, frames, masking, heartbeat, op 2/10 y `MESSAGE_CREATE`),
+  detrás de la costura honesta `receiveDiscordEvent` de 7b, más el
+  handle (`discordEnvFields` ya está, el supervisor lo necesita).
 - `waku.nim` SOLO suma el dispatch `telegram`/`discord`/`whatsapp`/
-  `voice` (precedente 6b: `runMcpCmd`; el resto de stubs 4e queda) +
-  hookup del supervisor en el dashboard (proveedor de status +
-  reloader, como `dashboard.py` con `INTEGRATIONS` gateway).
+  `voice` (precedente 6b: `runMcpCmd`; el resto de stubs 4e queda).
+- Dashboard: el supervisor real (starters + `envFields` de los tres
+  gateways, `reconcile` al arrancar, `shutdown` al salir, proveedor de
+  status + reloader para `integrations.nim`), el tick del long-poll de
+  telegram entre requests del navegador y el webhook de whatsapp
+  multiplexado por `TakeConn` (o, si no cabe, `whatsapp` se queda con
+  su propio comando y el dashboard solo lo reporta).
+- Voz en 7d2: solo el dispatch (`waku voice` llama a `voiceMain` con
+  el Waku real, `sessionId = "voice"`). Sin hooks del supervisor: en
+  Python la voz es un comando en foreground, no un gateway supervisado
+  (no hay fila de voz en las integraciones), así que no hay
+  `voiceEnvFields` ni entrada en el `reconcile` del dashboard.
 - `cli.py` no necesita unidad propia: `_memory_snapshot` y `_observer`
   ya viven en `cli.nim` (phase 4e los pinna); el REPL es `runRepl`.
-- Voz en 7d (todo lo que 7c dejó como seam/puro): el `InputStream`
-  persistente y `drain()` detrás de `SampleFn` (un solo stream, nunca
-  uno por fase), el `wake_loop` (ventanas de 2.5s con cola de 0.5s,
-  scout `tiny` →motor grande, `ack`, `followup`, y el
-  `recordCommand`/`waitForSpeech` encadenados con `voiceTurn`), el
-  `main()` push-to-talk con sus dos `input()`, `sessionId = "voice"`,
-  y el motor externo: un `SttFn` sobre un proceso faster-whisper (o
-  el texto honesto si no está), un `TtsFn` sobre un motor externo (o
-  el texto honesto de `ttsSeamMissing`) y el `Ctrl-C` que despide con
-  `byeLine`. Sin hooks del supervisor: en Python la voz es un comando
-  en foreground, no un gateway supervisado (no hay fila de voz en las
-  integraciones), así que no hay `voiceEnvFields` ni entrada en el
-  `reconcile` del dashboard.
 
 ## Decisiones
 - Sin SDK y sin dependencias nuevas (regla 3): el Bot API de Telegram
@@ -206,6 +300,31 @@ con la unidad que duena el live loop); cambiarlo rompería
   y el caller mapea a `IntegrationStatus` + health store.
 - `env` como `Table` en vez de `os.environ` (precedente
   integrations/mcp): sin mutación global, tests paralelizables.
+- 7d1 sin hilos (decisión del review, coherente con 8b): el long-poll
+  de telegram es una FUNCIÓN (`telegramPoll`) que 7d2 llama entre
+  requests del navegador con un timeout corto, y el webhook de whatsapp
+  se sirve con la costura `TakeConn` para que el mismo loop lo
+  multiplexe. El coste, dicho de frente: un turno de gateway bloquea
+  el dashboard mientras dura, que es la postura que 8b ya aceptó para
+  los turnos de chat ("a streaming turn briefly queues the polls behind
+  it"), y un `stop` del supervisor se ve en el borde del poll, no en
+  mitad de una petición en vuelo.
+- 7d1 parte 7d en dos unidades: el WebSocket de Discord escrito a mano
+  (RFC 6455) es la pieza de riesgo grande y quiere su propia revisión,
+  junto con `waku.nim` y el dashboard (los dos archivos con más pines
+  del repo). `TakeConn` existe justo para que 7d2 no reescriba el loop
+  del webhook.
+- Los tres motores de voz son comandos externos opcionales, no
+  dependencias ni extras: `WAKU_MIC_COMMAND` / `WAKU_STT_COMMAND` /
+  `WAKU_TTS_COMMAND`. Es la traducción honesta de `[voice]` a un binario
+  único (una dependencia opcional se convierte en una línea de entorno
+  que la persona decide poner), y mantiene el hot path sin subprocess
+  fuera del audio.
+- El micro es un spool FICHERO y no una pipe: `drain()` tiene que ser
+  exacto (Python lo necesitaba para que el escáner no escuchara la cola
+  de la voz de Waku) y una pipe no se puede drenar sin bloquear; el
+  precio es un fichero que crece, con tope de 32MB y reciclado entre
+  tomas.
 
 ## Divergencias con Python (motivo)
 - `errorStatus` es `""` en sano en vez de `None`: Nim no tiene string
@@ -230,9 +349,59 @@ con la unidad que duena el live loop); cambiarlo rompería
   `None` polimórfico no existe en Nim; `present=false` es el mismo
   valor con tipo.
 
-## Cierre fase 7 (cuando 7b+7c+7d aterricen)
+## Divergencias 7d1 (motivo)
+- Un poll fallido se imprime (redactado) y se reintenta: PTB se
+  tragaba los errores y solo hablaba del conflicto, así que un portátil
+  que dejó de hablar con Telegram era indistinguible de un bot al que
+  nadie escribe. `telegramFault` distingue los tres fallos por la línea
+  de estado que `std/httpclient` reporta (409 → conflicto, 401/404 →
+  token muerto y el poller para como el `InvalidToken` de Python, resto
+  → reintento).
+- El refusal de un desconocido que no se puede entregar se registra
+  como `reply delivery` en vez de desaparecer en el log de PTB.
+- `telegramPoll` cuenta los turnos INTENTADOS (uno que explota igual
+  llegó al modelo y se pagó); el refusal no es turno.
+- WhatsApp responde al turno fallido con el `gatewayErrorReply`
+  compartido: el handler de Python no tiene try/except, la excepción
+  escapa a `do_POST` y el remitente no ve nada — un servidor de un
+  hilo no puede permitirse que un turno malo se lleve el gateway
+  entero, y la pareja merece la misma respuesta que en Telegram.
+- El verify token de Meta se imprime como `***` (o `none`), nunca el
+  valor: esa línea cae en una terminal y en una traza, y el token es
+  una credencial.
+- El fallo de envío de WhatsApp imprime la línea de Python
+  (`(whatsapp) send failed: …`) Y sube al accounting del runner: Python
+  solo imprimía, y un webhook que deja de entregar parecería sano.
+- `whatsappStarter` nombra los cuatro credenciales que faltan cuando
+  el token sí está puesto (Python devuelve `None` en silencio y el
+  supervisor acaba diciendo `gateway failed to start`): el caso
+  accionable es exactamente ese.
+- La línea de arranque del webhook se compone con el host/puerto real
+  (`listeningLine`); con los valores por defecto es la misma cadena de
+  Python.
+- Los ears del escáner y los del comando son el MISMO motor: Python
+  corre `tiny` para escanear y el modelo grande tras la wake word, y un
+  comando configurado no puede ser dos modelos. La ventana de 2.5s es
+  la que hace barato el escaneo.
+- Voz: el scout y la respuesta hablan con el mismo `TtsFn`; sin
+  `WAKU_TTS_COMMAND` la boca es un no-op y se avisa UNA vez (Python
+  imprimía la línea de "no engine" en cada respuesta).
+- `recordCommand`/`waitForSpeech` ganan `stop` (default nil) para que
+  el Ctrl-C aborte una toma a mitad; el resto de 7c intacto.
+- Los tres `*_Starter` re-arman el handle (runner nuevo, offset a cero,
+  flags limpios) pero NO bombean: sin hilo, quien arranca es quien
+  llama a `telegramPoll`/`serveWhatsapp`. Está escrito en el doc del
+  starter porque un handle arrancado que nadie bombea se reportaría
+  sano sin hacer nada, y esa es la forma que este puerto no debe
+  enviar.
+- `micReadAll` alinea la toma a bloques de 100ms rellenando de ceros el
+  final: una toma que no alinearía deja un ejemplo suelto en cada
+  herramienta de audio.
+
+## Cierre fase 7 (cuando 7b+7c+7d1+7d2 aterricen)
 - Gate: turnos contra `RespondFn`/`SendFn` grabados, allowlists y
   posturas verbatim, `ok:false` sin raise, rollback del supervisor con
   env deseado restaurado; `waku telegram|discord|whatsapp|voice` con
   paridad Python salvo loops vivos documentados.
-- Pendiente tras 7b+7c: 7d (loops vivos + dispatch + hookup dashboard).
+- Pendiente tras 7b+7c+7d1: 7d2 (WebSocket de Discord + dispatch en
+  `waku.nim` + hookup del supervisor en el dashboard).

@@ -8,20 +8,31 @@
 ## dependencies, so the wire is hand-rolled `std/httpclient` + `json`
 ## (precedent: MCP hand-rolled in phase 6, SSE in phase 3).
 ##
-## Deliberately out (7d owns the live loop): the `Application` poller,
-## `main`, `TelegramHandle` and `start_in_background` — asyncio, threads
-## and the PTB SDK have no synchronous single-threaded equivalent here,
-## and `nim/src/waku.nim` keeps its honest phase-4e `telegram` stub until
-## the unit that owns the live loop wires it (precedent: `waku.nim`
-## untouched in 6a). `nimble test` opens zero sockets: the live adapter
-## `liveTelegramHttp` is never called in tests, which replay recorded
-## payloads through `TelegramHttpFn`.
+## 7d1 adds the live half: the long-poll itself (`telegramPoll`),
+## the poll-error policy (`telegramFault`), the blocking loop
+## (`telegramRun`) and the handle `TelegramHandle` stands for
+## (`telegramStatus`/`telegramStop` plus the three supervisor adapters).
+## There is no `Application` poller, no `main` and no
+## `start_in_background` here: 7d2 owns the dispatch that runs them, and
+## `nim/src/waku.nim` keeps its honest phase-4e `telegram` stub until
+## then (precedent: `waku.nim` untouched in 6a, 7a and 7b).
+##
+## Two deliberate divergences from the Python poller, both documented at
+## the proc that owns them: the port prints every failed poll (redacted)
+## where PTB's logger swallowed them, and it distinguishes a dead token
+## (stop) from a network blip (retry) from a second poller (conflict).
+##
+## `nimble test` opens zero sockets: the live adapter `liveTelegramHttp`
+## is never called in tests, which replay recorded payloads through
+## `TelegramHttpFn`.
 
 import std/httpclient
 import std/json
 import std/sets
 import std/strutils
+import std/tables
 
+import ./gateway
 import ./wire
 
 const
@@ -175,3 +186,222 @@ proc liveTelegramHttp*(url, payload: string): string =
     return client.getContent(url)
   finally:
     client.close()
+
+# ── the live long-poll (7d1) ───────────────────────────────────────────
+
+const
+  conflictLine* = "(telegram) another instance is already running this " &
+    "bot — the dashboard's Telegram stays idle. Stop the other " &
+    "`waku telegram` and restart to use it here."
+    ## `on_poll_error`'s one warning, verbatim: another bot is already
+    ## polling this token, which is the one poll error a person can act
+    ## on. Said once, never with a traceback (Python's exact policy).
+  pollerStoppedLine* = "(telegram) background poller stopped: "
+    ## What a dead poller prints, like Python's `run` except arm.
+  pollFailedLine* = "(telegram) poll failed: "
+    ## A poll that failed and will be retried. Divergence: PTB handed
+    ## every error to its own logger and the port printed only the
+    ## conflict, so a laptop that quietly stopped reaching Telegram
+    ## looked identical to a bot nobody was talking to. Redacted like
+    ## every other terminal line here.
+
+type
+  TelegramLive* = ref object
+    ## One running long-poll: what `TelegramHandle` plus PTB's background
+    ## thread hold in Python. `runner` is the shared turn policy (one
+    ## agent per gateway, 7a), `offset` is the acknowledgement PTB keeps
+    ## per process, `conflict` is the `warned["conflict"]` flag's
+    ## outcome and `warned` is that flag itself. `running` is the thread
+    ## `is_alive()` test, and `stop` is Python's `shutdown()` seen from a
+    ## single-threaded port: the loop stops at the next poll edge.
+    runner*: RunnerState
+    offset*: int64
+    stop*: bool
+    running*: bool
+    polling*: bool
+    conflict*: bool
+    warned*: bool
+
+proc newTelegramLive*(source = "telegram"): TelegramLive =
+  ## A poller that has not started yet. `source` names the gateway in
+  ## every log line and in the closed-runner error.
+  TelegramLive(runner: newRunnerState(source), offset: 0, stop: false,
+    running: false, polling: false, conflict: false, warned: false)
+
+type PollFault* = enum
+  ## What a failed poll means. Python only names one of them (the
+  ## conflict) and lets the library decide the rest; the port decides
+  ## here, because the difference is whether the gateway keeps working:
+  ## `pfRetry` is a blip, `pfConflict` is a second poller on the same
+  ## token (warn once, keep polling), and `pfFatal` is a token the API
+  ## refuses (Python's `InvalidToken` kills the thread, which its handle
+  ## then reports as "gateway stopped unexpectedly").
+  pfRetry, pfConflict, pfFatal
+
+proc telegramFault*(message: string): PollFault =
+  ## Classify a transport error into the three faults above. Divergence:
+  ## the decision reads the STATUS LINE, not the body, because
+  ## `std/httpclient` raises `HttpRequestError` with `409 Conflict` and
+  ## friends and drops the response body — the `!raise409` scripts in
+  ## `test_live_gateways.nim` are exactly those messages. "conflict" is
+  ## matched too, so a proxy or wrapper that words it differently still
+  ## lands in the same bucket.
+  let lowered = message.toLowerAscii()
+  if "409" in lowered or "conflict" in lowered:
+    return pfConflict
+  if "401" in lowered or "unauthorized" in lowered or "404" in lowered or
+      "not found" in lowered:
+    return pfFatal
+  return pfRetry
+
+proc telegramPoll*(live: TelegramLive, http: TelegramHttpFn,
+    ids: HashSet[string], token: string, respond: RespondFn, logger: LogFn,
+    env: Table[string, string] = initTable[string, string](),
+    timeoutSecs = 30): int =
+  ## ONE long-poll cycle (port of PTB's poller + `handle`): ask
+  ## `getUpdates` from the current offset, answer every update the
+  ## allowlist admits, and acknowledge what was seen. Returns the number
+  ## of AGENT turns run — a stranger's refusal is a delivery, not a turn.
+  ## `timeoutSecs` is a parameter because the dashboard drives this loop
+  ## between browser requests and shortens it there, while the
+  ## standalone command keeps Python's 30.
+  if live.stop:
+    return 0
+  live.running = true
+  live.polling = true
+  defer:
+    live.polling = false
+  var updates: seq[TelegramUpdate]
+  try:
+    updates = fetchTelegramUpdates(http, token, live.offset, timeoutSecs)
+  except CatchableError as exc:
+    let detail = safeException($exc.name, exc.msg, env)
+    case telegramFault(exc.msg)
+    of pfConflict:
+      live.conflict = true
+      if not live.warned:
+        live.warned = true
+        logger(conflictLine)
+    of pfFatal:
+      live.running = false
+      logger(pollerStoppedLine & detail)
+    of pfRetry:
+      logger(pollFailedLine & detail)
+    return 0
+  # the agent call, wrapped in the runner's accounting (Python's
+  # `_respond`): a failed turn is recorded where the dashboard reads it
+  let turn = accountedRespond(live.runner, respond, env)
+  result = 0
+  for i in 0 ..< updates.len:
+    let upd = updates[i]  # a value: the send closure below outlives the
+                          # iterator's `lent` copy of the update
+    let send: SendFn =
+      proc(text: string) {.closure.} =
+        discard sendTelegramText(http, token, upd.chatId, text)
+    case classifyTelegram(ids, upd)
+    of taRefuse:
+      # Python replies to the stranger in the handler, outside
+      # `run_gateway_turn`; a delivery that fails is recorded as one
+      # (`reply delivery`) instead of vanishing into PTB's log.
+      try:
+        send(telegramRefusal)
+      except CatchableError as exc:
+        let detail = live.runner.recordError($exc.name, exc.msg, env,
+          "reply delivery")
+        logger("(" & live.runner.source & ") reply delivery failed: " &
+          detail)
+    of taAnswer:
+      discard runGatewayTurn(live.runner, upd.text, turn, send, logger, env)
+      inc result
+    of taSkip:
+      discard
+  live.offset = nextTelegramOffset(updates, live.offset)
+  if live.stop:
+    # a stop that arrived while this poll was in flight: the turns of
+    # THIS poll still ran (Python lets an in-flight handler finish), the
+    # poller is done after it, and the runner retires here.
+    live.running = false
+    closeRunner(live.runner)
+
+proc telegramRun*(live: TelegramLive, http: TelegramHttpFn,
+    ids: HashSet[string], token: string, respond: RespondFn, logger: LogFn,
+    env: Table[string, string] = initTable[string, string](),
+    timeoutSecs = 30) =
+  ## The blocking poll loop (Python's `app.run_polling` on the poller
+  ## thread). It returns when `stop` is observed or the token dies; a
+  ## transport blip is not an exit, that is the retry in `telegramPoll`.
+  live.running = not live.stop
+  while live.running and not live.stop:
+    discard telegramPoll(live, http, ids, token, respond, logger, env,
+      timeoutSecs)
+
+proc telegramStatus*(live: TelegramLive): GatewayReport =
+  ## The handle's `status()` as one report for `Supervisor.statusOf`:
+  ## a conflict first (it is the error a person can fix), then a poller
+  ## that is not running (`gateway stopped unexpectedly`, exactly
+  ## Python's message for a dead thread), then the runner's last error,
+  ## else healthy. The conflict wins over the runner because Python's
+  ## handle checks it first.
+  if live.conflict:
+    return GatewayReport(ok: false,
+      message: "another instance is polling this token")
+  if not live.running:
+    return GatewayReport(ok: false, message: "gateway stopped unexpectedly")
+  let lastError = live.runner.errorStatus()
+  if lastError.len > 0:
+    return GatewayReport(ok: false, message: lastError)
+  return GatewayReport(ok: true, message: "")
+
+proc telegramStop*(live: TelegramLive) =
+  ## Ask the poller to stop (Python's `TelegramHandle.stop` runs an async
+  ## shutdown on the poller thread, joins it and then closes the runner).
+  ## Divergence: one thread in this port, so a stop asked for DURING a
+  ## poll is honoured at the end of that poll — the turns of the poll
+  ## still land, like Python's in-flight handler, and the runner retires
+  ## there; asked for between polls it takes effect at once.
+  live.stop = true
+  if not live.polling:
+    live.running = false
+    closeRunner(live.runner)
+
+proc telegramStarter*(live: TelegramLive, env: Table[string, string],
+    respond: RespondFn, http: TelegramHttpFn,
+    logger: LogFn): StarterFn =
+  ## The `starters["telegram"]` entry Python builds in `dashboard.main`,
+  ## as one closure: no token means `None` there and `false` here. The
+  ## status line (`(telegram) starting:` plus `posture`) is printed by
+  ## the dashboard wiring in 7d2, next to the other gateways' banners, so
+  ## this proc stays about the lifecycle.
+  ##
+  ## A restart is a FRESH poller, fresh runner included: that is exactly
+  ## what Python gets from calling `start_in_background()` again, and it
+  ## is why a stale conflict, warning, offset or turn error never survives
+  ## one.
+  ##
+  ## OBLIGATION ON THE CALLER: the starter re-arms the handle, it does not
+  ## poll. Python's `start_in_background` returns a handle whose daemon
+  ## thread is already running; a single-threaded port has no thread to
+  ## leave running, so whoever started it must keep calling
+  ## `telegramPoll` (the dashboard's tick in 7d2) or `telegramRun` (the
+  ## standalone `waku telegram`). A started handle nobody pumps would
+  ## report itself healthy while doing nothing — the one shape this port
+  ## must not ship.
+  result = proc(): bool {.closure.} =
+    let token = env.getOrDefault("TELEGRAM_BOT_TOKEN", "")
+    if token.len == 0:
+      return false
+    live.stop = false
+    live.runner = newRunnerState(live.runner.source)
+    live.conflict = false
+    live.warned = false
+    live.offset = 0
+    live.running = true
+    return true
+
+proc telegramStatusFn*(live: TelegramLive): StatusFn =
+  ## Supervisor adapter for one `telegram` handle.
+  result = proc(key: string): GatewayReport {.closure.} = telegramStatus(live)
+
+proc telegramStopFn*(live: TelegramLive): StopFn =
+  ## Supervisor adapter for one `telegram` handle.
+  result = proc(key: string) {.closure.} = telegramStop(live)
