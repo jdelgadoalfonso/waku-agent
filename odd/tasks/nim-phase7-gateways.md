@@ -164,7 +164,7 @@ con la unidad que duena el live loop); cambiarlo rompería
   la transcripción ya hecha (el loop vivo transcribe solo si el gate
   pasa).
 
-## 7d1 — live loops de telegram + whatsapp + voz (HECHO, sin commits)
+## 7d1 — live loops de telegram + whatsapp + voz (HECHO, d5bc35c)
 - Se parte 7d en dos unidades (decisión del review: el WebSocket de
   Discord a mano + `waku.nim` + dashboard era demasiado para una sola
   revisión). 7d1 = los tres loops vivos y los motores de voz; 7d2 =

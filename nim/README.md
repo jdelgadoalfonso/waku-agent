@@ -1,12 +1,16 @@
-# Waku Nim port (phase 5d2)
+# Waku Nim port
 
 This folder holds the Nim port of Waku. The port will ship one binary that
-reads and writes the same `.waku/` data as Python Waku. Phase 5b (pricing)
-is landed, plus the 5d1+5d2 integrations core (registry, states, views,
-health store, apply/test, `connections` dispatch) and the phase 6 MCP
-connector (config, stdio + streamable HTTP, OAuth browser flow wired in
-the binary); MCP connection concurrency,
-gateways, ops and evals are not.
+reads and writes the same `.waku/` data as Python Waku. Landed: phases 0-5
+(skeleton, SQLite + memory, wire + loop + HTTP, session/app/graph/CLI,
+integrations + catalog + pricing + skills), phase 6 (MCP: config, stdio,
+streamable HTTP, OAuth browser flow in the binary), phase 7a-7c and 7d1
+(gateways: the runner/supervisor policy, telegram, discord, whatsapp,
+voice, plus the live loops for telegram/whatsapp/voice and the external
+voice engines) and phase 8 (ops + dashboard: the server loop, the routes,
+the model arena and the memory/judgment arena). Not landed yet: MCP
+connection concurrency, the gateway dispatch in `waku.nim` and the Discord
+gateway WebSocket (7d2), OTel spans, and the evals.
 
 ## Build and test
 
@@ -98,6 +102,33 @@ nimble test     # runs the offline phase 0 tests
   `defaultModelFor`, `savePinned`). No live HTTP yet; wiring to a real
   client comes with a later phase. Regional endpoint pairing is skipped
   (the registry parser ignores `[[array]]` tables).
+- `src/gateway.nim` ports `gateway/runner.py` + `gateway/supervisor.py`
+  (phases 7a, 7d1): `safeException` (credential redaction), `RunnerState`
+  plus `accountedRespond` (the `_respond` accounting), `runGatewayTurn`
+  and the whole `GatewaySupervisor` (fingerprint, configured-check,
+  reconcile with stop-then-start and rollback, shutdown, status) with
+  every side effect injected.
+- `src/telegram.nim` ports `gateway/telegram.py` (7a, 7d1): the allowlist
+  gate, the startup posture, the hand-rolled Bot API wire, and the live
+  long-poll with its retry/conflict/dead-token policy plus the handle the
+  supervisor stops and reads.
+- `src/discord.nim` ports `gateway/discord.py` (7b): the deny-by-default
+  access policy, mention stripping, the hourly turn budget, the posture
+  and the REST send seam. The gateway WebSocket receive is 7d2.
+- `src/whatsapp.nim` ports `gateway/whatsapp.py` (7b, 7d1): the HMAC
+  signature gate (over `mcp.nim`'s SHA-256), the verification challenge,
+  the payload walk, the Graph API send, and the live webhook door — decide,
+  answer 200 fast, then run the turns — with the accept loop and the
+  handle.
+- `src/voice.nim` ports `gateway/voice.py` (7c, 7d1): what gets voiced,
+  the wake word (with a real `difflib.SequenceMatcher` port), the mic
+  threshold, the two command state machines, one spoken turn, the
+  always-listening loop, push-to-talk and the `waku voice` command.
+- `src/voiceio.nim` is the part Python gets from `pip install
+  'waku-agent[voice]'` and this binary cannot ship: the s16le decode, the
+  WAV writer, and the recorder spool behind `WAKU_MIC_COMMAND` /
+  `WAKU_STT_COMMAND` / `WAKU_TTS_COMMAND`. A missing engine is named in
+  one line and the command exits 1.
 - `src/integrations.nim` ports `integrations.py` (phases 5d1+5d2):
   the 13 static rows, provider-derived registry, status machine, views
   and the env-example block, with env/hostOs/health/gateway injected,
@@ -114,7 +145,8 @@ Full tool wiring (`build_registry` — the
 registry takes injected tools until the remaining tools land), the memory
 layer (gated retrieval, consolidation, MEMORY.md sync), MCP connection
 concurrency, the `connect`
-flows, the chat gateways (telegram/discord/whatsapp/
-voice), OTel spans, and the evals. The phase list with its
+flows, the gateway dispatch in `waku.nim` (`waku telegram|discord|
+whatsapp|voice` still report phase scaffolding) and the Discord gateway
+WebSocket, OTel spans, and the evals. The phase list with its
 gates lives in
 [docs/nim-port-design.md](../docs/nim-port-design.md).

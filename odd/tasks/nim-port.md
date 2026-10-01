@@ -26,6 +26,11 @@
 5. Integrations + catalog + pricing
 6. MCP stdio+HTTP+OAuth (sin SDK Nim — hand-rolled)
 7. Gateways (telegram/discord/whatsapp/voice; riesgo audio vs binario único)
+   - Fase 7 partida en 7a/7b/7c/7d1/7d2: 7a infra+telegram (2b0ad60),
+     7b discord+whatsapp (91b5363), 7c voz texto+comandos (86ed0f1),
+     7d1 live loops de telegram/whatsapp + voz con motores externos
+     (voiceio.nim), 7d2 queda: WebSocket de Discord + dispatch en
+     waku.nim + supervisor en el dashboard.
 8. Ops + dashboard (embed assets en compilación)
 9. Evals + packaging (portear 81 tests deterministas por fase, no al final)
 
