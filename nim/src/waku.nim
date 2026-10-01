@@ -3,8 +3,10 @@
 ## Port target: the `waku/__main__.py` command dispatch. `connections` was
 ## phase 0c; phase 4e wires `chat` (default, the REPL), `brief` and
 ## `gather` against a real app (settings → providers → client → db);
-## phase 5a wires `skill install` and `skill export`. Every other
-## command still reports not-yet-implemented.
+## phase 5a wires `skill install` and `skill export`; phase 8b wires
+## `dashboard` to the server loop (in-process callers validate only, so
+## the dispatch test stays green without blocking on a socket). Every
+## other command still reports not-yet-implemented.
 ##
 ## Exit codes follow Python: unknown command → 1 with the usage text.
 ## Two deliberate divergences: `--help`/`--version` exit 0 (Unix
@@ -23,6 +25,7 @@ import ./brief
 import ./cli
 import ./client
 import ./config
+import ./dashboard
 import ./db
 import ./gather
 import ./integrations
@@ -201,11 +204,33 @@ proc runSkillExport*(argv: seq[string]): int =
     return 1
   return 0
 
-proc runCommand*(args: seq[string], dotenvStart = ""): int =
+proc runDashboard(dotenvStart: string, serve: bool): int =
+  ## The `dashboard` command: build live deps, then validate-only
+  ## (in-process callers) or serve the loop (the real binary). Missing
+  ## registry fails like `connections` does — offline, before any socket.
+  let dotenvPath = loadDotenv(dotenvStart)
+  let registryPath = findProvidersToml()
+  if registryPath.len == 0:
+    stderr.writeLine "providers.toml not found from " & getCurrentDir() &
+      " upward or beside the binary"
+    return 1
+  let rows = loadProviders(registryPath)
+  if serve:
+    let dp = if dotenvPath.len > 0: dotenvPath else: ".env"
+    return serveDashboardCmd(rows, loadSettings(), dp)
+  return checkDashboardCmd(rows, loadSettings(), dotenvPath)
+
+proc runCommand*(args: seq[string], dotenvStart = "",
+                 serve = false): int =
   ## Dispatch one command line. `dotenvStart` pins the `.env` search for
-  ## tests (default: the working directory, like a real run).
+  ## tests (default: the working directory, like a real run). `serve`
+  ## is true only when this call owns the process (the real binary): the
+  ## dashboard then serves its loop, otherwise it validates-only so
+  ## in-process callers (tests, embedding) never block on a socket.
   if args.len == 0 or args[0] == "chat":
     return runChat(dotenvStart)
+  if args[0] == "dashboard":
+    return runDashboard(dotenvStart, serve)
   if args[0] == "--help":
     writeHelp()
     return 0
@@ -232,4 +257,4 @@ proc runCommand*(args: seq[string], dotenvStart = ""): int =
   return 1
 
 when isMainModule:
-  quit(runCommand(commandLineParams()))
+  quit(runCommand(commandLineParams(), serve = true))
