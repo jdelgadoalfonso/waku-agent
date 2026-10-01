@@ -90,17 +90,44 @@ dispatch llega con la unidad que lo necesite); cambiarlo rompería
   bridge) y `test_cli.nim` +4 (list vacío, logout, login
   unknown/oauth, shape sin stub). `nimble test` verde, 0 warnings.
 
-## 6c — OAuth browser flow (última)
-- DCR + PKCE + callback loopback `127.0.0.1:41765` (`std/net`,
-  `SIGN_IN_TIMEOUT = 300.0` compartido con el `deadline` de 6b) +
-  `FileTokenStorage` (un JSON por servidor bajo `mcp-auth/`,
-  `0600`, write-then-rename, corrupto = ausente, nunca fatal) +
-  `_sanitise` para el nombre de fichero.
-- PKCE S256 necesita SHA-256 y `std/sha1` está deprecado (= warning
-  prohibido): SHA-256 a mano (~200 líneas, sin dependencia nueva,
-  documentado aquí por regla 3) o `checksums` como extra opt-in —
-  decisión al abrir 6c, no antes. Abrir navegador vía seam
-  (headless/SSH imprime la URL, como Python).
+## 6c — OAuth browser flow (HECHO, sin commits, cierra fase 6)
+- SHA-256 vendored en stdlib puro (~60 líneas, FIPS 180-4, decisión
+  abajo) + `pkceChallenge` S256 + `randomToken` (seam `RandIntFn`,
+  `liveRandInt` con rejection sampling) + `base64urlEncode` /
+  `formEncode` / `formDecode`.
+- `FileTokenStorage` completo: `readTokenDoc` (ausente/corrupto/no-
+  objeto → `{}`, nunca raise) + `writeTokenDoc` (mkdir, tmp, chmod
+  0600 pre-rename) + `get/setStoredTokens` + `get/setStoredClientInfo`
+  (merge, sin pisar la mitad hermana).
+- Callback loopback `127.0.0.1:41765` (`callbackPort`/`callbackPath`/
+  `redirectUri`, `signInTimeout` 300.0 compartido con el `deadline` de
+  6b; `callbackPollAttempts` = 600): `parseCallbackTarget` puro
+  (200/404, `error` verbatim) + `callbackError` + `callbackSuccessPage`
+  + `waitCallbackLive` (`asynchttpserver`, jamás en tests).
+- DCR + discovery + exchange sobre seams (`HttpPostFn`/`HttpGetFn`):
+  `resourceMetadataUrl` (RFC 9728 path-insertion), `parseResourceMetadata`
+  / `parseServerMetadata`, `dcrBody` (Waku/loopback/`none`),
+  `authorizeUrl` (code + S256), `tokenExchangeBody`/`refreshBody`,
+  `parseDcrResponse`/`parseTokenResponse` (sin `client_id`/`access_token`
+  → `ValueError`).
+- `oauthSignIn` (discover → reuse-or-DCR → browser → wait → state-check
+  → exchange → store; nunca raise, triple con `timedOut` para el mensaje
+  especial de timeout) + `OAuthFlowFn` / `oauthFlowWith` (el wiring de
+  una línea que `runMcpCmd` pasará).
+- Navegador por seam (`BrowserFn`; `openBrowserLive` imprime la URL
+  siempre, como Python; headless → la URL viaja en el timeout).
+- Bridge con token guardado: `connectAll`/`connectOneHttp`/
+  `listToolsViaHttp` aceptan bearer guardado (`auth_env` manda);
+  `storedAccessToken` (margen 60s, sin `exp` = válido) +
+  `refreshAccessToken` (sin raise, conserva `refresh_token` viejo).
+- `mcpLogin` oauth con flow inyectado: veredicto por fichero + identidad
+  (paridad `sign_in`), rama timeout verbatim; sin flow → error honesto
+  que nombra el seam, cero I/O (`nimble test` sigue offline).
+- Tests: `test_mcp.nim` +28 (NIST ×2, RFC 7636, storage ×4, callback ×3,
+  shapes ×5, flow ×7, bearer/refresh/login ×5, constantes). `nimble test`
+  verde, 0 warnings (76 en test_mcp, 561 en suite, EXIT=0).
+- Surfaces: `nim/src/mcp.nim` + `nim/tests/test_mcp.nim`. `waku.nim`
+  intacto (follow-up de una línea abajo). Frontend intacto. Evals intactos.
 
 ## Decisiones
 - Sin SDK y sin dependencias nuevas (regla 3): el wire MCP son tres
@@ -119,6 +146,15 @@ dispatch llega con la unidad que lo necesite); cambiarlo rompería
   login oauth → error que nombra 6c): el resto de stubs 4e sigue
   intacto y `test_cli.nim` lo pinna (el shape erróneo de `mcp` da 1,
   ya no 0 de stub).
+- SHA-256 vendored en stdlib puro (regla 3): `std/sha1` está deprecado
+  (el gate es 0 warnings) y `checksums` sería dependencia nueva;
+  `std/md5` no vale (PKCE S256 nombra SHA-256). Pinnado por vectores
+  NIST + RFC 7636 apéndice B (precedente: FNV-1a propio en 8d).
+- `runMcpCmd` (`waku.nim`) intacto en 6c: fuera de superficie, así que
+  el login oauth del binario sigue en error honesto (ahora nombra el
+  seam, ya no 6c). Follow-up de una línea: pasar
+  `oauthFlowWith(liveHttpPost, liveHttpGet, openBrowserLive,
+  waitCallbackLive, liveRandInt)` a `mcpLogin`.
 
 ## Divergencias con Python (motivo)
 - Spec sin `url` ni `command` → frase con el nombre en vez del
@@ -148,3 +184,31 @@ dispatch llega con la unidad que lo necesite); cambiarlo rompería
 - README de `nim/` sin actualizar (dice "MCP ... are not [ported]"):
   sigue siendo verdad a falta de 6b/6c; se actualiza al cerrar fase
   (regla 9, diferido con motivo, no olvido).
+- `client_info` guardado incluye los endpoints descubiertos (el SDK los
+  re-descubría por run): el refresh posterior no necesita GETs.
+- El `state` mismatch falla cerrado explícito (el SDK lo validaba dentro).
+- `mcpLogin` sin flow no toca red ni navegador (seam nil = rechazo):
+  `nimble test` hace cero llamadas de red (garantía del `.nimble`).
+
+## Cierre fase 6
+- Gate: tools list/call contra respuestas grabadas con formas del demo
+  (`word_count`, `memory.remember`) en 6a/6b/6c; `waku mcp`
+  list/login/logout con paridad Python salvo el wiring de una línea.
+- Pendiente (no 6c): el wiring `runMcpCmd` + `oauthFlowWith` (una línea,
+  `waku.nim`, fuera de superficie 6c), el README de `nim/` (regla 9) y
+  el bridge concurrente (follow-up declarado en 6a).
+
+## Follow-up — cableado vivo del OAuth en el binario (HECHO, sin commits)
+- `runMcpCmd` (`nim/src/waku.nim`) pasa
+  `oauthFlowWith(liveHttpPost, liveHttpGet, openBrowserLive,
+  waitCallbackLive, liveRandInt)` a `mcpLogin`: los cinco live fns
+  existen con esos nombres exactos (cero renombres). El login oauth
+  del binario ya no da el error honesto del seam nil; llega al
+  browser flow real.
+- Tests: `nim/tests/test_cli.nim` +1 (el constructor exacto
+  `oauthFlowWith` sobre seams grabados firma y `mcpLogin` reporta la
+  cuenta sin el error del seam; cero red). `nimble test` verde,
+  0 warnings, 562 OK, EXIT=0.
+- README de `nim/` (regla 9): MCP sale de "not ported", matizado a
+  lo pendiente real (concurrencia del bridge).
+- Estado: fase 6 cerrada salvo el bridge concurrente (sigue pendiente).

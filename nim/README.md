@@ -3,7 +3,9 @@
 This folder holds the Nim port of Waku. The port will ship one binary that
 reads and writes the same `.waku/` data as Python Waku. Phase 5b (pricing)
 is landed, plus the 5d1+5d2 integrations core (registry, states, views,
-health store, apply/test, `connections` dispatch); MCP,
+health store, apply/test, `connections` dispatch) and the phase 6 MCP
+connector (config, stdio + streamable HTTP, OAuth browser flow wired in
+the binary); MCP connection concurrency,
 gateways, ops and evals are not.
 
 ## Build and test
@@ -110,7 +112,8 @@ nimble test     # runs the offline phase 0 tests
 
 Full tool wiring (`build_registry` — the
 registry takes injected tools until the remaining tools land), the memory
-layer (gated retrieval, consolidation, MEMORY.md sync), MCP, the `connect`
+layer (gated retrieval, consolidation, MEMORY.md sync), MCP connection
+concurrency, the `connect`
 flows, the chat gateways (telegram/discord/whatsapp/
 voice), OTel spans, and the evals. The phase list with its
 gates lives in
