@@ -796,11 +796,14 @@ proc wakeLoop*(rig: VoiceRig) =
 
 proc pushToTalk*(rig: VoiceRig, openMic: MicOpenFn, prompt: PromptFn,
     readLine: LineFn, takeOf: TakeFn = nil): bool =
-  ## Port of `main`'s push-to-talk loop: press Enter, speak, press Enter
-  ## again. `WAKU_WAKE_WORD=""` is what picks this mode over the
+  ## Port of `main`'s push-to-talk loop, with BOTH of its prompts: press
+  ## Enter to start, speak, press Enter again to stop. Python opens the
+  ## stream inside `record_until_enter`, so the recorder is opened after
+  ## the first Enter and the take ends at the second one, exactly as
+  ## here. `WAKU_WAKE_WORD=""` is what picks this mode over the
   ## hands-free one. One recorder per take (a fresh stream, like
   ## `record_until_enter`), the same ladder as `voiceTurn`'s
-  ## (`pushToTalkStep`), and EOF or Ctrl-C at the Enter prompt ends the
+  ## (`pushToTalkStep`), and EOF or Ctrl-C at either prompt ends the
   ## session with `byeLine`. A take that cannot be captured (no mic
   ## seam) prints the honest error and ends, because there is nothing
   ## else a person could do with a voice command.
@@ -817,30 +820,36 @@ proc pushToTalk*(rig: VoiceRig, openMic: MicOpenFn, prompt: PromptFn,
   while not stopping(rig):
     var mic: ExternalMic
     try:
+      # prompt one: the person says when they start talking
+      prompt("\npress Enter to talk… ")
+      discard readLine()
       mic = openMic()
-    except CatchableError as exc:
-      log(exc.msg)
-      log(byeLine)
-      return false
-    var audio: seq[float32]
-    try:
+      # prompt two, from `record_until_enter`: the recorder is already
+      # running, so this Enter ends the take
       prompt("recording — press Enter when done… ")
       discard readLine()
-      audio = take(mic)
+      var audio: seq[float32]
+      try:
+        audio = take(mic)
+      finally:
+        micClose(mic)
+      let heard = transcribe(rig.stt, audio)
+      case pushToTalkStep(audio.len, heard)
+      of ptTooShort:
+        log(tooShortReply)
+      of ptNoSpeech:
+        log(noSpeechReply)
+      of ptRespond:
+        discard voiceTurn(heard, rig.respond, rig.tts, log)
     except EOFError:
       micClose(mic)
       log(byeLine)
       return true
-    finally:
+    except CatchableError as exc:
       micClose(mic)
-    let heard = transcribe(rig.stt, audio)
-    case pushToTalkStep(audio.len, heard)
-    of ptTooShort:
-      log(tooShortReply)
-    of ptNoSpeech:
-      log(noSpeechReply)
-    of ptRespond:
-      discard voiceTurn(heard, rig.respond, rig.tts, log)
+      log(exc.msg)
+      log(byeLine)
+      return false
   log(byeLine)
   return true
 

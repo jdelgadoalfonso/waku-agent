@@ -659,10 +659,12 @@ suite "phase 7d1 voice push to talk":
         return nil
     let prompt: PromptFn =
       proc(msg: string) {.closure.} = prompts.add(msg)
+    # two Enter presses per take (start talking, done), and the sixth
+    # ends the session
     let readLine: LineFn =
       proc(): string {.closure.} =
         inc takes
-        if takes > 2:
+        if takes > 5:
           raise newException(EOFError, "end of input")
         return ""
     # take one: long enough and understood. take two: too short.
@@ -682,10 +684,11 @@ suite "phase 7d1 voice push to talk":
         inc takesRead
         return result
     check pushToTalk(rig, openMic, prompt, readLine, takeOf)
-    # three takes were offered, the third Enter press ended the session
+    # two full takes ran, then the next Enter press ended the session
     assert opens == 3
-    assert prompts.len == 3
-    assert prompts[0] == "recording — press Enter when done… "
+    assert prompts.len == 6
+    assert prompts[0] == "\npress Enter to talk… "
+    assert prompts[1] == "recording — press Enter when done… "
     assert lines.contains("you › book the dentist")
     assert spoken == @["reply 1"]
     assert "(didn't catch that)" in lines
@@ -721,10 +724,11 @@ suite "phase 7d1 voice command":
         inc opens
         raise newException(CatchableError, "no recorder here")
     let collect: LogFn = proc(line: string) {.closure.} = said.add(line)
+    let line: LineFn = proc(): string {.closure.} = ""
     let unused: RespondFn = proc(text: string): string {.closure.} = "unused"
     let code = voiceMain(envOf([("WAKU_STT_COMMAND", "whisper-cli"),
         ("WAKU_MIC_COMMAND", "arecord -q"), ("WAKU_WAKE_WORD", "")]),
-      unused, noMic, logger = collect)
+      unused, noMic, logger = collect, readLineIn = line)
     # the mouth notice first, then the ready banner, then the honest mic
     # error and the goodbye — the ladder never ran
     assert "WAKU_TTS_COMMAND" in said[0]
@@ -761,7 +765,7 @@ suite "phase 7d1 voice command":
       prompt = proc(msg: string) {.closure.} = prompts.add(msg),
       readLineIn = proc(): string {.closure.} =
         inc takesRead
-        if takesRead > 1:
+        if takesRead > 2:
           raise newException(EOFError, "end of input")
         return "")
     assert "WAKU_TTS_COMMAND" notin said[0]
@@ -769,7 +773,8 @@ suite "phase 7d1 voice command":
     assert "you › book it" in said
     assert "waku › booked for friday" in said
     assert spoken == @["booked for friday"]  # the reply, speakable
-    assert prompts[0] == "recording — press Enter when done… "
+    assert prompts[0] == "\npress Enter to talk… "
+    assert prompts[1] == "recording — press Enter when done… "
     assert said[^1] == byeLine
     assert code == 0
 
