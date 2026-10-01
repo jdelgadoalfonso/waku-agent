@@ -35,7 +35,9 @@ proc testDeps(home, staticDir: string): DashboardDeps =
     dotenvPath: "", hostOs: "linux",
     chatFn: nil, chatStreamFn: nil, graphStreamFn: nil, voiceFn: nil,
     sessionFn: nil, revealProbe: nil, revealOpen: nil, raceFn: nil,
-    judgeFn: nil, store: nil,
+    judgeFn: nil, memoryRunFn: nil, judgmentRaceFn: nil,
+    hostedListFn: nil, hostedWipeFn: nil, judgmentSuites: newJArray(),
+    memoryExample: "", store: nil,
     probes: initTable[string, ProbeFn](), providerProbe: nil,
     rebuild: nil, gatewayReload: nil, gatewayStatus: nil)
 
@@ -868,6 +870,8 @@ suite "phase 8b POST route surface":
       "/api/connections/test": """{"key": "tavily"}""",
       "/api/providers": """{"provider": "demo", "disabled": true}""",
       "/api/voice": "audio-bytes",
+      "/api/judgment-arena/key": """{"key": "ts-test"}""",
+      "/api/memory-arena/clean": """{}""",
     }.toTable
     for r in readPostRoutes():
       if r in bodies:
@@ -875,21 +879,25 @@ suite "phase 8b POST route surface":
         assert status == 200, r
     removeDir(root)
 
-  test "8d arena POST routes stay honest 501s (8c compare is real now)":
-    let root = freshDir("waku-dash-arena501")
+  test "8d arena POST routes are real now (key validates, clean names)":
+    let root = freshDir("waku-dash-arena8d")
     createDir(root / "static")
     var d = testDeps(root, root / "static")
-    for r in ["/api/judgment-arena/key",
-        "/api/memory-arena/clean"]:
-      let (status, _, body) = handlePost(d, r, "{}")
-      assert status == 501, r
-      assert r in body
+    let (keyStatus, _, keyBody) = handlePost(d,
+      "/api/judgment-arena/key", """{"key": ""}""")
+    assert keyStatus == 200
+    assert "paste a key" in parseJson(keyBody)["error"].getStr()
+    let (cleanStatus, _, cleanBody) = handlePost(d,
+      "/api/memory-arena/clean", "{}")
+    assert cleanStatus == 200
+    assert "no track chosen" in parseJson(cleanBody)["error"].getStr()
     for r in ["/api/judgment-arena/stream",
         "/api/memory-arena/stream"]:
       let (handled, frames) = collectFrames(d, r, "{}")
       assert handled, r
       assert frames.len == 1
-      assert r in frames[0]
+      assert "not wired" in frames[0] or "no track" in frames[0] or
+        "unknown suite" in frames[0]
     removeDir(root)
 
   test "unknown POST paths 404 and broken JSON 400s":
@@ -901,8 +909,8 @@ suite "phase 8b POST route surface":
     removeDir(root)
 
 suite "phase 8a pinned-but-later GET branches":
-  test "8d arena GETs are honest 501s, never the SPA shell":
-    let root = freshDir("waku-dash-get501")
+  test "8d arena GETs are real now, never the SPA shell":
+    let root = freshDir("waku-dash-get8d")
     let web = root / "static"
     createDir(web)
     writeFile(web / "index.html", "<html></html>")
@@ -910,9 +918,9 @@ suite "phase 8a pinned-but-later GET branches":
     for r in ["/api/judgment-arena",
         "/api/memory-arena", "/api/memory-arena/stores"]:
       let (status, ctype, body) = handleGet(d, r)
-      assert status == 501, r
-      assert ctype == "application/json"
-      assert r in body
+      assert status == 200, r
+      assert ctype == "application/json", r
+      assert parseJson(body).kind in {JObject, JArray}, r
     removeDir(root)
 
   test "unknown api paths 404 as JSON":
@@ -1058,4 +1066,199 @@ suite "phase 8c compare wiring":
     var srv = prepareDashboard(d,
       proc(port: int): bool = port != 7786)
     assert srv.port == 7786
+    removeDir(root)
+
+proc writeProbesFixture(dir: string): string =
+  ## One demo track the 8d dashboard tests resolve against.
+  result = dir / "probes.json"
+  writeFile(result, """{"tracks": {"demo": {
+    "label": "Demo", "seed": ["Priya prefers morning meetings."],
+    "probes": [{"id": "recall", "test": "recall",
+      "question": "When does Priya like to meet?",
+      "expect_any": ["morning"]}]}}}""")
+
+suite "phase 8d judgment-arena wiring":
+  test "the picker serves suites, contestants and past runs":
+    let root = freshDir("waku-dash-jget")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    d.judgmentSuites = %*[{"id": "s1", "title": "Leads"}]
+    let (status, ctype, body) = handleGet(d, "/api/judgment-arena")
+    assert status == 200
+    assert ctype == "application/json"
+    let node = parseJson(body)
+    assert node["suites"].len == 1
+    assert node["contestants"][0]["spec"].getStr() ==
+      "typesafe:jev-latest"
+    assert node["runs"].len == 0
+    removeDir(root)
+
+  test "the key endpoint validates before it ever writes":
+    let root = freshDir("waku-dash-jkey")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    d.dotenvPath = root / ".env"
+    let empty = parseJson(handlePost(d, "/api/judgment-arena/key",
+      """{"key": "  "}""")[2])
+    assert "paste a key" in empty["error"].getStr()
+    let bad = parseJson(handlePost(d, "/api/judgment-arena/key",
+      """{"key": "clave-con-\u00e1"}""")[2])
+    assert "ASCII" in bad["error"].getStr()
+    assert not fileExists(root / ".env")
+    let ok = parseJson(handlePost(d, "/api/judgment-arena/key",
+      """{"key": "ts-live"}""")[2])
+    assert ok["ok"].getBool()
+    assert ok["ready"].getBool()
+    assert ok["where"].getStr() == root / ".env"
+    assert "TYPESAFE_API_KEY=ts-live" in readFile(root / ".env")
+    assert d.env["TYPESAFE_API_KEY"] == "ts-live"
+    removeDir(root)
+
+  test "judgment/stream validates the suite before any runner":
+    let root = freshDir("waku-dash-jstream")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    d.judgmentSuites = %*[{"id": "s1", "title": "Leads"}]
+    let (_, unknown) = collectFrames(d, "/api/judgment-arena/stream",
+      """{"suite": "nope", "specs": []}""")
+    assert unknown.len == 1
+    assert "unknown suite" in unknown[0]
+    let (_, nilFrames) = collectFrames(d, "/api/judgment-arena/stream",
+      """{"suite": "s1", "specs": ["typesafe:jev-latest"]}""")
+    assert nilFrames.len == 1
+    assert "not wired" in nilFrames[0]
+    removeDir(root)
+
+  test "judgment/stream runs a wired race through to done":
+    let root = freshDir("waku-dash-jstreamrun")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    d.judgmentSuites = %*[{"id": "s1"}]
+    d.judgmentRaceFn = proc(suiteId: string, specs: seq[string],
+        suites: JsonNode, emit: SseEmit) =
+      emit("answer", %*{"spec": specs[0], "ok": true})
+      emit("done", %*{"scoreboard": []})
+    let (handled, frames) = collectFrames(d,
+      "/api/judgment-arena/stream",
+      """{"suite": "s1", "specs": ["typesafe:jev-latest"]}""")
+    assert handled
+    assert frames.len == 2
+    assert frameKind(frames[0]) == "answer"
+    assert frameKind(frames[1]) == "done"
+    let (_, badFrames) = collectFrames(d, "/api/judgment-arena/stream",
+      "{oops")
+    assert "invalid JSON" in badFrames[0]
+    removeDir(root)
+
+suite "phase 8d memory-arena wiring":
+  test "without the shipped fixture the tab reports unavailable":
+    let root = freshDir("waku-dash-mgetoff")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    d.memoryExample = ""
+    let node = parseJson(handleGet(d, "/api/memory-arena")[2])
+    assert node["available"].getBool() == false
+    removeDir(root)
+
+  test "with a fixture the tab names sets, models and backends":
+    let root = freshDir("waku-dash-mget")
+    createDir(root / "static")
+    let fx = writeProbesFixture(root)
+    var d = testDeps(root, root / "static")
+    d.memoryExample = fx
+    let node = parseJson(handleGet(d, "/api/memory-arena")[2])
+    assert node["available"].getBool()
+    assert node["sets"].len == 1
+    assert node["chosen"].getStr() == ""
+    assert node["backends"][0].getStr() == "sqlite"
+    assert node["models"].kind == JArray
+    assert node["tracks"].hasKey("demo")
+    let chosen = parseJson(handleGet(d,
+      "/api/memory-arena?probes=" & fx & "::demo")[2])
+    assert chosen["chosen"].getStr() == fx & "::demo"
+    removeDir(root)
+
+  test "stores read the live home until a track scopes a race":
+    let root = freshDir("waku-dash-mstores")
+    createDir(root / "static")
+    let db = connectDb(root)
+    db.addFact("priya", "prefers morning meetings")
+    db.close()
+    var d = testDeps(root, root / "static")
+    let node = parseJson(handleGet(d,
+      "/api/memory-arena/stores")[2])
+    assert node.len == 2  # sqlite + control, nothing hosted configured
+    assert node[0]["store"].getStr() == "sqlite"
+    assert node[0]["kind"].getStr() == "live"
+    assert node[0]["count"].getInt() == 1
+    assert node[0]["facts"][0]["subject"].getStr() == "priya"
+    assert node[1]["store"].getStr() == "control"
+    assert "told nothing" in node[1]["note"].getStr()
+    let only = parseJson(handleGet(d,
+      "/api/memory-arena/stores?store=control")[2])
+    assert only.len == 1
+    assert only[0]["store"].getStr() == "control"
+    removeDir(root)
+
+  test "clean without a track deletes nothing, honestly":
+    let root = freshDir("waku-dash-mclean")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    let node = parseJson(handlePost(d, "/api/memory-arena/clean",
+      """{}""")[2])
+    assert "no track chosen" in node["error"].getStr()
+    removeDir(root)
+
+  test "clean with a fixture removes only this race's homes":
+    let root = freshDir("waku-dash-mcleanfx")
+    createDir(root / "static")
+    let fx = writeProbesFixture(root)
+    var d = testDeps(root, root / "static")
+    d.memoryExample = fx
+    let node = parseJson(handlePost(d, "/api/memory-arena/clean",
+      $(%*{"probes": fx & "::demo"}))[2])
+    assert node["errors"].len == 2  # mem0 + zep wipes unwired, said aloud
+    assert "not wired" in node["errors"][0].getStr()
+    assert node["partition"].getStr().startsWith("waku-arena-")
+    removeDir(root)
+
+  test "memory/stream without a runner ends done, never 500":
+    let root = freshDir("waku-dash-mstream")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    let (_, untracked) = collectFrames(d, "/api/memory-arena/stream",
+      """{}""")
+    assert untracked.len == 1
+    assert "no track 'example'" in untracked[0]
+    let fx = writeProbesFixture(root)
+    d.memoryExample = fx
+    let (_, nilFrames) = collectFrames(d, "/api/memory-arena/stream",
+      $(%*{"probes": fx & "::demo", "backends": ["sqlite"]}))
+    assert nilFrames.len == 1
+    assert "not wired" in nilFrames[0]
+    removeDir(root)
+
+  test "memory/stream runs a wired race through to done":
+    let root = freshDir("waku-dash-mstreamrun")
+    createDir(root / "static")
+    let fx = writeProbesFixture(root)
+    var d = testDeps(root, root / "static")
+    d.memoryExample = fx
+    var got: seq[string] = @[]
+    d.memoryRunFn = proc(backends: seq[string], track, model: string,
+        seedOnly: bool, fixture: JsonNode, emit: SseEmit) =
+      got = backends
+      assert track == "demo"
+      emit("probe", %*{"contestant": "sqlite", "outcome": "pass"})
+      emit("done", %*{"scoreboard": []})
+    let (handled, frames) = collectFrames(d, "/api/memory-arena/stream",
+      $(%*{"probes": fx & "::demo", "backends": []}))
+    assert handled
+    assert got == @["sqlite"]  # empty defaults, like Python
+    assert frames.len == 2
+    assert frameKind(frames[0]) == "probe"
+    assert frameKind(frames[1]) == "done"
+    let (_, badFrames) = collectFrames(d, "/api/memory-arena/stream",
+      "{oops")
+    assert "invalid JSON" in badFrames[0]
     removeDir(root)

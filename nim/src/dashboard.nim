@@ -14,10 +14,12 @@
 ## Unit 8c owns the compare arena through `arena.nim` (the store, the
 ## reprice-at-read scoreboard, the race/judge seams): GET
 ## `/api/compare/history` plus POST `clear` / `regrade` / `delete_run` /
-## `compare/stream`. Deliberately OUT (unit 8d): the judgment-arena
-## key/stream and memory-arena clean/stream POSTs and both arena GETs.
-## Pinned but later routes answer an honest 501 (GET/POST) or a terminal
-## done-error frame (streams) — never the SPA shell as data.
+## `compare/stream`. Unit 8d owns the memory + judgment arenas through
+## `memory_arena.nim` (the scorer, the fixture discovery, the hosted
+## seams, the judgment board): GET `/api/judgment-arena`,
+## `/api/memory-arena`, `/api/memory-arena/stores` plus POST
+## `/api/judgment-arena/key`, `/api/memory-arena/clean` and both arena
+## streams. Unknown API paths 404; nothing renders the SPA shell as data.
 ##
 ## Like 8a, every handler stays pure dispatch over injected deps: the
 ## agent turn, the graph runner, the transcriber, the editor open, the
@@ -62,6 +64,7 @@ import ./config
 import ./db
 import ./integrations
 import ./memory
+import ./memory_arena
 import ./pricing
 import ./providers
 import ./session
@@ -147,6 +150,16 @@ type
   JudgeFn* = arena.JudgeFn
     ## One referee grade behind `regrade` and judged races (nil until a
     ## judge backend exists).
+  MemoryRunFn* = memory_arena.MemoryRunFn
+    ## One memory race behind `/api/memory-arena/stream` (nil until a
+    ## harness runner exists — the honest done error, like the rest).
+  JudgmentRaceFn* = memory_arena.JudgmentRaceFn
+    ## One judgment race behind `/api/judgment-arena/stream` (nil until
+    ## a judge runner exists).
+  HostedListFn* = memory_arena.HostedListFn
+    ## One hosted store's facts behind `/api/memory-arena/stores`.
+  HostedWipeFn* = memory_arena.HostedWipeFn
+    ## One hosted partition wipe behind `/api/memory-arena/clean`.
   RevealProbeFn* = proc(name: string): bool {.closure.}
     ## `shutil.which` seam: is this editor CLI on PATH?
   RevealOpenFn* = proc(argv: seq[string]) {.closure.}
@@ -191,6 +204,17 @@ type
     sessionFn*: SessionFn
     raceFn*: RaceFn
     judgeFn*: JudgeFn
+    memoryRunFn*: MemoryRunFn
+    judgmentRaceFn*: JudgmentRaceFn
+    hostedListFn*: HostedListFn
+    hostedWipeFn*: HostedWipeFn
+    judgmentSuites*: JsonNode
+      ## The judgment cases for the picker + race validation (empty until
+      ## the `judgment_cases` port lands — unknown suites stay honest).
+    memoryExample*: string
+      ## The shipped probe fixture (`evals/memory_arena.json` in a
+      ## checkout, "" in a bare binary — then `available: false`, like
+      ## the pip wheel that never shipped `evals/`).
     revealProbe*: RevealProbeFn
     revealOpen*: RevealOpenFn
     store*: HealthStore
@@ -211,20 +235,23 @@ type
 
 proc readGetRoutes*(): seq[string] =
   ## The served GET API surface (8a reads + the 8b `reveal` side effect +
-  ## the 8c compare history). Each MUST be in `pythonPinnedGet` (there is
-  ## a test); both arena GETs arrive with 8d.
+  ## the 8c compare history + the 8d arena GETs). Each MUST be in
+  ## `pythonPinnedGet` (there is a test) — the surface is pinned, 8d only
+  ## turns the last three from 501s into real answers.
   @["/api/data", "/api/models", "/api/events", "/api/reveal",
-    "/api/compare/history"]
+    "/api/compare/history", "/api/judgment-arena", "/api/memory-arena",
+    "/api/memory-arena/stores"]
 
 proc readPostRoutes*(): seq[string] =
-  ## The served POST API surface (8b routes + the 8c compare trio; streams
-  ## dispatch separately via `handleStream`). Each MUST be in
-  ## `pythonPinnedPost` (there is a test); the 8d arena POSTs arrive later.
+  ## The served POST API surface (8b routes + the 8c compare trio + the
+  ## 8d key/clean; streams dispatch separately via `handleStream`). Each
+  ## MUST be in `pythonPinnedPost` (there is a test).
   @["/api/chat", "/api/memory", "/api/settings", "/api/query",
     "/api/session", "/api/pin", "/api/connections",
     "/api/connections/test", "/api/providers", "/api/voice",
     "/api/compare/clear", "/api/compare/regrade",
-    "/api/compare/delete_run"]
+    "/api/compare/delete_run", "/api/judgment-arena/key",
+    "/api/memory-arena/clean"]
 
 proc contentTypeFor*(name: string): string =
   ## Port of `STATIC_TYPES.get(target.suffix, "application/octet-stream")`.
@@ -491,6 +518,57 @@ proc handleGet*(d: DashboardDeps, target: string): (int, string, string) =
     # log (never state.db), via the `arena.nim` store.
     return (200, "application/json",
       $historyResponse(loadRuns(d.home), d.providers))
+  if path == "/api/judgment-arena":
+    # The 8d picker: suites with their questions (the teaching content,
+    # never the labels), every contestant with its readiness reason,
+    # and the board of past races.
+    return (200, "application/json", $ %*{"suites": d.judgmentSuites,
+      "contestants": judgmentContestants(d.env, d.providers),
+      "runs": loadJudgmentRuns(d.home)})
+  if path == "/api/memory-arena":
+    # The bake-off fixture, so the Arena's Memory tab shows WHAT is
+    # asked before any of it runs. No example on disk answers
+    # `available: false` instead of 500ing — the wheel shape, like Python.
+    try:
+      let files = probeFiles(d.memoryExample, d.home,
+        d.env.getOrDefault("WAKU_MEMORY_PROBES", "").strip())
+      let sets = probeSets(files)
+      let wanted = query.getOrDefault("probes", "").strip()
+      let (found, _, fpath) = resolveTrack(wanted, sets, "")
+      let fx = loadFixture(if found: fpath else: d.memoryExample,
+        d.memoryExample)
+      var payload = fx
+      payload["available"] = %true
+      payload["backends"] = %availableBackends(d.providers, d.env)
+      payload["sets"] = sets
+      payload["chosen"] = %(if found: wanted else: "")
+      payload["models"] = arenaModels(
+        pinnedSpecs(d.home, d.providers), d.providers)
+      return (200, "application/json", $payload)
+    except CatchableError:
+      return (200, "application/json", $ %*{"available": false})
+  if path == "/api/memory-arena/stores":
+    # What each configured store holds right now. On demand only — every
+    # hosted backend here is a live round trip, and a dashboard that
+    # bills you for leaving a tab open is not one to ship.
+    try:
+      let files = probeFiles(d.memoryExample, d.home,
+        d.env.getOrDefault("WAKU_MEMORY_PROBES", "").strip())
+      let sets = probeSets(files)
+      let wanted = query.getOrDefault("probes", "").strip()
+      let (found, hitTrack, fpath) = resolveTrack(wanted, sets,
+        query.getOrDefault("track", "").strip())
+      var fx = newJNull()
+      if found:
+        fx = loadFixture(fpath, d.memoryExample)
+      let only = query.getOrDefault("store", "").strip()
+      return (200, "application/json", $storeContents(d.providers,
+        d.env, hitTrack, query.getOrDefault("model", "").strip(),
+        fx, only, (if only.len > 0: 500 else: 8), d.home,
+        d.hostedListFn))
+    except CatchableError as exc:
+      return (200, "application/json", $ %*[{"store": "?",
+        "error": $exc.name & ": " & exc.msg}])
   if path.startsWith("/api/"):
     # A pinned-but-later GET (the 8d arenas): honest 501, not a silent
     # index render — the browser must not mistake the SPA shell for data.
@@ -1016,12 +1094,60 @@ proc streamCompare*(d: DashboardDeps, payload: JsonNode,
   except CatchableError as exc:
     emit("done", %*{"error": errorText(exc)})
 
+proc streamJudgment*(d: DashboardDeps, payload: JsonNode,
+                      emitFrame: proc(frame: string) {.closure.}) =
+  ## Port of the `/api/judgment-arena/stream` branch: every judge over
+  ## the same cases through the same policy, answers as they land.
+  proc emit(kind: string, ev: JsonNode) =
+    emitFrame(sseFrame(kind, ev))
+  var specs: seq[string] = @[]
+  let raw = payload.jget("specs")
+  if raw.kind == JArray:
+    for item in raw:
+      if item.kind == JString and item.getStr().strip().len > 0:
+        specs.add(item.getStr())
+  try:
+    judgmentRace(jsonStr(payload.jget("suite")).strip(), specs,
+      d.judgmentSuites, d.judgmentRaceFn, emit)
+  except CatchableError as exc:
+    emit("done", %*{"error": errorText(exc)})
+
+proc streamMemory*(d: DashboardDeps, payload: JsonNode,
+                    emitFrame: proc(frame: string) {.closure.}) =
+  ## Port of the `/api/memory-arena/stream` branch: the same agent on
+  ## the same model, only the semantic store changing. The chosen file
+  ## must be one this server offered — a browser-supplied path never
+  ## reaches the filesystem.
+  proc emit(kind: string, ev: JsonNode) =
+    emitFrame(sseFrame(kind, ev))
+  try:
+    let files = probeFiles(d.memoryExample, d.home,
+      d.env.getOrDefault("WAKU_MEMORY_PROBES", "").strip())
+    let sets = probeSets(files)
+    let wanted = jsonStr(payload.jget("probes")).strip()
+    let trackParam = jsonStr(payload.jget("track")).strip()
+    let (found, track, fpath) = resolveTrack(wanted, sets,
+      if trackParam.len > 0: trackParam else: "example")
+    var fx = newJNull()
+    if found:
+      fx = loadFixture(fpath, d.memoryExample)
+    var backs: seq[string] = @[]
+    let raw = payload.jget("backends")
+    if raw.kind == JArray:
+      for item in raw:
+        if item.kind == JString and item.getStr().strip().len > 0:
+          backs.add(item.getStr())
+    memoryRace(backs, track, jsonStr(payload.jget("model")).strip(),
+      jsonBool(payload.jget("seed_only")), fx, d.memoryRunFn, emit)
+  except CatchableError as exc:
+    emit("done", %*{"error": errorText(exc)})
+
 proc handleStream*(d: var DashboardDeps, target, body: string,
                    emitFrame: proc(frame: string) {.closure.}): bool =
   ## SSE dispatch. True when `target` is a stream route (frames were — or
   ## will be — emitted); false for everything else, which belongs to
-  ## `handlePost`. Later-unit streams (judgment, memory arenas) emit one
-  ## terminal done-error frame: the SSE shape of the 501.
+  ## `handlePost`. An unwired arena runner emits one terminal done-error
+  ## frame: the SSE shape of the honest 501.
   if target == "/api/chat/stream":
     var payload: JsonNode
     try:
@@ -1052,10 +1178,25 @@ proc handleStream*(d: var DashboardDeps, target, body: string,
       return true
     streamCompare(d, payload, emitFrame)
     return true
-  if target in ["/api/judgment-arena/stream",
-      "/api/memory-arena/stream"]:
-    emitFrame(sseFrame("done", %*{"error":
-      "not yet implemented in the Nim port: " & target}))
+  if target == "/api/judgment-arena/stream":
+    var payload: JsonNode
+    try:
+      payload = parseJson(if body.len > 0: body else: "{}")
+    except JsonParsingError as exc:
+      emitFrame(sseFrame("done",
+        %*{"error": "invalid JSON: " & exc.msg}))
+      return true
+    streamJudgment(d, payload, emitFrame)
+    return true
+  if target == "/api/memory-arena/stream":
+    var payload: JsonNode
+    try:
+      payload = parseJson(if body.len > 0: body else: "{}")
+    except JsonParsingError as exc:
+      emitFrame(sseFrame("done",
+        %*{"error": "invalid JSON: " & exc.msg}))
+      return true
+    streamMemory(d, payload, emitFrame)
     return true
   return false
 
@@ -1109,10 +1250,40 @@ proc handlePost*(d: var DashboardDeps, target,
       return (200, "application/json",
         $compareDeleteRun(d.home, jsonStr(payload.jget("ts")),
           d.providers))
-    if target in ["/api/judgment-arena/key",
-        "/api/memory-arena/clean"]:
-      return (501, "application/json", $ %*{"error":
-        "not yet implemented in the Nim port: " & target})
+    if target == "/api/judgment-arena/key":
+      # Jev is not a chat provider so it skips the provider list, but it
+      # still needs a key — written to the user's own `.env`, never sent
+      # anywhere but api.typesafe.ai, never logged.
+      let key = jsonStr(payload.jget("key")).strip()
+      let err = checkJudgmentKey(key)
+      if err.len > 0:
+        return (200, "application/json", $ %*{"error": err})
+      writeDotenvKey(d.dotenvPath, "TYPESAFE_API_KEY", key)
+      d.env["TYPESAFE_API_KEY"] = key
+      let where = if d.dotenvPath.len > 0: d.dotenvPath else: ".env"
+      return (200, "application/json",
+        $ %*{"ok": true, "ready": true, "where": where})
+    if target == "/api/memory-arena/clean":
+      # Deletes only what a race wrote (see `cleanStores`): the same
+      # probe-set validation as the race, so a browser-supplied path
+      # never reaches the filesystem. Never 500s (the 8b error shape).
+      try:
+        let files = probeFiles(d.memoryExample, d.home,
+          d.env.getOrDefault("WAKU_MEMORY_PROBES", "").strip())
+        let sets = probeSets(files)
+        let wanted = jsonStr(payload.jget("probes")).strip()
+        let (found, track, fpath) = resolveTrack(wanted, sets,
+          jsonStr(payload.jget("track")))
+        var fx = newJNull()
+        if found:
+          fx = loadFixture(fpath, d.memoryExample)
+        return (200, "application/json", $cleanStores(
+          arenaBaseDir(d.home), track,
+          jsonStr(payload.jget("model")).strip(), trackSeed(fx, track),
+          d.hostedWipeFn))
+      except CatchableError as exc:
+        return (200, "application/json",
+          $ %*{"error": $exc.name & ": " & exc.msg})
   except CatchableError as exc:
     return (200, "application/json", $ %*{"error": errorText(exc)})
   return (404, "application/json", $ %*{"error": "unknown api path"})
@@ -1449,6 +1620,15 @@ proc findStaticDir*(): string =
     return besideBin
   return "waku/ops/static"
 
+proc memoryExampleFor*(staticDir: string): string =
+  ## The shipped probe fixture next to a checkout's static dir
+  ## (`<repo>/evals/memory_arena.json`), or "" in a bare binary — then
+  ## `/api/memory-arena` answers `available: false`, like the pip wheel
+  ## that never shipped `evals/`.
+  let cand = normalizedPath(staticDir / ".." / ".." / ".." / "evals" /
+    "memory_arena.json")
+  if fileExists(cand): cand else: ""
+
 proc buildDashboardDeps*(providers: seq[Provider], settings: Settings,
                          dotenvPath: string): DashboardDeps =
   ## Live deps for the server: process env as the table, live catalog
@@ -1461,7 +1641,8 @@ proc buildDashboardDeps*(providers: seq[Provider], settings: Settings,
     env[k] = v
   let box = WakuBox(providers: providers, dotenvPath: dotenvPath,
     settings: settings)
-  DashboardDeps(home: settings.home, staticDir: findStaticDir(),
+  let staticDir = findStaticDir()
+  DashboardDeps(home: settings.home, staticDir: staticDir,
     provider: settings.provider, model: settings.model,
     smallModel: settings.smallModel, baseUrl: settings.baseUrl,
     apiKey: settings.apiKey, providers: providers, env: env,
@@ -1469,7 +1650,9 @@ proc buildDashboardDeps*(providers: seq[Provider], settings: Settings,
     dotenvPath: dotenvPath, hostOs: "", chatFn: liveChatFn(box),
     chatStreamFn: liveChatStreamFn(box), graphStreamFn: nil, voiceFn: nil,
     sessionFn: liveSessionFn(box), revealProbe: nil, revealOpen: nil,
-    raceFn: nil, judgeFn: nil, store: nil,
+    raceFn: nil, judgeFn: nil, memoryRunFn: nil, judgmentRaceFn: nil,
+    hostedListFn: nil, hostedWipeFn: nil, judgmentSuites: newJArray(),
+    memoryExample: memoryExampleFor(staticDir), store: nil,
     probes: initTable[string, ProbeFn](),
     providerProbe: nil, rebuild: nil, gatewayReload: nil,
     gatewayStatus: nil)
