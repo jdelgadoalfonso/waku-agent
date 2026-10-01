@@ -1,9 +1,9 @@
-# Waku Nim port (phase 5d1)
+# Waku Nim port (phase 5d2)
 
 This folder holds the Nim port of Waku. The port will ship one binary that
 reads and writes the same `.waku/` data as Python Waku. Phase 5b (pricing)
-is landed, plus the 5d1 integrations core (registry, states, views);
-the integrations apply/health/probes, MCP,
+is landed, plus the 5d1+5d2 integrations core (registry, states, views,
+health store, apply/test, `connections` dispatch); MCP,
 gateways, ops and evals are not.
 
 ## Build and test
@@ -96,18 +96,19 @@ nimble test     # runs the offline phase 0 tests
   `defaultModelFor`, `savePinned`). No live HTTP yet; wiring to a real
   client comes with a later phase. Regional endpoint pairing is skipped
   (the registry parser ignores `[[array]]` tables).
-- `src/integrations.nim` ports the pure core of `integrations.py`
-  (phase 5d1): the 13 static rows, provider-derived registry, status
-  machine, views and the env-example block, with env/hostOs/health/gateway
-  injected. No pip-extra check (single binary) and no regional Base URL
-  field (no `[[array]]` parsing). Probes, dotenv apply and the health
-  store land in 5d2.
+- `src/integrations.nim` ports `integrations.py` (phases 5d1+5d2):
+  the 13 static rows, provider-derived registry, status machine, views
+  and the env-example block, with env/hostOs/health/gateway injected,
+  plus the health store, injected probes, dotenv apply with rollback,
+  provider save/disable and the plain-text `cliMain` behind the
+  `connections` dispatch. No pip-extra check (single binary) and no
+  regional Base URL field (no `[[array]]` parsing).
 - `tests/test_phase0.nim` tests the env overrides, the `.env` parser and the
   command table offline.
 
 ## What is not ported yet
 
-The integrations apply/health/probes, full tool wiring (`build_registry` — the
+Full tool wiring (`build_registry` — the
 registry takes injected tools until the remaining tools land), the memory
 layer (gated retrieval, consolidation, MEMORY.md sync), MCP, the `connect`
 flows, the chat gateways (telegram/discord/whatsapp/

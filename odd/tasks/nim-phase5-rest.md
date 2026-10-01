@@ -33,9 +33,11 @@ con paridad Python y tests 100% offline.
   Divergencias deliberadas: sin pareo regional, sin HTTP real (fetch
   inyectado + seam `now`), tools/reasoning ausentes (no null), degradar
   en vez de lanzar, sort inestable en empates.
-- Siguiente: 5d2 stateful (health + probes + apply, anclado en
-  `odd/tasks/nim-phase5d-integrations.md`).
+- Siguiente: fase 6 (MCP stdio+HTTP+OAuth, hand-rolled sin SDK).
 - 5d1 LANDED en `42125f1` (núcleo puro + 28 tests, suite 272 OK, 0 warnings).
+- 5d2 LANDED sin commitear (health store + probes + apply/test + cliMain +
+  rewire del dispatch `connections`, +45 tests en test_integrations,
+  suite 317 OK, 0 warnings).
 - Python ground truth: `waku/ops/pricing.py`, `waku/ops/catalog.py`,
   `waku/integrations.py`, `waku/providers.toml` (12 rows con `price`),
   `waku/loop/models.py` (REGISTRY/PROVIDERS).

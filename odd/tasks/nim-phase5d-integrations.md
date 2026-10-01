@@ -35,7 +35,7 @@ unidades para proteger revisión. Toda lectura de entorno por parámetro
 - Surfaces: `nim/src/integrations.nim` (nuevo) + `nim/tests/test_integrations.nim`
   (nuevo). Sin dispatch, sin health en disco, sin probes, sin dotenv write.
 
-## 5d2 — stateful con seams (siguiente unidad)
+## 5d2 — stateful con seams (LANDED sin commitear, +45 tests, suite 317 OK)
 - Health store (`connections_health.json`, tmp+replace) con home inyectado.
 - `ProbeFn` inyectado por key (`_probed`); sin probe → "no test available".
 - `recordHealth/invalidateHealth`, `_safeError` (scrub de secretos).
@@ -44,10 +44,12 @@ unidades para proteger revisión. Toda lectura de entorno por parámetro
   inyectados, health record) + `testIntegration`.
 - `_providerCanServe`, `_adoptable`, `applyProvider` (usa
   `catalog.defaultModelFor`), `applyProviderDisabled`.
-- `cliMain` en texto plano (el CLI Nim no usa rich) + recablear `connections`
-  en `waku.nim` si toca (solo ese dispatch).
+- `cliMain` en texto plano (el CLI Nim no usa rich) + `connections`
+  recableado en `waku.nim` contra `cliMain` (solo ese dispatch, misma
+  regla de exit codes).
 - Surfaces: mismos dos archivos (extensión) + `nim/src/waku.nim` (solo
-  dispatch connections) si hace falta.
+  dispatch connections) + `nim/tests/test_phase0c.nim` y
+  `nim/tests/test_cli.nim` (solo lo necesario por el rewire).
 
 ## Gates
 - TDD con RED observado, `nimble test` verde, 0 warnings, sin red.

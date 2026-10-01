@@ -73,7 +73,10 @@
 - Phase 5d1 integrations core landed (integrations.nim + 28 tests): 42125f1
   (verifier errored; inline-verified + golden render zero-diff from the
   implementer; 2 parity micro-fixes applied). Suite 272 OK, cero warnings.
-- Next: phase 5d2 (health store + injected probes + apply/test + cliMain).
+- Phase 5d2 integrations stateful landed sin commitear (health store +
+  injected probes + apply/test + cliMain + rewire del dispatch
+  `connections`, +45 tests en test_integrations): suite 317 OK, cero warnings.
+- Next: phase 6 (MCP stdio+HTTP+OAuth, hand-rolled sin SDK).
 
 ## Next
 - Escribir docs/proposals/nim-port.md y pedir yes antes de fase 0.
