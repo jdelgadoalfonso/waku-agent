@@ -81,8 +81,14 @@
 - Phase 5d2 integrations stateful landed sin commitear (health store +
   injected probes + apply/test + cliMain + rewire del dispatch
   `connections`, +45 tests en test_integrations): suite 317 OK, cero warnings.
-- Phase 8 dashboard landed sin commitear (dashboard.nim + arena.nim + memory_arena.nim + cableado en waku.nim, test_dashboard 91 + test_arena 25 + test_memory_arena 48): suite 481 OK, cero warnings.
-- Next: phase 6 (MCP stdio+HTTP+OAuth, hand-rolled sin SDK).
+- Phase 8 dashboard landed (dashboard.nim + arena.nim + memory_arena.nim + cableado en waku.nim, test_dashboard + test_arena + test_memory_arena): suite 481 OK, cero warnings.
+- Phase 6 MCP landed (config + stdio + registry 6a, HTTP streamable + bridge + CLI 6b, OAuth DCR+PKCE+callback 6c): suite 562 OK, cero warnings. Follow-up bridge concurrente cerrado como A+D (síncrono declarado + deadline esperado).
+- Phase 7 gateways landed (7a runner+supervisor+telegram, 7b discord+whatsapp, 7c voz texto+comandos, 7d1 loops vivos telegram/whatsapp + motores externos, 7d2 WebSocket Discord + dispatch + supervisor dashboard + hardening): suite 839 OK, cero warnings.
+- Phase 9a packaging landed (embed de 55 assets en el binario, versión única 0.0.1, `task test`, targets make, workflow nim.yml): suite 854 OK, cero warnings.
+- Phase 9b meta-evals landed (test_repo_gates: boundary, duplicados, diseño, fila CI): suite 868 OK.
+- Phase 9c black-box landed (test_blackbox contra el binario + paso CI tras el build): suite 883 OK.
+- Live TLS landed como switch (`-d:wakuTls`, default sin TLS, regla 3 intacta): suite 900 OK + 17 flagged.
+- Next: entrega (push + PRs en cadena por fase) y judge evals (siguen Python-only por diseño).
 
 ## Next
-- Escribir docs/proposals/nim-port.md y pedir yes antes de fase 0.
+- Entrega: push de `feature/nim-phase0-skeleton` + PRs en cadena por fase. `docs/proposals/nim-port.md` ya cumplió su rol (fases 0-9 commiteadas).
