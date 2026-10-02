@@ -660,12 +660,11 @@ suite "phase 7d1 whatsapp serve listener failure":
     # real socket, and a failure inside `accept` means an exhausted
     # descriptor table. Neither is a thing a test should stage to pin a
     # shape Nim already explains in `test_tls.nim`, so the source is
-    # read instead — and read as the whole construct, because
-    # `test_tls.nim`'s shape scan keys on a `finally:` whose body opens
-    # with a nested `try:` at one level of indentation, and this close
-    # sits one level deeper under an `if`. A bare close is total here:
-    # `owned` is a plain listening socket, never an SSL one, so `close`
-    # only closes the descriptor.
+    # read instead — and read as the whole construct, because the
+    # widened scan in `test_tls.nim` ("no except between finally: and
+    # the end of its body, at any depth") is what guards this site
+    # now. A bare close is total here: `owned` is a plain listening
+    # socket, never an SSL one, so `close` only closes the descriptor.
     let text = readFile(repoRoot() / "nim" / "src" / "whatsapp.nim")
     let swallowing = "finally:\n    if take.isNil:\n      try:"
     let bare = "finally:\n    if take.isNil:\n      owned.close()\n" &

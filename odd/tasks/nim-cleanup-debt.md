@@ -92,3 +92,8 @@ documentada que tiene fix claro. Rama
   Suite 916. Propuesta de mejora del worker: ensanchar el shape
   scan de `test_tls.nim` a "ningún `except` entre `finally:` y
   el fin de su cuerpo" (hoy solo matchea un nivel).
+- Shape scan ensanchado y verificado (17 default / 22 flagged):
+  matchea a cualquier profundidad, corre en ambos modos, con una
+  excepción registrada (`voice.nim:904`, removeFile medido como
+  no-tragante). Comentario stale en `test_live_gateways.nim`
+  corregido por el padre.

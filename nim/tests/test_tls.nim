@@ -27,14 +27,16 @@
 ## - Behaviour in the DEFAULT build: every live REST seam is handed an
 ##   `https://` URL and none of them reaches a socket — all five RAISE
 ##   the refusal at the caller, and the Nim subtlety that once made four
-##   of them answer a status of 0 instead is pinned both as a mechanism
-##   and as a shape no seam carries any more. The gateway dial must
-##   refuse with `discordTlsMissingLine` unchanged.
+##   of them answer a status of 0 instead is pinned here as a mechanism,
+##   and in both builds as a shape no seam carries any more. The gateway
+##   dial must refuse with `discordTlsMissingLine` unchanged.
 ## - Structure in BOTH builds: the context exists exactly when the build
 ##   says it does, the one helper builds a client in either mode without
 ##   a network, the Discord upgrade is driven over a SCRIPTED transport
-##   against a recorded handshake, and no module in `src/` builds an
-##   HTTP client any other way.
+##   against a recorded handshake, no module in `src/` builds an
+##   HTTP client any other way, and no `finally:` in `src/` grows an
+##   `except` at any depth — the swallow shape, read whole, with the one
+##   recorded exception named at the bottom.
 ##
 ## THE FLAGGED RUN, from `nim/` (the exact command; the output name is
 ## separate so the two runs cannot clobber each other's binary):
@@ -166,8 +168,8 @@ proc repoRoot(): string =
   ## The repo root, from this file's own path and never from the working
   ## directory — the same anchoring as `test_repo_gates.nim` and
   ## `test_version.nim`, and the reason no pin below names a relative
-  ## path. Declared up here because two suites need it: the default-build
-  ## shape scan and the one-helper scan at the bottom.
+  ## path. Declared up here because two suites need it: the one-helper
+  ## scan and the finally-shape scan, both at the bottom.
   absolutePath(currentSourcePath().parentDir / ".." / "..")
 
 template tlsRefusalOf(body: untyped): string =
@@ -315,24 +317,6 @@ when not TlsCompiled:
           reached = reached & " caught"
       check reached == "no body finally caught"
       check caught     # the handler ran, and that is what let the proc return
-
-    test "no REST seam still closes its client inside a try/except":
-      # The mechanism above is a property of Nim, not of these four
-      # procs, so it never goes away on its own — a defensive
-      # `try/except` around a `close()` in a `finally` brings it back.
-      # A behavioural pin only exists in the default build, where the
-      # refusal is observable; the flagged build compiles the pins above
-      # out entirely, so the SHAPE is pinned here instead, in both modes:
-      # every seam that builds a client closes it in a bare `finally`,
-      # which is what `liveTelegramHttp` already did and what lets an
-      # in-flight exception out.
-      let swallowing = "finally:\n    try:"
-      let closing = "finally:\n    client.close()"
-      for name in ["discord.nim", "whatsapp.nim", "mcp.nim", "telegram.nim"]:
-        let text = readFile(repoRoot() / "nim" / "src" / name)
-        assert swallowing notin text,
-          name & " still catches inside a finally and would swallow again"
-        assert closing in text, name & " no longer closes in a bare finally"
 
     test "the live gateway dial refuses, unchanged":
       # The 7d2-2 line, byte for byte. This build cannot reach
@@ -567,3 +551,186 @@ suite "live TLS, one helper":
     check manifest.count("-d:ssl -d:wakuTls") == 1
     let workflow = readFile(repoRoot() / ".github" / "workflows" / "nim.yml")
     check "nimble buildTls" in workflow
+
+# ── the finally shape, tree-wide (both modes) ──────────────────────────
+#
+# The four REST seams are pinned twice above: once by what they RAISE and
+# once by the bytes they close in. The shape half lives here, at the
+# bottom with the other tree scans, because a shape is a property of the
+# SOURCE and so it reads the same in either build — the default build
+# compiles the refusal pins out, and a scan that only ran there would
+# leave the shape unpinned in the one build where a real socket is in
+# reach.
+
+proc indentWidth(line: string): int =
+  ## Columns of leading whitespace. `src/` indents with spaces and no tabs
+  ## (`grep -P '\t' nim/src/*.nim` is empty), which is what lets a text
+  ## scan compare depths without counting a tab as a column.
+  var i = 0
+  while i < line.len and line[i] in {' ', '\t'}:
+    inc i
+  i
+
+proc finallySwallows(text: string): seq[string] =
+  ## Every `except` between a `finally:` line and the end of that finally's
+  ## body, as "line: code" — the shape that makes a `finally` CATCH the
+  ## exception it is running for, which is how a proc returns early on the
+  ## way out (the mechanism pin in the default suite shows it happening).
+  ##
+  ## The body ends at the first line that is neither blank nor indented
+  ## past the `finally:` itself. That dedent is the whole scan: it is what
+  ## keeps an `except` in the `try` ABOVE a finally out of the count (the
+  ## one `serveWhatsapp` carries on purpose), and it is what an
+  ## intermediate `if` cannot escape from, however deep the nested `try`
+  ## sits under it.
+  result = @[]
+  let lines = text.splitLines()
+  for i, line in lines:
+    if line.strip() != "finally:":
+      continue
+    let base = indentWidth(line)
+    var j = i + 1
+    while j < lines.len:
+      let inner = lines[j]
+      if inner.strip.len == 0:
+        inc j
+        continue
+      if indentWidth(inner) <= base:
+        break                       # dedented: this finally's body is over
+      let code = inner.strip()
+      if code.startsWith("except"):
+        result.add($(j + 1) & ": " & code)
+      inc j
+
+proc finallyInventory(root: string): seq[string] =
+  ## The same scan over every module in `src/`, as "file:line: code", in
+  ## the filesystem's own order — so the pins below compare it as a SET.
+  for path in walkDirRec(root / "nim" / "src"):
+    if not path.endsWith(".nim"):
+      continue
+    for hit in finallySwallows(readFile(path)):
+      result.add(path.extractFilename & ":" & hit)
+
+const
+  SwallowingShape = """
+proc serveWhatsapp(take: TakeConn, owned: Socket) =
+  try:
+    discard 1
+  finally:
+    if take.isNil:
+      try:
+        owned.close()
+      except CatchableError:
+        discard
+"""
+    ## The nesting the one-level literal could not see, written out HERE
+    ## rather than reintroduced into `src/`: a `finally` whose nested
+    ## `try` sits one level deeper, under the `if take.isNil:` that picks
+    ## between an owned listener and an injected one. The depth is the
+    ## only thing that changed, and it was the whole blind spot — this is
+    ## the shape `serveWhatsapp` really had before its close went bare.
+
+  KnownFinallyExcept = [
+    "voice.nim:904: except CatchableError:"
+  ]
+    ## The inventory of `src/`, which is ONE entry: the tree carries
+    ## seventeen `finally:` blocks and this is the only `except` any of
+    ## them holds. It is recorded, not allowed — `voiceMain`'s `SttFn`
+    ## seam removes a temp WAV recording in its finally, and "the
+    ## recording is already gone" must not fail the run, which is
+    ## intent. It is also not the shape above: that nested `try` wraps a
+    ## single `removeFile`, whose own error handling makes a raise
+    ## inside the finally's body land in its handler while the in-flight
+    ## exception keeps propagating — measured, not assumed, and the
+    ## reason the entry is a fact about one site rather than a licence
+    ## for the shape. The src fix (drop the `except`, or move the
+    ## removal off the finally) is the honest end of this debt; the pin
+    ## that would carry it lives in a turn that can edit `src/`.
+
+suite "live TLS, the finally shape":
+  test "the scan sees a nested try one level under an if":
+    # The widening, as a fact about the scan rather than a promise: the
+    # literal the old pin keyed on is absent from this sample, and the
+    # sample is still the shape the file exists to refuse.
+    check "finally:\n    try:" notin SwallowingShape
+    let hits = finallySwallows(SwallowingShape)
+    # `8` is the `except` line of the const above (Nim's triple-quoted
+    # literal drops the newline after `"""`): the scan reports where it
+    # read the shape, not only that it saw one.
+    check hits == @["8: except CatchableError:"]
+
+  test "the scan reads a body, not a neighbourhood":
+    # The three ways a text scan over this shape over-reads, each written
+    # out: a bare finally (what the four seams have), the `except` in the
+    # `try` above a finally (what `serveWhatsapp` has), and the same one
+    # at the finally's OWN indent, which is where a body that ended
+    # without an explicit dedent would run on into the next statement. A
+    # scan that reported any of these would fail on today's tree, which is
+    # a pin nobody keeps.
+    check finallySwallows("""
+proc liveTelegramHttp(url: string): string =
+  try:
+    return client.getContent(url)
+  finally:
+    client.close()
+""").len == 0
+    check finallySwallows("""
+proc serve(client: Socket) =
+  try:
+    discard readWhatsappRequest(client)
+  except CatchableError:
+    discard  # a client that hung up mid-request: serve the next one
+  finally:
+    client.close()
+""").len == 0
+    check finallySwallows("""
+proc closeIt(client: Socket) =
+  try:
+    discard client.recv(1)
+  finally:
+    client.close()
+  try:
+    discard 1
+  except CatchableError:
+    discard
+""").len == 0
+
+  test "no module in src/ catches inside a finally, at any depth":
+    # Every `finally` in `src/`, read whole: the contract is "no `except`
+    # between the `finally:` line and the end of that finally's body", so
+    # an intermediate `if` cannot move a catch out of the count, at any
+    # depth. The scan is TEXTUAL, which is the right trade here — `src/`
+    # indents with spaces and nothing else, and the inventory is pinned
+    # below, so a line the scan misreads arrives as a named `file:line`
+    # rather than as silence.
+    let found = finallyInventory(repoRoot())
+    for known in KnownFinallyExcept:
+      assert known in found, "the recorded entry is gone — delete it: " & known
+    assert found.len == KnownFinallyExcept.len,
+      "a new `except` inside a `finally`, which would swallow whatever " &
+      "was unwinding:\n  " & found.join("\n  ")
+
+  test "the request handler's catch is NOT in a finally":
+    # The false positive this scan must not grow: `serveWhatsapp` answers
+    # a client that hung up mid-request and then closes it, both inside
+    # the `try`, and that is a deliberate catch — the loop owes the next
+    # client a turn. Its `finally` carries the listener close and the
+    # `running` flag, nothing that catches, so the scan reads this file
+    # clean. If someone moves the request handling into the finally, this
+    # is the pin that says so, by file and by line.
+    let text = readFile(repoRoot() / "nim" / "src" / "whatsapp.nim")
+    check finallySwallows(text).len == 0
+    check "except CatchableError:\n        discard  # a client that hung " &
+      "up mid-request: serve the next one" in text
+    check "finally:\n    if take.isNil:\n      owned.close()" in text
+
+  test "every REST seam still closes its client in a bare finally":
+    # The half of the old pin that is not about catching: a `close()` in a
+    # bare `finally` is what lets an in-flight exception out, which is
+    # what `liveTelegramHttp` always did and what the four seams now
+    # share. The scan above says nothing catches inside a finally; this
+    # says there is still a finally doing the closing.
+    let closing = "finally:\n    client.close()"
+    for name in ["discord.nim", "whatsapp.nim", "mcp.nim", "telegram.nim"]:
+      let text = readFile(repoRoot() / "nim" / "src" / name)
+      assert closing in text, name & " no longer closes in a bare finally"
