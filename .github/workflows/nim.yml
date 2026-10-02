@@ -44,3 +44,11 @@ jobs:
       # checkout) stays quiet until a browser asks for it.
       - name: Build the binary
         run: nimble build
+      # The black-box suite runs the binary the step above built, which is
+      # why it comes AFTER that step and not inside `nimble test`: run
+      # there, a checkout with no binary yet would skip every process pin
+      # and the gate would read green on nothing it built. Same compile
+      # line `waku.nimble`'s `test` task uses, so the suite a developer
+      # types is the suite this job runs.
+      - name: Black-box suite
+        run: nim c -r --hints:off tests/test_blackbox.nim
