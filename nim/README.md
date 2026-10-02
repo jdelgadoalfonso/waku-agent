@@ -4,13 +4,16 @@ This folder holds the Nim port of Waku. The port will ship one binary that
 reads and writes the same `.waku/` data as Python Waku. Landed: phases 0-5
 (skeleton, SQLite + memory, wire + loop + HTTP, session/app/graph/CLI,
 integrations + catalog + pricing + skills), phase 6 (MCP: config, stdio,
-streamable HTTP, OAuth browser flow in the binary), phase 7a-7c and 7d1
-(gateways: the runner/supervisor policy, telegram, discord, whatsapp,
-voice, plus the live loops for telegram/whatsapp/voice and the external
-voice engines) and phase 8 (ops + dashboard: the server loop, the routes,
-the model arena and the memory/judgment arena). Not landed yet: MCP
-connection concurrency, the gateway dispatch in `waku.nim` and the Discord
-gateway WebSocket (7d2), OTel spans, and the evals.
+streamable HTTP, OAuth browser flow in the binary), phase 7a-7c, 7d1 and
+7d2-1/7d2-2 (gateways: the runner/supervisor policy, telegram, discord,
+whatsapp, voice, plus the live loops for telegram/whatsapp/voice, the
+external voice engines, the Discord gateway WebSocket receive and the four
+`waku telegram|discord|whatsapp|voice` dispatches) and phase 8 (ops +
+dashboard: the server loop, the routes, the model arena and the
+memory/judgment arena). Not landed yet: MCP connection concurrency, the
+dashboard gateway supervisor (7d2-3), the TLS dial to
+`wss://gateway.discord.gg` (refused by name, no `ssl` package), OTel
+spans, and the evals.
 
 ## Build and test
 
@@ -81,8 +84,9 @@ nimble test     # runs the offline phase 0 tests
 - `src/cli.nim` ports `gateway/cli.py` (REPL with `/memory`, read-only
   snapshot, live observer lines, `terminal` thread).
 - `src/waku.nim` dispatches `chat` (default), `brief`, `gather`,
-  `connections` and `skill install/export` for real; unknown commands
-  exit 1 with the usage text.
+  `connections`, `skill install/export` and the four gateway commands for
+  real; unknown commands exit 1 with the usage text, and `connect` is the
+  one command still reporting phase scaffolding.
 - `src/skills.nim` ports `memory/procedural/installer.py` + `exporter.py`
   (phase 5a): `skill install` fetches + validates a SKILL.md and drops it
   into WAKU_HOME/skills (fetch injected, tests run offline); `skill export`
@@ -112,9 +116,20 @@ nimble test     # runs the offline phase 0 tests
   gate, the startup posture, the hand-rolled Bot API wire, and the live
   long-poll with its retry/conflict/dead-token policy plus the handle the
   supervisor stops and reads.
-- `src/discord.nim` ports `gateway/discord.py` (7b): the deny-by-default
-  access policy, mention stripping, the hourly turn budget, the posture
-  and the REST send seam. The gateway WebSocket receive is 7d2.
+- `src/discord.nim` ports `gateway/discord.py` (7b, 7d2): the
+  deny-by-default access policy, mention stripping, the hourly turn budget,
+  the posture, the REST send seam, and the gateway WebSocket receive
+  (RFC 6455 handshake, frames, masking, heartbeat, op 2/10 and
+  `MESSAGE_CREATE`) behind `receiveDiscordEvent`, plus the dial seam and
+  the `waku discord` command loop. The encrypted dial itself is the one
+  missing piece: `liveDiscordWire` refuses and names it, because Nim ships
+  TLS separately (the `ssl` package, OpenSSL) and this port takes no new
+  dependency.
+- `src/waku.nim` dispatches the four gateway commands (7d2): `telegram`
+  → `telegramRun`, `discord` → `discordServe`, `whatsapp` → `serveWhatsapp`
+  (its own listener, `take = nil`), `voice` → `voiceMain`, each over one
+  real agent with its own session thread and an injected terminal mirror
+  (`LogFn`).
 - `src/whatsapp.nim` ports `gateway/whatsapp.py` (7b, 7d1): the HMAC
   signature gate (over `mcp.nim`'s SHA-256), the verification challenge,
   the payload walk, the Graph API send, and the live webhook door — decide,
@@ -145,8 +160,9 @@ Full tool wiring (`build_registry` — the
 registry takes injected tools until the remaining tools land), the memory
 layer (gated retrieval, consolidation, MEMORY.md sync), MCP connection
 concurrency, the `connect`
-flows, the gateway dispatch in `waku.nim` (`waku telegram|discord|
-whatsapp|voice` still report phase scaffolding) and the Discord gateway
-WebSocket, OTel spans, and the evals. The phase list with its
+flows, the dashboard gateway supervisor (7d2-3, so `waku dashboard` still
+reports each gateway instead of running it), the TLS dial to
+`wss://gateway.discord.gg` (`liveDiscordWire` refuses and names it),
+OTel spans, and the evals. The phase list with its
 gates lives in
 [docs/nim-port-design.md](../docs/nim-port-design.md).

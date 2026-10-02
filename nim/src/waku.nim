@@ -5,8 +5,10 @@
 ## `gather` against a real app (settings → providers → client → db);
 ## phase 5a wires `skill install` and `skill export`; phase 8b wires
 ## `dashboard` to the server loop (in-process callers validate only, so
-## the dispatch test stays green without blocking on a socket). Every
-## other command still reports not-yet-implemented.
+## the dispatch test stays green without blocking on a socket). Phase 7d2
+## wires the four gateway commands (`telegram`, `discord`, `whatsapp`,
+## `voice`) to their real loops over one real agent each. `connect` is
+## the only command still reporting not-yet-implemented.
 ##
 ## Exit codes follow Python: unknown command → 1 with the usage text.
 ## Two deliberate divergences: `--help`/`--version` exit 0 (Unix
@@ -28,12 +30,18 @@ import ./client
 import ./config
 import ./dashboard
 import ./db
+import ./discord
 import ./gather
+import ./gateway
 import ./integrations
 import ./mcp
 import ./providers
 import ./skills
+import ./telegram
 import ./triage
+import ./voice
+import ./voiceio
+import ./whatsapp
 import ./wire
 
 const
@@ -41,6 +49,28 @@ const
   cliCommands* = [
     "chat", "dashboard", "connections", "connect", "mcp", "voice",
     "telegram", "discord", "whatsapp", "brief", "gather", "skill",
+  ]
+
+  telegramMissingTokenLine = "Set TELEGRAM_BOT_TOKEN in .env " &
+    "(message @BotFather to create a bot)."
+    ## `telegram.py::main`'s `SystemExit`, verbatim. The dispatch owns
+    ## this copy (and WhatsApp's four below) because those gateway
+    ## modules have no such line; Discord's lives next to its starter as
+    ## `discordMissingTokenLine`, where 7b put it.
+  whatsappSetupLines: array[4, tuple[name, line: string]] = [
+    # `whatsapp.py::main`'s four `SystemExit`s, verbatim and in Python's
+    # order, which checks them one by one and exits on the first gap.
+    ("WHATSAPP_TOKEN", "Set WHATSAPP_TOKEN in .env (Meta Cloud API access " &
+      "token). See waku/gateway/whatsapp.py docstring for setup " &
+      "instructions."),
+    ("WHATSAPP_PHONE_NUMBER_ID", "Set WHATSAPP_PHONE_NUMBER_ID in .env " &
+      "(from WhatsApp > Getting Started page)."),
+    ("WHATSAPP_VERIFY_TOKEN", "Set WHATSAPP_VERIFY_TOKEN in .env (any " &
+      "random string you'll enter in Meta's dashboard)."),
+    ("WHATSAPP_APP_SECRET", "Set WHATSAPP_APP_SECRET in .env (from your " &
+      "app's Settings → Basic → App Secret). This is required to verify " &
+      "webhook signatures — without it, anyone who finds your webhook " &
+      "URL can forge requests and drive the agent.")
   ]
 
 proc findProvidersToml*(): string =
@@ -56,6 +86,14 @@ proc findProvidersToml*(): string =
     return besideBin
   return ""
 
+proc processEnv(): Table[string, string] =
+  ## The process environment as a `Table`, which is how every gateway
+  ## seam takes it (never `os.environ` inside a module — 7a's rule).
+  ## Read once per command, after the `.env` is loaded.
+  result = initTable[string, string]()
+  for key, value in envPairs():
+    result[key] = value
+
 proc runConnections*(): int =
   ## List every integration and its stored health, like
   ## `waku/integrations.py` `cli_main` in plain text (the Nim CLI has no
@@ -70,11 +108,8 @@ proc runConnections*(): int =
       " upward or beside the binary"
     return 1
   let rows = loadProviders(registryPath)
-  var env = initTable[string, string]()
-  for key, value in envPairs():
-    env[key] = value
   let store = newHealthStore(loadSettings().home)
-  return cliMain(rows, env, hostOS, storeHealthFn(store), nil)
+  return cliMain(rows, processEnv(), hostOS, storeHealthFn(store), nil)
 
 proc writeHelp*() =
   ## Print the command list the full port will implement.
@@ -92,12 +127,21 @@ proc writeVersion*() =
   ## Print the port version.
   echo version
 
-proc buildCliApp*(dotenvStart = ""): Waku =
+proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
   ## Everything a CLI command runs against: env, registry, live client,
   ## state db. Raises `ClientConfigError` (message holds the fix) before
   ## touching the network or the filesystem beyond the `.env` read.
+  ## `homeEnv` names an env var that overrides `WAKU_HOME` for this
+  ## agent only — `DISCORD_HOME`, the difference between "a bot in my
+  ## community" and "my private assistant, exposed" (port of
+  ## `discord.py::_build_agent`, which reloads settings and repoints
+  ## `home`). Empty (the default) is the plain `WAKU_HOME` agent.
   let dotenvPath = loadDotenv(dotenvStart)
   var settings = loadSettings()
+  if homeEnv.len > 0:
+    let home = getEnv(homeEnv).strip()
+    if home.len > 0:
+      settings.home = home
   let registryPath = findProvidersToml()
   if registryPath.len == 0:
     raise newException(ClientConfigError,
@@ -228,9 +272,7 @@ proc runMcpCmd*(argv: seq[string]): int =
   ## settings (`WAKU_HOME`), `env` from the process — the helpers take
   ## both by parameter, so tests pin them via `WAKU_HOME` + tmp homes.
   ## An `oauth` login refuses honestly naming 6c (no browser flow yet).
-  var env = initTable[string, string]()
-  for key, value in envPairs():
-    env[key] = value
+  let env = processEnv()
   let home = loadSettings().home
   let nowUnix = getTime().toUnix()
   if argv.len == 0:
@@ -264,13 +306,162 @@ proc runMcpCmd*(argv: seq[string]): int =
   echo "Usage: waku mcp / waku mcp login <name> / waku mcp logout <name>"
   return 1
 
+# ── the gateway commands (7d2) ──────────────────────────────────────
+#
+# Python reaches these four through the `__main__.py` dispatch, and each
+# of them reads its credentials from a process that already ran
+# `_load_env()` at import time. The port has no import-time side effect,
+# so every command here loads the `.env` itself before it reads a single
+# var — and `dotenvStart` is how a test points that walk at a temp dir
+# instead of the checkout's `.env`.
+
+type
+  GatewayAgent* = ref object
+    ## One live agent behind a gateway command: Python's
+    ## `GatewayAgentRunner(_build_agent, session_id="telegram")` pair.
+    ## A `ref` because the `RespondFn` has to mutate the SAME agent on
+    ## every turn (session history, tracer, ledger) — the dashboard's
+    ## `WakuBox` is the same shape for the same reason.
+    waku*: Waku
+    source*: string
+
+proc newGatewayAgent*(source: string, w: Waku): GatewayAgent =
+  ## The agent one gateway command owns.
+  GatewayAgent(waku: w, source: source)
+
+proc gatewayRespond*(agent: GatewayAgent): RespondFn =
+  ## One agent turn for a gateway: the real `Waku.respond`, tagged with
+  ## the gateway the message arrived through (`source`, so the unified
+  ## chat can show its origin) and mirrored to the terminal by the same
+  ## `_observer` every Python gateway runner passes. The runner wraps this
+  ## in `accountedRespond`, so a failed turn still lands on the handle's
+  ## status.
+  result = proc(text: string): string {.closure.} =
+    agent.waku.respond(text, observer = liveObserver,
+      source = agent.source).reply
+
+proc buildGatewayAgent*(source, dotenvStart, homeEnv: string): (bool,
+    GatewayAgent, string) =
+  ## The agent behind one gateway command: the CLI app (settings →
+  ## registry → client → db) on a session thread of its own, and the
+  ## failure as a line instead of an exception — `chat` and `brief`
+  ## print it and exit 1, and a gateway command does the same.
+  try:
+    var w = buildCliApp(dotenvStart, homeEnv)
+    w.session.sessionId = source  # its own conversation thread
+    return (true, newGatewayAgent(source, w), "")
+  except ClientConfigError as exc:
+    return (false, nil, exc.msg)
+
+proc gatewayLog(logger: LogFn): LogFn =
+  ## The terminal mirror for a gateway command: the injected one, else
+  ## plain stdout — the same default `voiceMain` uses, and the same
+  ## place Python's `print()` puts the banner and the posture.
+  ## Divergence: a refusal (a missing credential, a missing engine)
+  ## travels the same mirror, where Python's `SystemExit` would go to
+  ## stderr; one stream per command keeps a person's terminal honest
+  ## about what the command did.
+  if logger.isNil:
+    result = proc(line: string) = echo line
+  else:
+    result = logger
+
+proc runTelegramCmd*(dotenvStart = "", logger: LogFn = nil): int =
+  ## `waku telegram`: the live long-poll (port of `telegram.py::main`).
+  ## The token check, then the runner's agent, then the blocking loop
+  ## (`telegramRun` prints the banner and the posture itself, exactly
+  ## where Python prints both). Returns 0 when the loop ends.
+  let log = gatewayLog(logger)
+  discard loadDotenv(dotenvStart)
+  let token = getEnv("TELEGRAM_BOT_TOKEN")
+  if token.len == 0:
+    log(telegramMissingTokenLine)
+    return 1
+  let (ok, agent, why) = buildGatewayAgent("telegram", dotenvStart, "")
+  if not ok:
+    log(why)
+    return 1
+  telegramRun(newTelegramLive("telegram"), liveTelegramHttp,
+    parseAllowedIds(getEnv("TELEGRAM_ALLOWED_USER")), token,
+    gatewayRespond(agent), log, processEnv())
+  return 0
+
+proc runDiscordCmd*(dotenvStart = "", logger: LogFn = nil): int =
+  ## `waku discord`: the gateway command (port of `discord.py::main`).
+  ## Same order as Python: `.env`, token check, then `client.run(token)`.
+  ## `discordServe` owns the dial and the reconnect, and it is where this
+  ## port says honestly that the encrypted dial is missing (see
+  ## `liveDiscordWire`); `DISCORD_HOME` gives the bot its own memory home.
+  ## Returns 0 when the loop ran, 1 when it refused.
+  let log = gatewayLog(logger)
+  discard loadDotenv(dotenvStart)
+  let token = getEnv("DISCORD_BOT_TOKEN")
+  if token.len == 0:
+    log(discordMissingTokenLine)
+    return 1
+  let (ok, agent, why) = buildGatewayAgent("discord", dotenvStart,
+    "DISCORD_HOME")
+  if not ok:
+    log(why)
+    return 1
+  return discordServe(newDiscordLive("discord"), token, gatewayRespond(agent),
+    log, processEnv())
+
+proc runWhatsappCmd*(dotenvStart = "", logger: LogFn = nil): int =
+  ## `waku whatsapp`: the webhook server (port of `whatsapp.py::main`).
+  ## The four credentials are checked in Python's order, each with its own
+  ## line, then the live server binds `0.0.0.0:5000` and blocks in
+  ## `accept`: `take = nil` is the standalone command (a `TakeConn` is
+  ## the dashboard's multiplexed loop, 7d2-3), which is why a stop here
+  ## needs a second Ctrl-C — documented on `serveWhatsapp`. Returns 0
+  ## when the server stops.
+  let log = gatewayLog(logger)
+  discard loadDotenv(dotenvStart)
+  for field in whatsappSetupLines:
+    if getEnv(field.name).len == 0:
+      log(field.line)
+      return 1
+  let (ok, agent, why) = buildGatewayAgent("whatsapp", dotenvStart, "")
+  if not ok:
+    log(why)
+    return 1
+  serveWhatsapp(newWhatsappLive("whatsapp"), getEnv("WHATSAPP_VERIFY_TOKEN"),
+    getEnv("WHATSAPP_APP_SECRET"), getEnv("WHATSAPP_ALLOWED_PHONE"),
+    getEnv("WHATSAPP_TOKEN"), getEnv("WHATSAPP_PHONE_NUMBER_ID"),
+    liveWhatsappPost, gatewayRespond(agent), log)
+  return 0
+
+proc runVoiceCmd*(dotenvStart = "", logger: LogFn = nil): int =
+  ## `waku voice`: the live voice session (port of `voice.py::main`).
+  ## No supervisor and no gateway handle: voice is a foreground command
+  ## in Python too (there is no voice row in the integrations registry),
+  ## so this is `voiceMain` over the real agent, the real recorder
+  ## starter behind `WAKU_MIC_COMMAND` and Ctrl-C wired to both loops.
+  ## Returns what `voiceMain` returns: 0 for a session that ended, 1 for
+  ## an honest refusal (a missing engine, a mic that would not open).
+  let log = gatewayLog(logger)
+  discard loadDotenv(dotenvStart)
+  let (ok, agent, why) = buildGatewayAgent("voice", dotenvStart, "")
+  if not ok:
+    log(why)
+    return 1
+  let env = processEnv()
+  let openMic: MicOpenFn =
+    proc(): ExternalMic {.closure.} =
+      externalMic(startRecorderLive, env.getOrDefault("WAKU_MIC_COMMAND", ""))
+  return voiceMain(env, gatewayRespond(agent), openMic, logger = log,
+    stop = installVoiceInterrupt())
+
 proc runCommand*(args: seq[string], dotenvStart = "",
                  serve = false): int =
   ## Dispatch one command line. `dotenvStart` pins the `.env` search for
   ## tests (default: the working directory, like a real run). `serve`
   ## is true only when this call owns the process (the real binary): the
   ## dashboard then serves its loop, otherwise it validates-only so
-  ## in-process callers (tests, embedding) never block on a socket.
+  ## in-process callers (tests, embedding) never block on a socket. The
+  ## four gateway commands forward `dotenvStart` for the same reason: a
+  ## gateway dispatch reads the `.env` before its credentials, so a test
+  ## points it at a temp dir to keep the checkout's `.env` out.
   if args.len == 0 or args[0] == "chat":
     return runChat(dotenvStart)
   if args[0] == "dashboard":
@@ -296,7 +487,15 @@ proc runCommand*(args: seq[string], dotenvStart = "",
     return 1
   if args[0] == "mcp":  # phase 6b: real list/login/logout (oauth login names 6c)
     return runMcpCmd(if args.len > 1: args[1 .. ^1] else: @[])
-  if args[0] in cliCommands:  # known but later phase: honest stub
+  if args[0] == "telegram":  # phase 7d2: the live long-poll
+    return runTelegramCmd(dotenvStart)
+  if args[0] == "discord":  # phase 7d2: the gateway loop (dial in discordServe)
+    return runDiscordCmd(dotenvStart)
+  if args[0] == "whatsapp":  # phase 7d2: the live webhook server
+    return runWhatsappCmd(dotenvStart)
+  if args[0] == "voice":  # phase 7d2: the live voice session
+    return runVoiceCmd(dotenvStart)
+  if args[0] in cliCommands:  # known but later phase: honest stub (connect)
     stderr.writeLine "nim port phase 4: " & args[0] & " not yet implemented"
     return 0
   writeUsage()  # unknown, like Python: usage + exit 1

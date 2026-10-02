@@ -2,6 +2,14 @@
 ## Offline only: temp homes, scrubbed env, no network (every clientFor
 ## failure happens before any socket; runCommand paths tested never pass
 ## config).
+##
+## Phase 7d2 changed four of those pins: `telegram`, `discord`,
+## `whatsapp` and `voice` are real dispatches now, so they refuse
+## honestly (exit 1, a credential or a missing build piece) where the
+## phase-4e stub printed "not yet implemented" and exited 0. Every pin
+## below passes a temp home as `dotenvStart`, which keeps the `.env`
+## walk (now part of a gateway dispatch, as in Python's import-time
+## `_load_env`) away from the repo checkout.
 
 import std/os
 import std/strutils
@@ -14,6 +22,7 @@ import ../src/cli
 import ../src/client
 import ../src/config
 import ../src/db
+import ../src/gateway
 import ../src/integrations
 import ../src/mcp
 import ../src/memory
@@ -25,8 +34,14 @@ const scrubNames = ["WAKU_PROVIDER", "WAKU_API_KEY", "WAKU_MODEL",
   "WAKU_MAX_TOKENS", "WAKU_HISTORY_TURNS", "WAKU_GRAPH_WORKFLOWS",
   "ANTHROPIC_API_KEY"]
 
-proc scrubEnv(): seq[(string, string, bool)] =
+proc scrubEnv(extra: openArray[string] = []): seq[(string, string, bool)] =
+  ## Every var the test pins against, gone for the duration of the test.
+  ## `extra` carries the per-suite names (a gateway token lives outside
+  ## the `WAKU_*` list) with the same save/restore contract.
   for n in scrubNames:
+    result.add((n, getEnv(n), existsEnv(n)))
+    delEnv(n)
+  for n in extra:
     result.add((n, getEnv(n), existsEnv(n)))
     delEnv(n)
 
@@ -143,8 +158,11 @@ suite "phase 4e dispatch":
     assert runCommand(@["bogus"]) == 1
 
   test "known-but-later commands are honest stubs with exit 0":
+    # 7d2 moved telegram/discord/whatsapp/voice out of this pin and into
+    # the suite below; `dashboard` (validate-only) and `connect` are what
+    # the phase-4e stub still answers for.
     assert runCommand(@["dashboard"]) == 0
-    assert runCommand(@["telegram"]) == 0
+    assert runCommand(@["connect"]) == 0
 
   test "chat without keys exits 1 before touching disk or net":
     let saved = scrubEnv()
@@ -196,6 +214,115 @@ suite "phase 5d2 connections dispatch":
 ## paths exercised here fail before any transport (unknown server,
 ## oauth-needs-6c), and success paths live in `test_mcp.nim` with
 ## injected `HttpPostFn` fakes.
+
+## Phase 7d2: `waku telegram|discord|whatsapp|voice` are real dispatches
+## now, so the phase-4e "honest stub, exit 0" pin above no longer
+## applies to them: each command refuses the way Python's `SystemExit`
+## did (a sentence on the terminal, exit 1) or, for voice, the way a
+## missing key already made `chat` fail.
+##
+## Offline only: every pin below stops at a refusal that happens BEFORE
+## any socket — an unset credential, the missing TLS build piece, a
+## missing provider key — so nothing here reaches Telegram, Discord,
+## Meta or an LLM. `dotenvStart` is the temp home, which keeps the `.env`
+## walk out of the repo checkout (Python loads it at import time).
+
+suite "phase 7d2 gateway dispatch":
+  test "telegram without a token refuses like Python, not like the stub":
+    let saved = scrubEnv(["TELEGRAM_BOT_TOKEN"])
+    let home = freshHome("waku-cli-tg-notoken")
+    putEnv("WAKU_HOME", home)
+    assert runCommand(@["telegram"], home) == 1
+    restoreEnv(saved)
+    removeDir(home)
+
+  test "discord without a token refuses like Python, not like the stub":
+    let saved = scrubEnv(["DISCORD_BOT_TOKEN"])
+    let home = freshHome("waku-cli-discord-notoken")
+    putEnv("WAKU_HOME", home)
+    assert runCommand(@["discord"], home) == 1
+    restoreEnv(saved)
+    removeDir(home)
+
+  test "whatsapp without credentials refuses like Python, not the stub":
+    let saved = scrubEnv(["WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID",
+      "WHATSAPP_VERIFY_TOKEN", "WHATSAPP_APP_SECRET"])
+    let home = freshHome("waku-cli-wa-notoken")
+    putEnv("WAKU_HOME", home)
+    assert runCommand(@["whatsapp"], home) == 1
+    restoreEnv(saved)
+    removeDir(home)
+
+  test "voice without keys exits 1 before it opens a recorder":
+    let saved = scrubEnv(["WAKU_STT_COMMAND", "WAKU_MIC_COMMAND"])
+    let home = freshHome("waku-cli-voice-nokeys")
+    putEnv("WAKU_HOME", home)
+    assert runCommand(@["voice"], home) == 1
+    restoreEnv(saved)
+    removeDir(home)
+
+suite "phase 7d2 gateway refusals":
+  # The dispatch pins above go through `runCommand` with the default
+  # terminal; these inject a logger so the SENTENCE is pinned too, which
+  # is the half a person reads. Python raises `SystemExit` with these
+  # words, so they are pinned verbatim.
+
+  test "a missing credential is refused with Python's own wording":
+    let saved = scrubEnv(["TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN",
+      "WHATSAPP_TOKEN"])
+    let home = freshHome("waku-cli-gw-words")
+    putEnv("WAKU_HOME", home)
+    var log: seq[string] = @[]
+    let record: LogFn = proc(line: string) {.closure.} = log.add(line)
+    check runTelegramCmd(home, record) == 1
+    check log[^1] == "Set TELEGRAM_BOT_TOKEN in .env (message @BotFather " &
+      "to create a bot)."
+    log.setLen(0)
+    check runDiscordCmd(home, record) == 1
+    check log[^1] == "Set DISCORD_BOT_TOKEN in .env (create a bot in the " &
+      "Discord Developer Portal)."
+    log.setLen(0)
+    check runWhatsappCmd(home, record) == 1
+    check log[^1].startsWith("Set WHATSAPP_TOKEN in .env (Meta Cloud API " &
+      "access token).")
+    restoreEnv(saved)
+    removeDir(home)
+
+  test "whatsapp names the FIRST missing credential, in Python's order":
+    let names = ["WHATSAPP_TOKEN", "WHATSAPP_PHONE_NUMBER_ID",
+      "WHATSAPP_VERIFY_TOKEN", "WHATSAPP_APP_SECRET"]
+    let saved = scrubEnv(names)
+    let home = freshHome("waku-cli-wa-order")
+    putEnv("WAKU_HOME", home)
+    for i in 0 ..< names.len:
+      var log: seq[string] = @[]
+      let record: LogFn = proc(line: string) {.closure.} = log.add(line)
+      for j in 0 ..< i:
+        putEnv(names[j], "set")
+      check runWhatsappCmd(home, record) == 1
+      check log.len == 1   # one line, the gap, then it stops
+      check ("Set " & names[i] & " in .env") in log[0]
+      for j in 0 ..< i:
+        delEnv(names[j])
+    restoreEnv(saved)
+    removeDir(home)
+
+  test "voice with a key but no engines names the first missing engine":
+    # A real agent (a key builds a client and touches no socket) in front
+    # of `voiceMain`, which is where Python's `sounddevice` check became
+    # the three external commands. The session never opens a mic.
+    let saved = scrubEnv(["WAKU_STT_COMMAND", "WAKU_MIC_COMMAND",
+      "WAKU_TTS_COMMAND"])
+    let home = freshHome("waku-cli-voice-noengines")
+    putEnv("WAKU_HOME", home)
+    putEnv(anthropicKeyEnv(), "sk-ant-test")
+    var log: seq[string] = @[]
+    let record: LogFn = proc(line: string) {.closure.} = log.add(line)
+    check runVoiceCmd(home, record) == 1
+    check log.len == 1
+    check "WAKU_STT_COMMAND" in log[0]
+    restoreEnv(saved)
+    removeDir(home)
 
 suite "phase 6b mcp dispatch":
   test "mcp with no config lists empty with exit 0":
