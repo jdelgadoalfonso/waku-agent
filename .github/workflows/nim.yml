@@ -1,12 +1,17 @@
 # The Nim port's gate, in a workflow of its own. `hosted-docker` set the
 # precedent: a tier that needs its own toolchain runs BESIDE `validate`, not
-# inside it, so a community skill PR does not wait on a Nim download and 36
-# suite compiles, and a red Nim build never gets read as a red skill. The
+# inside it, so a community skill PR does not wait on a Nim download and every
+# suite compile, and a red Nim build never gets read as a red skill. The
 # triggers are `validate`'s — every PR and every push to main.
 #
+# Two jobs, because two builds: `nim-test-and-build` is the default build
+# (no TLS in the transport, no OpenSSL needed) and `nim-tls` is the one
+# behind `-d:ssl -d:wakuTls`. They do not share a step, because the point of
+# the switch is that the default build never grows the dependency.
+#
 # `nimble install` is the only step that touches the network (it pulls
-# db_connector). The suite itself is offline and needs no API key, so this job
-# has no secret to leak and no judge eval to skip.
+# db_connector). The suite itself is offline and needs no API key, so this
+# workflow has no secret to leak and no judge eval to skip.
 name: nim
 
 on:
@@ -52,3 +57,41 @@ jobs:
       # types is the suite this job runs.
       - name: Black-box suite
         run: nim c -r --hints:off tests/test_blackbox.nim
+
+  # The live-TLS build, in a job of its own. A NEW job, not a new step
+  # in the one above, for the reason this file exists at all: the
+  # default build must not grow an OpenSSL dependency, so the two builds
+  # are separate jobs and a failure in one is a failure about that one.
+  # No existing step above was touched.
+  #
+  # Everything the suite needs is here: the checkout (the dashboard
+  # assets embed at compile time), the same pinned compiler, the same
+  # one dependency, and the OpenSSL development headers — the ONLY thing
+  # the default job does not need, and the reason this build cannot just
+  # be a flag on the job above.
+  #
+  # The switches are not repeated in this file. `nimble buildTls` and
+  # `nimble testTls` carry them, so a workflow that spelled out its own
+  # `-d:` line is exactly how the manifest and CI would drift apart.
+  nim-tls:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nim
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jiro498/nim-toolchain-action@v1
+        with:
+          version: "2.3.1"
+      # The one package the default job does not install. `libssl-dev`
+      # is headers only: the runtime library is already on the runner.
+      - name: OpenSSL development headers
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev
+      - name: Install dependencies
+        run: nimble install -y --depsOnly
+      # The TLS suite first: it is the pinned contract, and it fails
+      # with a readable message where a compile error would not.
+      - name: Live-TLS suite (offline)
+        run: nimble testTls
+      - name: Build the binary with live TLS
+        run: nimble buildTls

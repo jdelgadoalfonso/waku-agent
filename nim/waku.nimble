@@ -50,3 +50,30 @@ task test, "Compiles and runs every tests/test_*.nim suite (offline, no key)":
     exec "nim c -r --hints:off " & suite
   if suites.len == 0:
     quit("no suites in tests/ — name them tests/test_*.nim")
+
+# The live-TLS build, and the ONE place its switches are typed.
+#
+# `-d:ssl` is the compiler's own switch: it links the system libssl and
+# is what `std/httpclient`'s no-TLS guard checks, so without it every
+# `https://` request raises before it connects. `-d:wakuTls` is this
+# port's, and it is what says a developer meant it — it attaches the
+# `std/net.SslContext` from `http.nim` to every live client and lets
+# `liveDiscordWire` dial `wss://gateway.discord.gg`. Both, or neither:
+# one alone degrades to the default build rather than compiling
+# something half-encrypted.
+#
+# No new package (rule 3): `std/net` plus `wrappers/openssl` are stdlib
+# and libssl is the system's, so this costs a build switch and an
+# OpenSSL development package, not a dependency.
+#
+# The binary is written as `waku_tls`, NOT over `waku`, so a TLS build
+# and a default build can sit in the same tree and the default binary
+# is still the one `nimble build` produced.
+const tlsDefines* = "-d:ssl -d:wakuTls"
+
+task buildTls, "Compiles the same binary with live TLS (needs the OpenSSL headers)":
+  exec "nim c --hints:off " & tlsDefines & " -o:waku_tls src/waku.nim"
+
+task testTls, "Runs tests/test_tls.nim in the live-TLS build (offline, no key)":
+  exec "nim c -r --hints:off " & tlsDefines &
+    " -o:tests/test_tls_flagged tests/test_tls.nim"

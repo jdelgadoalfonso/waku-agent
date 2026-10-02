@@ -14,6 +14,7 @@ export WAKU_HOME ?= $(CURDIR)/.waku
 
 .PHONY: run voice telegram discord brief dashboard trace eval eval-judge gate lint
 .PHONY: run voice telegram whatsapp brief dashboard trace eval eval-judge gate lint nim-test nim-build
+.PHONY: nim-build-tls nim-test-tls
 
 run:            ## chat with Waku in the terminal
 	$(PY) -m waku
@@ -72,3 +73,20 @@ nim-test:       ## the Nim port's offline suite (every tests/test_*.nim, no API 
 
 nim-build:      ## the one Nim binary (needs the checkout: the dashboard assets embed at compile time)
 	cd nim && nimble build
+
+# The same two targets with the live-TLS switches, and for the same
+# reason they `cd nim`: the suite's pins read the checkout relative to
+# the working directory. The switches are NOT spelled out here — they
+# live in `nim/waku.nimble`'s `buildTls`/`testTls` tasks, so the
+# Makefile, CI and a developer cannot disagree about them. Both write
+# their own binary (`waku_tls`, `test_tls_flagged`) and never touch the
+# default build's outputs.
+#
+# Needs the OpenSSL development headers (`libssl-dev` on Debian and
+# Ubuntu); the default targets above do not, which is the point of
+# keeping the flag off by default.
+nim-build-tls:  ## the same binary with live TLS (wss gateway, https REST)
+	cd nim && nimble buildTls
+
+nim-test-tls:   ## the live-TLS pins, offline, in the flagged build
+	cd nim && nimble testTls

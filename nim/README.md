@@ -10,10 +10,13 @@ deadline), phase 7a-7c, 7d1 and 7d2-1/7d2-2 (gateways: the
 runner/supervisor policy, telegram, discord, whatsapp, voice, plus the live
 loops for telegram/whatsapp/voice, the external voice engines, the Discord
 gateway WebSocket receive and the four `waku telegram|discord|whatsapp|voice`
-dispatches) and phase 8 (ops + dashboard: the server loop, the routes, the
-model arena and the memory/judgment arena). Not landed yet: the dashboard
-gateway supervisor (7d2-3), the TLS dial to `wss://gateway.discord.gg`
-(refused by name, no `ssl` package), OTel spans, and the evals.
+dispatches, 7d2-3/7d2-4 (the dashboard gateway supervisor and the
+deferred hardening), 9a (packaging), 9b (repo-gate meta-evals) and 9c
+(black-box cross-check)), live TLS behind the `-d:wakuTls` switch (one
+`SslContext` for every live client, and a real `wss://gateway.discord.gg`
+dial in a build that asks for it) and phase 8 (ops + dashboard: the server
+loop, the routes, the model arena and the memory/judgment arena). Not landed
+yet: OTel spans.
 
 ## Build and test
 
@@ -26,6 +29,37 @@ cd nim
 nimble build    # builds the waku binary
 nimble test     # compiles and runs every tests/test_*.nim suite
 ```
+
+## Live TLS is a build switch, not a default
+
+The default build talks to nothing. Compiled without a flag, every
+`https://` call raises `HttpRequestError("SSL support is not available…")`
+inside `newConnection`, before a socket is opened, so an API key cannot
+leave in the clear. Two switches turn the encrypted paths on, and both are
+needed:
+
+```sh
+cd nim
+nimble buildTls    # -d:ssl -d:wakuTls -> ./waku_tls (needs libssl-dev)
+nimble testTls     # the same two switches, running tests/test_tls.nim
+```
+
+From the repo root those are `make nim-build-tls` and `make nim-test-tls`,
+which `cd nim` first like the other targets. `-d:ssl` is the compiler's own
+switch and links the system libssl; `-d:wakuTls` is the port's, and it is
+what attaches the one `std/net.SslContext` (`CVerifyPeer`, built once per
+process) to every live client and lets `liveDiscordWire` dial
+`wss://gateway.discord.gg`. One switch alone degrades to the default build
+rather than compiling something half-encrypted. Nothing is added to
+`requires`: `std/net` plus `wrappers/openssl` are stdlib and libssl is the
+system's, so rule 3 holds. The switches are typed once, in
+`waku.nimble`; the Makefile and the `nim-tls` CI job both call the tasks
+rather than repeating a compiler line, and the CI job installs `libssl-dev`
+where the default job does not need it.
+
+The default build's behaviour is unchanged, refusals included: the `wss://`
+dial still answers `discordTlsMissingLine`, and the pin for it in
+`tests/test_discord_ws.nim` is a pin about the default build.
 
 `nimble test` is declared in `waku.nimble` rather than left to auto-discovery:
 it runs the suites in order and stops at the first failure, so the contract
@@ -86,7 +120,10 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
 - `src/loop.nim` is the agent loop (stream-then-fallback, tool execution,
   iteration limits) over a closure client seam.
 - `src/http.nim` transports both wire formats over HTTP(S), streams SSE
-  into the gates and wires into the loop seam.
+  into the gates and wires into the loop seam. It also holds the port's
+  ONE TLS helper (`tlsActive`, `tlsContext`, `newTlsHttpClient`,
+  `newTlsAsyncHttpClient`): every live client in `src/` is built there, so
+  a build with `-d:wakuTls` cannot leave a context-less one behind.
 - `src/tools.nim` ports the tool registry (`Tool`, `register`, `to_api`,
   `schemas`, `execute` with errors-as-text) plus JSON arg helpers.
 - `src/calendar.nim` ports the local calendar paths: `create_event` (guard,
@@ -155,10 +192,9 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
   the posture, the REST send seam, and the gateway WebSocket receive
   (RFC 6455 handshake, frames, masking, heartbeat, op 2/10 and
   `MESSAGE_CREATE`) behind `receiveDiscordEvent`, plus the dial seam and
-  the `waku discord` command loop. The encrypted dial itself is the one
-  missing piece: `liveDiscordWire` refuses and names it, because Nim ships
-  TLS separately (the `ssl` package, OpenSSL) and this port takes no new
-  dependency.
+  the `waku discord` command loop. The encrypted dial (live TLS) is a three-rung
+  ladder that opens a real TLS socket under `-d:wakuTls` and refuses, with
+  `discordTlsMissingLine`, without it.
 - `src/waku.nim` dispatches the four gateway commands (7d2): `telegram`
   → `telegramRun`, `discord` → `discordServe`, `whatsapp` → `serveWhatsapp`
   (its own listener, `take = nil`), `voice` → `voiceMain`, each over one
@@ -187,6 +223,10 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
   regional Base URL field (no `[[array]]` parsing).
 - `tests/test_phase0.nim` tests the env overrides, the `.env` parser and the
   command table offline.
+- `tests/test_tls.nim` pins the conditional TLS contract in BOTH build
+  modes: the refusals the default build owes its callers, the context and
+  the recorded RFC 6455 handshake the flagged build gets, and the scan
+  that says no module builds an HTTP client behind the helper's back.
 
 ## What is not ported yet
 
@@ -194,8 +234,7 @@ Full tool wiring (`build_registry` — the
 registry takes injected tools until the remaining tools land), the memory
 layer (gated retrieval, consolidation, MEMORY.md sync), the `connect`
 flows, the dashboard gateway supervisor (7d2-3, so `waku dashboard` still
-reports each gateway instead of running it), the TLS dial to
-`wss://gateway.discord.gg` (`liveDiscordWire` refuses and names it),
-OTel spans, and the evals. The phase list with its
+reports each gateway instead of running it), OTel spans, and the evals. The
+phase list with its
 gates lives in
 [docs/nim-port-design.md](../docs/nim-port-design.md).

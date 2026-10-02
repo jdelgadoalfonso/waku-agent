@@ -48,6 +48,7 @@ lab/**/*.excalidraw
 
 # Nim port build outputs (phase 0+)
 nim/waku
+nim/waku_tls
 nim/nimcache/
 # compiled nimble test binaries live beside their sources
 nim/tests/test_*
