@@ -17,6 +17,11 @@
 ## here: the loop's socket halves (`bind`, `takeConn`, `waitForListener`)
 ## are the ones `defaultServe` never had a test for either.
 ##
+## The idle backoff suite at the end pins the one place the loop decides how
+## long to wait: the `wait` seam takes the window as an argument, so a test
+## reads the cadence this dashboard would run at instead of sleeping
+## through it.
+##
 ## Split from `test_dashboard.nim` (handlers + deps, every gateway seam
 ## nil) on purpose: this file pins the LIVE wiring the process builds,
 ## which is where 7d2-3 changed the code. Call site:
@@ -501,7 +506,7 @@ suite "phase 7d2 the one serve loop":
       webhook: proc(s: var DashboardServer): bool {.closure.} =
         order.add("webhook")
         false,
-      wait: proc() {.closure.} = discard))
+      wait: proc(timeoutMs: int) {.closure.} = discard))
     check order == @["browser", "webhook"]
     check r.turns == @["telegram: hi"]
 
@@ -520,7 +525,7 @@ suite "phase 7d2 the one serve loop":
           return false
         inc served
         return true,
-      wait: proc() {.closure.} = inc waits)
+      wait: proc(timeoutMs: int) {.closure.} = inc waits)
     for _ in 0 ..< 3:
       check multiplexStep(srv, rig, seams)   # a request was served
     check served == 3
@@ -548,6 +553,188 @@ suite "phase 7d2 the one serve loop":
     rig.reconcileHook()()
     var srv = bareServer("/tmp")
     check not rig.webhookStep()(srv)
+
+# ── the idle backoff ──────────────────────────────────────────────────
+
+suite "phase 7d2 idle telegram backoff":
+  test "an idle dashboard stops calling getUpdates four times a second":
+    # THE pin for L4. One pass with nothing on it used to pay the same
+    # 250 ms forever, so an idle bot asked Telegram about updates four
+    # times a second all day. The window an idle pass pays now grows with
+    # the empty polls behind it, and the ceiling is a constant a reader
+    # can point at.
+    let r = newRig()
+    r.env = envOf([("TELEGRAM_BOT_TOKEN", "tok")])
+    let rig = newGatewayRig(testHooks(r))
+    rig.reconcileHook()()
+    var windows: seq[int] = @[]
+    var srv = bareServer("/tmp")
+    let seams = MultiplexSeams(
+      wait: proc(timeoutMs: int) {.closure.} = windows.add(timeoutMs))
+    for _ in 0 ..< 6:
+      discard multiplexStep(srv, rig, seams)
+    check windows == @[250, 500, 1000, 2000, 2000, 2000]
+
+  test "the window is the base wait doubled per empty poll, up to the cap":
+    # The pure policy, pinned apart from the loop: one empty poll pays the
+    # cadence the loop already paid (a burst arrives one update at a time,
+    # so the first silence is not yet idleness), and every empty poll after
+    # it doubles — to the ceiling and no further, however long the
+    # dashboard stays idle.
+    check telegramIdleWaitMs(0) == dashboardIdleWaitMs
+    check telegramIdleWaitMs(1) == dashboardIdleWaitMs
+    check telegramIdleWaitMs(2) == dashboardIdleWaitMs * telegramBackoffFactor
+    check telegramIdleWaitMs(3) == dashboardIdleWaitMs * 4
+    check telegramIdleWaitMs(4) == telegramBackoffMaxMs
+    check telegramIdleWaitMs(64) == telegramBackoffMaxMs
+    # the guard against walking an int off the end: the wait doubles at most
+    # until the cap, so however absurd the count the answer is the cap
+    check telegramIdleWaitMs(high(int)) == telegramBackoffMaxMs
+
+  test "a dashboard with no bot never backs off":
+    # Nothing to back off: no poller runs, so no empty poll is ever counted
+    # and a dashboard with no gateways left keeps the cadence it had.
+    let r = newRig()
+    r.env = envOf([("WAKU_HOME", "/tmp")])
+    let rig = newGatewayRig(testHooks(r))
+    rig.reconcileHook()()
+    var windows: seq[int] = @[]
+    var srv = bareServer("/tmp")
+    let seams = MultiplexSeams(
+      wait: proc(timeoutMs: int) {.closure.} = windows.add(timeoutMs))
+    for _ in 0 ..< 4:
+      discard multiplexStep(srv, rig, seams)
+    check rig.telegramEmptyPolls == 0
+    check windows == @[250, 250, 250, 250]
+
+  test "an update puts the cadence back where it started":
+    let r = newRig()
+    r.env = envOf([("TELEGRAM_BOT_TOKEN", "tok")])
+    let rig = newGatewayRig(testHooks(r))
+    rig.reconcileHook()()
+    var windows: seq[int] = @[]
+    var srv = bareServer("/tmp")
+    let seams = MultiplexSeams(
+      wait: proc(timeoutMs: int) {.closure.} = windows.add(timeoutMs))
+    for _ in 0 ..< 4:                        # four empty polls: at the cap
+      discard multiplexStep(srv, rig, seams)
+    check windows[^1] == telegramBackoffMaxMs
+    r.answers = @[updatesBody(1, "back again")]
+    discard multiplexStep(srv, rig, seams)   # the update answers
+    check rig.telegramEmptyPolls == 0
+    windows.setLen(0)
+    for _ in 0 ..< 2:
+      discard multiplexStep(srv, rig, seams)
+    check windows == @[250, 500]             # growing from the base again
+
+  test "a webhook hit resets the backoff before the gateways are asked":
+    let r = newRig()
+    r.env = envOf([("TELEGRAM_BOT_TOKEN", "tok")])
+    let rig = newGatewayRig(testHooks(r))
+    rig.reconcileHook()()
+    for _ in 0 ..< 3:
+      discard rig.gatewayTick()
+    check rig.telegramEmptyPolls == 3
+    var srv = bareServer("/tmp")
+    check multiplexPass(srv, rig, MultiplexSeams(
+      webhook: proc(s: var DashboardServer): bool {.closure.} = true))
+    # the webhook cleared it, and this pass's own empty poll is the first
+    # again — the same pass order the loop documents
+    check rig.telegramEmptyPolls == 1
+
+  test "a frame off the discord wire resets the backoff too":
+    let r = newRig()
+    r.env = envOf([("TELEGRAM_BOT_TOKEN", "tok"),
+                     ("DISCORD_BOT_TOKEN", "dtok")])
+    let rig = newGatewayRig(testHooks(r, wire = r.wireOf()))
+    rig.reconcileHook()()
+    for _ in 0 ..< 3:
+      discard rig.gatewayTick()
+    check rig.telegramEmptyPolls == 3
+    r.feed([$(%*{"op": 10, "d": {"heartbeat_interval": 41250}})])
+    discard rig.gatewayTick()               # hello: something arrived
+    check rig.telegramEmptyPolls == 0
+
+  test "a stopped poller is no evidence either way":
+    # The dead-token pin from 7d2-3, asked the backoff's question. The poll
+    # that failed DID run no turn, so it counts; the two ticks after it ran
+    # nothing at all, and a poller that cannot ask Telegram must neither
+    # keep feeding the count nor clear it.
+    let r = newRig()
+    r.env = envOf([("TELEGRAM_BOT_TOKEN", "tok")])
+    var hooks = testHooks(r)
+    hooks.telegramHttp = proc(url, payload: string): string {.closure.} =
+      raise newException(HttpRequestError, "HttpRequestError: 401")
+    let rig = newGatewayRig(hooks)
+    rig.reconcileHook()()
+    for _ in 0 ..< 3:
+      check not rig.gatewayTick()
+    check rig.telegramEmptyPolls == 1
+
+  test "a silent discord socket does not clear it":
+    # Only a frame off the wire is activity: a Discord gateway with nothing
+    # to say (`deTimeout` every tick) leaves the telegram counter alone, so
+    # one quiet bot cannot hold another bot at four polls a second.
+    let r = newRig()
+    r.env = envOf([("TELEGRAM_BOT_TOKEN", "tok"),
+                     ("DISCORD_BOT_TOKEN", "dtok")])
+    let rig = newGatewayRig(testHooks(r, wire = r.wireOf()))
+    rig.reconcileHook()()
+    for _ in 0 ..< 3:
+      discard rig.gatewayTick()
+    check rig.telegramEmptyPolls == 3
+
+  test "a browser request is not the bot's business":
+    # Deliberate: the browser channel is what this loop SERVES, not what the
+    # bot is doing, so a person refreshing the panel must not reset the
+    # poll cadence. The wait's select still wakes for their request the
+    # moment it lands, which is why nothing here costs them latency.
+    let r = newRig()
+    r.env = envOf([("TELEGRAM_BOT_TOKEN", "tok")])
+    let rig = newGatewayRig(testHooks(r))
+    rig.reconcileHook()()
+    for _ in 0 ..< 3:
+      discard rig.gatewayTick()
+    check rig.telegramEmptyPolls == 3
+    var srv = bareServer("/tmp")
+    check multiplexPass(srv, rig, MultiplexSeams(
+      browser: proc(s: var DashboardServer): bool {.closure.} = true))
+    check rig.telegramEmptyPolls == 4       # no reset, just this pass's poll
+
+  test "a pass that served the browser skips the wait but keeps the count":
+    # The two halves of the rule together: a busy pass does not sleep (the
+    # burst rule the loop already had), and the next idle pass pays the
+    # window the silence behind it earned, browser traffic or not.
+    let r = newRig()
+    r.env = envOf([("TELEGRAM_BOT_TOKEN", "tok")])
+    let rig = newGatewayRig(testHooks(r))
+    rig.reconcileHook()()
+    var windows: seq[int] = @[]
+    var srv = bareServer("/tmp")
+    let seams = MultiplexSeams(
+      wait: proc(timeoutMs: int) {.closure.} = windows.add(timeoutMs))
+    for _ in 0 ..< 4:                        # grow to the ceiling
+      discard multiplexStep(srv, rig, seams)
+    let busy = MultiplexSeams(
+      browser: proc(s: var DashboardServer): bool {.closure.} = true,
+      wait: proc(timeoutMs: int) {.closure.} =
+        windows.add(-timeoutMs))
+    check multiplexStep(srv, rig, busy)      # served: no wait at all
+    windows.setLen(0)
+    discard multiplexStep(srv, rig, seams)
+    check windows == @[telegramBackoffMaxMs]
+
+  test "a restarted poller starts from the base cadence":
+    let r = newRig()
+    r.env = envOf([("TELEGRAM_BOT_TOKEN", "tok")])
+    let rig = newGatewayRig(testHooks(r))
+    rig.reconcileHook()()
+    for _ in 0 ..< 5:
+      discard rig.gatewayTick()
+    check rig.telegramEmptyPolls == 5
+    r.env["TELEGRAM_BOT_TOKEN"] = "tok2"
+    discard rig.reloadHook()(@["telegram"])
+    check rig.telegramEmptyPolls == 0
 
 # ── the panel driving the supervisor ──────────────────────────────────
 

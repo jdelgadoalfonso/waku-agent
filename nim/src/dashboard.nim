@@ -1789,6 +1789,11 @@ proc buildDashboardDeps*(providers: seq[Provider], settings: Settings,
 # `integrations.gatewayEnvFields` for the fields — the same registry table
 # the panel renders, so a row and its fingerprint cannot drift apart.
 #
+# What an idle pass pays is `dashboardIdleWaitMs`, grown per empty telegram
+# poll up to a ceiling (`telegramIdleWaitMs`): Python's poller waits inside
+# a long-poll on its own thread, and this loop's `timeout=0` poll would
+# otherwise ask Telegram four times a second all day.
+#
 # The three differences are all the price of one thread, all documented at
 # the proc that owns them: `gatewayTick` pumps telegram's long-poll and one
 # step of the Discord gateway between browser requests (Python runs both on
@@ -1821,8 +1826,23 @@ const
   dashboardIdleWaitMs* = 250
     ## What a pass that found nothing pays before looking again. This is the
     ## sleep that stands in for "three threads": a burst of requests is
-    ## drained back-to-back (a pass that served one skips the wait) and an
-    ## idle dashboard wakes four times a second with no work to do.
+    ## drained back-to-back (a pass that served one skips the wait), and an
+    ## idle pass pays this until `telegramIdleWaitMs` grows it.
+  telegramBackoffFactor* = 2
+    ## How much longer each FURTHER empty telegram poll makes an idle pass
+    ## wait. Python never needed it: its poller is a thread blocked in a
+    ## 30-second long-poll, so an idle bot waits inside `getUpdates` instead
+    ## of asking again. The dashboard's poll is `timeout=0` between browser
+    ## requests, so an idle bot asks about updates four times a second all
+    ## day — which is what this stops, at the cost of latency nobody
+    ## notices on an idle bot (Telegram queues the update; the poll finds
+    ## it).
+  telegramBackoffMaxMs* = 2000
+    ## The ceiling on that wait: at most one `getUpdates` every two seconds,
+    ## so an idle bot spends 30 requests a minute instead of 240. The cost of
+    ## the ceiling is LATENCY and never a lost message — an update that
+    ## arrives is still answered, within this window. A busy bot never pays
+    ## it, because any activity resets the counter.
   discordTickTimeoutMs* = 250
     ## One read of the Discord socket per pass: long enough not to spin,
     ## short enough that a heartbeat's answer is on its way within a tick.
@@ -1890,6 +1910,20 @@ type
     gateway*: DiscordWire
     discordIdleMs*: int
     discordDials*: int
+    telegramEmptyPolls*: int
+      ## CONSECUTIVE telegram polls that ran no turn, and what the idle wait
+      ## is grown from. Counted where the poll runs and cleared by any
+      ## gateway activity (a turn, a webhook request, a frame off the
+      ## Discord socket) — the "consecutive" part is what keeps a bot that
+      ## speaks every few minutes at the base cadence.
+      ##
+      ## A poll that never ran (nothing configured, a stopped poller) is not
+      ## counted and clears nothing: no evidence, no verdict. The browser
+      ## channel is deliberately NOT activity here — it is what this loop
+      ## serves, not what the bot is doing, so a person refreshing the panel
+      ## must not hand the bot back its four-polls-a-second cadence. The wait
+      ## is a `select` over the listeners, so their request still wakes the
+      ## loop the moment it lands, whatever the window says.
 
 proc loggerOf*(hooks: GatewayHooks): LogFn =
   ## The terminal mirror, or the plain stdout default every gateway command
@@ -2025,6 +2059,7 @@ proc rigStarter(rig: GatewayRig, key: string): StarterFn =
       if not telegramStarter(rig.telegram, rig.env(), rig.telegramTurn,
           rig.hooks.telegramHttp, rig.logger)():
         return false
+      rig.telegramEmptyPolls = 0    # a fresh poller owes nobody a backoff
       rig.logger(telegramStartingLine)
       rig.logger(posture(parseAllowedIds(
         rig.env().getOrDefault("TELEGRAM_ALLOWED_USER", ""))))
@@ -2060,7 +2095,7 @@ proc newGatewayRig*(hooks: GatewayHooks): GatewayRig =
     telegram: newTelegramLive("telegram"),
     whatsapp: newWhatsappLive("whatsapp"),
     discord: newDiscordLive("discord"),
-    discordIdleMs: 0, discordDials: 0)
+    discordIdleMs: 0, discordDials: 0, telegramEmptyPolls: 0)
   result.telegramTurn = hooks.respond("telegram")
   result.whatsappTurn = hooks.respond("whatsapp")
   result.discordTurn = hooks.respond("discord")
@@ -2122,16 +2157,27 @@ proc tickTelegram(rig: GatewayRig): bool =
   ## stopped, or dead on its own token — a handle that reported itself
   ## stopped stays stopped until a `reconcile` restarts it, which is what
   ## PTB's dead poller thread does. Returns whether a TURN ran.
+  ##
+  ## The counter at the end is the L4 backoff: a poll that ran a turn proves
+  ## the bot is not idle, so it starts over at the base cadence; a poll that
+  ## found nothing (an empty `result`, a refused stranger, a retryable API
+  ## error) is one piece of evidence that this bot has nothing to say. The
+  ## window that evidence buys is `telegramIdleWaitMs`, read by the loop.
   if not rig.sup.running.getOrDefault("telegram", false) or
       rig.telegram.stop or not rig.telegram.running:
     return false
   let token = rig.env().getOrDefault("TELEGRAM_BOT_TOKEN", "")
   if token.len == 0:
     return false
-  result = telegramPoll(rig.telegram, rig.hooks.telegramHttp,
+  let turns = telegramPoll(rig.telegram, rig.hooks.telegramHttp,
     parseAllowedIds(rig.env().getOrDefault("TELEGRAM_ALLOWED_USER", "")),
     token, rig.telegramTurn, rig.logger, rig.env(),
-    gatewayTickPollTimeout) > 0
+    gatewayTickPollTimeout)
+  if turns > 0:
+    rig.telegramEmptyPolls = 0
+  else:
+    inc rig.telegramEmptyPolls
+  result = turns > 0
 
 proc endDiscordSession(rig: GatewayRig) =
   ## A gateway session that ended: the socket goes and the handle stops (so
@@ -2202,6 +2248,13 @@ proc tickDiscord(rig: GatewayRig): bool =
   let env = rig.env()
   let event = receiveDiscordEvent(rig.discord, rig.gateway,
     discordTickTimeoutMs)
+  # Anything that came off the socket is activity for the OTHER gateways'
+  # backoff too (a message, a hello, a heartbeat this loop answers): the
+  # telegram counter counts "this bot is idle", and a live Discord
+  # conversation is proof it is not. Only `deTimeout` — the transport said
+  # nothing at all in the window — leaves it alone.
+  if event.kind != deTimeout:
+    rig.telegramEmptyPolls = 0
   case event.kind
   of deTimeout:
     rig.discordIdleMs += discordTickTimeoutMs
@@ -2253,6 +2306,39 @@ proc gatewayTick*(rig: GatewayRig): bool =
   ## its idle wait, so a burst of messages is drained back-to-back.
   result = tickTelegram(rig) or tickDiscord(rig)
 
+proc telegramIdleWaitMs*(emptyPolls: int): int =
+  ## The window an idle pass pays after `emptyPolls` consecutive empty
+  ## telegram polls: `dashboardIdleWaitMs` until the bot has said nothing
+  ## once, then that wait times `telegramBackoffFactor` per further empty
+  ## poll, never more than `telegramBackoffMaxMs`.
+  ##
+  ## Both ends of the rule live here on purpose. `tickTelegram` maintains
+  ## the counter and `multiplexStep` reads the window through this function,
+  ## so the cadence is one exported value a test pins, not arithmetic
+  ## sprinkled through the loop. The first empty poll keeps the old cadence
+  ## because a burst arrives one update at a time: the first silence is not
+  ## yet idleness.
+  ##
+  ## The early return is the overflow guard too. The wait doubles at most
+  ## until the cap, so a rig left idle for a week cannot walk an `int` off
+  ## the end.
+  result = dashboardIdleWaitMs
+  if emptyPolls <= 1:
+    return
+  var ms = dashboardIdleWaitMs
+  for _ in 1 ..< emptyPolls:
+    if ms >= telegramBackoffMaxMs:
+      return telegramBackoffMaxMs
+    ms = ms * telegramBackoffFactor
+  result = min(ms, telegramBackoffMaxMs)
+
+proc idleWaitMs*(rig: GatewayRig): int =
+  ## The window THIS pass's wait pays, read from the rig as it is now — the
+  ## same live read `liveSeams` documents for the webhook listener, because
+  ## the counter moves while the loop is running and the wait must not be
+  ## the window a pass started with.
+  telegramIdleWaitMs(rig.telegramEmptyPolls)
+
 # ── the one loop ──────────────────────────────────────────────────────
 
 type
@@ -2268,8 +2354,13 @@ type
     ## a dashboard with no webhook and no browser request looks like.
     browser*: LoopStepFn
     webhook*: LoopStepFn
-    wait*: proc() {.closure.}
-      ## What a pass that found nothing pays before looking again.
+    wait*: proc(timeoutMs: int) {.closure.}
+      ## What a pass that found nothing pays before looking again, with the
+      ## window it has to pay AS an argument: the loop decides how long (the
+      ## idle telegram backoff) and the seam only waits. That split is what
+      ## keeps the cadence injectable — a test records the windows instead of
+      ## sleeping through them — and it is why the production half is still
+      ## `waitForListener` over the two real listeners.
 
 proc takeConn*(listener: Socket): TakeConn =
   ## The dashboard's `TakeConn`: a select-based take, so "nothing waiting
@@ -2365,6 +2456,11 @@ proc waitForListener*(listeners: seq[Socket],
   ## descriptors, which is exactly the question ("is anyone there?") the
   ## loop asks after a pass found nothing. An empty list sleeps the window:
   ## with no listener bound there is nothing to watch.
+  ##
+  ## The window grows while an idle bot backs off (`telegramIdleWaitMs`), and
+  ## that costs a browser request nothing: the select returns the moment a
+  ## descriptor is ready, so the window bounds how often Telegram is asked,
+  ## never how long a person waits for their page.
   var handles: seq[SocketHandle] = @[]
   for listener in listeners:
     if not listener.isNil:
@@ -2388,7 +2484,8 @@ proc liveSeams*(srv: var DashboardServer, rig: GatewayRig): MultiplexSeams =
   result = MultiplexSeams(
     browser: browserStep(listener),
     webhook: webhookStep(rig),
-    wait: proc() {.closure.} = waitForListener(@[listener, rig.webhook]))
+    wait: proc(timeoutMs: int) {.closure.} =
+      waitForListener(@[listener, rig.webhook], timeoutMs))
 
 proc multiplexPass*(srv: var DashboardServer, rig: GatewayRig,
                      seams: MultiplexSeams): bool =
@@ -2396,11 +2493,17 @@ proc multiplexPass*(srv: var DashboardServer, rig: GatewayRig,
   ## first (a person waiting on the page is served before a gateway asks
   ## its own network), then the webhook, then the gateways. Returns whether
   ## the pass found anything to do.
+  ##
+  ## A webhook request clears the telegram backoff BEFORE the gateways are
+  ## asked, because a message arriving on the webhook is the clearest proof
+  ## there is that this person is talking to the bot right now — the empty
+  ## poll that follows in the same pass is then the first of a new count.
   result = false
   if not seams.browser.isNil and seams.browser(srv):
     result = true
   if not seams.webhook.isNil and seams.webhook(srv):
     result = true
+    rig.telegramEmptyPolls = 0
   if rig.gatewayTick():
     result = true
 
@@ -2409,12 +2512,14 @@ proc multiplexStep*(srv: var DashboardServer, rig: GatewayRig,
   ## One iteration of `multiplexServe`, including the wait rule: a pass that
   ## found something goes straight round again (a burst of requests or of
   ## queued messages is drained back-to-back), and a pass that found
-  ## nothing pays the bounded wait. Returns whether the pass did anything —
-  ## the loop ignores it, a test reads it.
+  ## nothing pays the bounded wait — which is `idleWaitMs`, so the poll
+  ## cadence backs off while nothing is happening and returns to the base
+  ## cadence the moment something does. Returns whether the pass did
+  ## anything — the loop ignores it, a test reads it.
   if multiplexPass(srv, rig, seams):
     return true
   if not seams.wait.isNil:
-    seams.wait()
+    seams.wait(rig.idleWaitMs())
   return false
 
 proc multiplexServe*(srv: var DashboardServer, rig: GatewayRig,
