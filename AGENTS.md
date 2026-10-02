@@ -57,7 +57,8 @@ caps it at 100 lines, so the detail lives in the files it points to.
 
 ## What CI blocks
 
-The `validate` workflow runs on every PR, and `hosted-docker` runs beside it.
+The `validate` workflow runs on every PR, and `hosted-docker` and `nim`
+run beside it.
 Each of these fails one of them:
 
 | Blocked | Checked by |
@@ -67,6 +68,7 @@ Each of these fails one of them:
 | an import between `waku/` and `hosted/`, in either direction | `evals/deterministic/test_hosted_boundary.py` |
 | a dashboard route with no hosted policy entry | `evals/deterministic/hosted/test_route_contract.py` |
 | a hosted change that breaks a tenant container or a tenant's disk limit (advisory: not yet a required check) | `.github/workflows/hosted-docker.yml` |
+| a Nim change that breaks the offline suite or the build | `.github/workflows/nim.yml` |
 | a skill that fails validation | `scripts/validate_skills.py` |
 | a skill that loads on everyday or another skill's messages | `evals/deterministic/test_skill_triggers.py` |
 | `.env.example` out of step with the integrations registry | `scripts/generate_env_example.py` |

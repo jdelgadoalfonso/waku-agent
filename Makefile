@@ -13,7 +13,7 @@ PY := $(shell [ -x .venv/bin/python ] && echo .venv/bin/python || echo python)
 export WAKU_HOME ?= $(CURDIR)/.waku
 
 .PHONY: run voice telegram discord brief dashboard trace eval eval-judge gate lint
-.PHONY: run voice telegram whatsapp brief dashboard trace eval eval-judge gate lint
+.PHONY: run voice telegram whatsapp brief dashboard trace eval eval-judge gate lint nim-test nim-build
 
 run:            ## chat with Waku in the terminal
 	$(PY) -m waku
@@ -61,3 +61,14 @@ shootout-coding: ## coding round via pi, scored by tests: make shootout-coding R
 
 lint:
 	$(PY) -m ruff check waku evals scripts hosted
+
+# The Nim port builds on its own: stdlib plus db_connector, no venv, nothing
+# from pyproject.toml. Both targets `cd nim` first because the suite's pins
+# read the checkout relative to the working directory (tests/test_cli.nim
+# walks up to waku/providers.toml), so what runs here is the command a person
+# would type from nim/ themselves.
+nim-test:       ## the Nim port's offline suite (every tests/test_*.nim, no API key)
+	cd nim && nimble test
+
+nim-build:      ## the one Nim binary (needs the checkout: the dashboard assets embed at compile time)
+	cd nim && nimble build

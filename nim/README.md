@@ -24,8 +24,42 @@ network), so `nimble build` and `nimble test` make no network calls.
 ```sh
 cd nim
 nimble build    # builds the waku binary
-nimble test     # runs the offline phase 0 tests
+nimble test     # compiles and runs every tests/test_*.nim suite
 ```
+
+`nimble test` is declared in `waku.nimble` rather than left to auto-discovery:
+it runs the suites in order and stops at the first failure, so the contract
+lives in the manifest a reader opens. That same file holds the version, which
+`src/waku.nim` reads at compile time — one edit moves `waku --version` and
+nimble together, and a build needs the checkout for it, the one the embedded
+dashboard assets need anyway. From the repo root, `make nim-build` and
+`make nim-test` are those same two commands (they `cd nim` first, because the
+suite's pins read the checkout relative to the working directory).
+
+## The dashboard frontend is inside the binary
+
+`src/dashboard.nim` freezes `waku/ops/static/` into the executable at
+compile time (`staticRead`, 55 files, ~668 KB, the `.woff2` fonts
+included — bytes, not text). Nothing is copied into `nim/`, nothing under
+`design/` is touched (AGENTS.md rule 8), and LICENSE-BRAND still holds:
+those files are included unmodified, so they reach the binary exactly as
+they sit in the checkout.
+
+Two rules fall out of that:
+
+- **Build from a checkout.** The walk reads the tree beside
+  `nim/src/dashboard.nim`, so the compiler needs it there.
+- **Run from anywhere.** `nim/waku dashboard` serves the SPA and
+  `/static/...` with no checkout on disk — that is what a shipped binary
+  has. `tests/test_embed.nim` pins every embedded byte against the
+  checkout, so a stale embed (an asset added and not rebuilt) fails the
+  suite instead of 404ing in a browser.
+
+A run that DOES find a checkout (`waku/ops/static` in the working
+directory, or `static/` beside the binary) keeps serving it from disk, so
+frontend edits need no rebuild and behave exactly like Python. Compiling
+with no checkout present is not an error: the embed comes out empty and
+the SPA routes answer with the same missing-frontend 404 Python gives.
 
 ## What is ported so far
 

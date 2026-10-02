@@ -1,0 +1,46 @@
+# The Nim port's gate, in a workflow of its own. `hosted-docker` set the
+# precedent: a tier that needs its own toolchain runs BESIDE `validate`, not
+# inside it, so a community skill PR does not wait on a Nim download and 36
+# suite compiles, and a red Nim build never gets read as a red skill. The
+# triggers are `validate`'s — every PR and every push to main.
+#
+# `nimble install` is the only step that touches the network (it pulls
+# db_connector). The suite itself is offline and needs no API key, so this job
+# has no secret to leak and no judge eval to skip.
+name: nim
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  nim-test-and-build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # Every command runs where a developer runs it. The suite's pins read
+        # the checkout relative to the working directory (test_cli.nim walks
+        # up to waku/providers.toml), so `nimble test` from the repo root
+        # would compile the suites and then fail on itself.
+        working-directory: nim
+    steps:
+      - uses: actions/checkout@v4
+      # The compiler this port is verified on, and the one
+      # `requires "nim >= 2.0.0"` in waku.nimble asks for. Pinned rather than
+      # "latest" so a Nim release cannot turn this gate red without a PR.
+      - uses: jiro498/nim-toolchain-action@v1
+        with:
+          version: "2.3.1"
+      # Dependencies only: db_connector, the stdlib db_sqlite successor. The
+      # package itself is never installed — it is the thing being built.
+      - name: Install dependencies
+        run: nimble install -y --depsOnly
+      - name: Offline suite
+        run: nimble test
+      # The build is in the gate on purpose: the dashboard assets are embedded
+      # at compile time, so "the binary serves its frontend" is a claim only
+      # a build can check, and an embed that came out empty (a missing
+      # checkout) stays quiet until a browser asks for it.
+      - name: Build the binary
+        run: nimble build

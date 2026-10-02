@@ -41,6 +41,7 @@ as their `waku connect` commands, and `/help` lists the graph workflows.
 | `make eval-judge` | LLM-as-judge evals (scored %, needs an API key) |
 | `make gate` | the release gate: deterministic must pass, judge must clear its threshold |
 | `make lint` | ruff over the code and the evals |
+| `make nim-test` · `make nim-build` | the Nim port suite and binary (from `nim/`) |
 | `make trace` | trace waterfalls in Phoenix at localhost:6006 |
 | `make shootout RUNS="…"` | the same tasks on different models, e.g. `RUNS="kimi:kimi-k3 anthropic:claude-opus-4-8"` |
 | `make shootout-coding RUNS="…"` | a coding round through pi, scored by tests |
