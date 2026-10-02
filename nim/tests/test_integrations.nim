@@ -1,8 +1,10 @@
 ## Phase 5d1 tests: pure integrations-registry core.
 ## Offline only: env travels as `Table[string, string]`, hostOs is injected,
 ## health/gateway arrive as closures. No network, no `.waku/` writes, and the
-## tests never touch process env or spawn Python.
+## tests never touch process env or spawn Python. Every temp dir this file
+## creates is gone before the run ends.
 
+import std/algorithm
 import std/os
 import std/sequtils
 import std/strutils
@@ -441,6 +443,12 @@ suite "phase 5d1 normalize":
       except ValueError as e:
         assert e.msg == "DISCORD_MAX_TURNS_PER_HOUR must be a positive integer"
 
+## Every temp home this file makes is recorded here and removed before the run
+## ends. This suite used to leave all 37 of its `waku-5d2-*` dirs in /tmp on
+## every run, with nothing to notice it, so the registry is what makes the
+## cleanup possible and the pin at the end of this file is what keeps it.
+var tempHomes: seq[string] = @[]
+
 proc tmpDir5d2(name: string): string =
   ## Fresh scratch dir per test: health file, dotenv file and models.json
   ## all live under it, so tests never touch the real home or cwd.
@@ -448,6 +456,27 @@ proc tmpDir5d2(name: string): string =
   if dirExists(result):
     removeDir(result)
   createDir(result)
+  tempHomes.add(result)
+
+proc wakuTempDirs(): seq[string] =
+  ## Every `/tmp` dir whose name starts with `waku-`, sorted. The pin at the
+  ## end of this file compares this against what it held when the run began.
+  for kind, path in walkDir(getTempDir()):
+    if kind == pcDir and extractFilename(path).startsWith("waku-"):
+      result.add(extractFilename(path))
+  result.sort()
+
+proc removeTempHomes() =
+  ## The run's teardown: it removes every home `tmpDir5d2` made, and it is
+  ## the only code in this file that does. `removeDir` does not fail on a dir
+  ## that is already gone, so a test that cleaned up early costs nothing. The
+  ## registry is deliberately left intact: the pin after the sweep reads it to
+  ## prove each home is really gone.
+  for home in tempHomes:
+    removeDir(home)
+
+## What /tmp held before this run touched it: the pin compares against this.
+let wakuTempDirsAtStart = wakuTempDirs()
 
 proc emptyProbes(): Table[string, ProbeFn] =
   initTable[string, ProbeFn]()
@@ -1053,3 +1082,20 @@ suite "phase 5d2 connections text":
         IntegrationStatus(state: error, message: "down")
     assert cliMain(@[], envOf([("TELEGRAM_BOT_TOKEN", "tok")]),
                    linuxOs, failing) == 1
+
+## The run's teardown, between the last suite that makes a home and the one
+## that checks. It sits at module level so a --filter that skips suites still
+## cleans up.
+removeTempHomes()
+
+suite "phase 5d2 temp homes":
+  test "the run leaves no /tmp waku dir behind":
+    # The contract is "no new name": every dir left must be a name that was
+    # already there. A leftover this suite made shows up as a new name, and a
+    # stale dir from an older run that this run removed is a cleanup, not a
+    # failure. The registry loop after it is what still catches a leftover
+    # whose name predates the run, which this comparison cannot see.
+    for name in wakuTempDirs():
+      check name in wakuTempDirsAtStart
+    for home in tempHomes:
+      check not dirExists(home)

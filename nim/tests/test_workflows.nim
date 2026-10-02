@@ -1,6 +1,8 @@
 ## Phase 4d tests: triage + gather workflows, binders, brief.
-## Offline only: scripted clients, temp homes, no network.
+## Offline only: scripted clients, temp homes, no network. Every temp home
+## this file creates is gone before the run ends.
 
+import std/algorithm
 import std/json
 import std/os
 import std/strutils
@@ -43,11 +45,37 @@ proc observe(r: Recorder): Observer =
     e["kind"] = %kind
     r.events.add(e)
 
+## `freshHome` records each home it makes here. Two tests once forgot to
+## remove theirs, so every run of this suite left a `waku-tri-*` dir in /tmp
+## for good. The last suite in this file fails when a run leaves one behind.
+var tempHomes: seq[string] = @[]
+
 proc freshHome(name: string): string =
   result = getTempDir() / name
   if dirExists(result):
     removeDir(result)
   createDir(result)
+  tempHomes.add(result)
+
+proc wakuTempDirs(): seq[string] =
+  ## Every `/tmp` dir whose name starts with `waku-`, sorted. A dir this
+  ## suite made must not show up after the run, and the dirs another suite
+  ## made sit in both the before and the after listing, so they cancel out.
+  for kind, path in walkDir(getTempDir()):
+    if kind == pcDir and extractFilename(path).startsWith("waku-"):
+      result.add(extractFilename(path))
+  result.sort()
+
+proc removeTempHomes() =
+  ## The run's teardown: it removes every home `freshHome` made, and it is
+  ## the only code in this file that does. `removeDir` does not fail on a dir
+  ## that is already gone, so a test that cleaned up early costs nothing.
+  for home in tempHomes:
+    removeDir(home)
+  tempHomes.setLen(0)
+
+## What /tmp held before this run touched it: the pin compares against this.
+let wakuTempDirsAtStart = wakuTempDirs()
 
 proc testSettings(home: string, graphWorkflows = false): Settings =
   Settings(provider: "openai", apiKey: "", model: "m", home: home,
@@ -100,6 +128,7 @@ suite "phase 4d classify":
 
 suite "phase 4d calendar":
   test "missing ics reads (no calendar)":
+    # no removeDir here: freshHome recorded this home, the run removes it
     assert todaysEvents(freshHome("waku-tri-nocal")) == "(no calendar)"
 
   test "only today's events are listed":
@@ -109,14 +138,12 @@ suite "phase 4d calendar":
       "BEGIN:VEVENT\nSUMMARY:Old thing\nDTSTART:20000101T100000\n" &
       "BEGIN:VEVENT\nSUMMARY:Swim\nDTSTART:" & today & "T090000\n")
     assert todaysEvents(home) == "Swim"
-    removeDir(home)
 
   test "a day with nothing reads (nothing today)":
     let home = freshHome("waku-tri-empty")
     writeFile(home / "calendar.ics",
       "BEGIN:VEVENT\nSUMMARY:Old\nDTSTART:20000101T100000\n")
     assert todaysEvents(home) == "(nothing today)"
-    removeDir(home)
 
 suite "phase 4d triage graph":
   test "topology has the five nodes and the join":
@@ -197,7 +224,6 @@ suite "phase 4d triage binder":
     assert meta["model"].getStr() == "mini"
     assert meta["graph"]["route"].getStr() == "quick"
     db.close()
-    removeDir(home)
 
   test "full triage runs the same loop as flag-off":
     let home = freshHome("waku-tri-bindf")
@@ -216,7 +242,6 @@ suite "phase 4d triage binder":
     assert meta["model"].getStr() == "m"
     assert meta["graph"]["route"].getStr() == "full"
     db.close()
-    removeDir(home)
 
 suite "phase 4d gather workflow":
   test "the router reads counts, never prose":
@@ -287,7 +312,6 @@ suite "phase 4d gather binders":
       "BEGIN:VEVENT\nSUMMARY:B\nDTSTART:" & today & "T100000\n")
     assert calendarBinder(home)() ==
       %*{"cal_text": "A; B", "cal_event_count": 2}
-    removeDir(home)
 
   test "memory binder reads facts, honestly empty when none":
     let home = freshHome("waku-g-mem")
@@ -297,7 +321,6 @@ suite "phase 4d gather binders":
     let found = memoryBinder(home)()
     assert "[release]" in found
     db.close()
-    removeDir(home)
 
   test "draft binder writes inside the outbox":
     let home = freshHome("waku-g-draft")
@@ -305,7 +328,6 @@ suite "phase 4d gather binders":
     assert path == home / "outbox" /
       ("gather-" & format(now(), "yyyy-MM-dd") & ".md")
     assert readFile(path) == "# Morning\n"
-    removeDir(home)
 
   test "bound gather runs end to end and stays quiet":
     let home = freshHome("waku-g-e2e")
@@ -319,7 +341,6 @@ suite "phase 4d gather binders":
     # the synth prompt saw every section, even empty ones
     assert "WHAT THE WEB SAYS:" in script.seen[0]["messages"][0]["content"].getStr()
     db.close()
-    removeDir(home)
 
 suite "phase 4d brief":
   test "runBrief responds and files the reply":
@@ -333,4 +354,12 @@ suite "phase 4d brief":
       ("brief-" & format(now(), "yyyy-MM-dd") & ".txt")
     assert readFile(path) == "Your week: swim.\n"
     db.close()
-    removeDir(home)
+
+## The run's teardown, between the last suite that makes a home and the one
+## that checks. It sits at module level so a --filter that skips suites still
+## cleans up.
+removeTempHomes()
+
+suite "phase 4d temp homes":
+  test "the run leaves no /tmp waku dir behind":
+    check wakuTempDirs() == wakuTempDirsAtStart
