@@ -445,6 +445,135 @@ suite "phase 6b bridge connectAll":
     assert connectionDeadline(@[oauth], home, 30.0) == 60.0
     removeDir(home)
 
+  test "an oauth server that never signs in names the deadline it waited":
+    let home = freshTmpHome("waku-mcp-waited")
+    let seen = newSeen()
+    # The sleeper is what keeps the 360 s this server would really be
+    # given out of the suite; the two servers are the other half of the
+    # pin, because the one that waited out its deadline must not stop
+    # the next one.
+    let sleeper: SleepFn = proc(seconds: float) {.closure.} = discard
+    let down: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      raise newException(IOError, "browser still open")
+    let factory: StdioFactory = proc(spec: McpServerSpec): ExchangeFn {.closure.} =
+      recordExchange(seen)
+    let oauth = McpServerSpec(name: "o", url: "https://rs.example/mcp",
+      oauth: true)
+    let res = connectAll(@[oauth, stdioSpec()], envOf([]), home, 30.0,
+      factory, down, fixedNow, sleeper)
+    assert res.tools.len == 2
+    let warning = res.warnings[0]
+    assert ("no token within the " & $int(signInTimeout + 60.0) &
+      "s connection deadline") in warning
+    assert not ("signed in" in warning)
+    removeDir(home)
+
+  test "the wait polls the token file to the deadline and gives up":
+    let home = freshTmpHome("waku-mcp-wait-cadence")
+    var slept = 0.0
+    var naps = 0
+    let sleeper: SleepFn = proc(seconds: float) {.closure.} =
+      slept += seconds
+      inc naps
+    let down: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      raise newException(IOError, "browser still open")
+    let oauth = McpServerSpec(name: "o", url: "https://rs.example/mcp",
+      oauth: true)
+    let res = connectAll(@[oauth], envOf([]), home, 30.0, nil, down,
+      fixedNow, sleeper)
+    assert res.tools.len == 0
+    assert res.warnings.len == 2
+    assert "no token within the 360s connection deadline" in
+      res.warnings[0]
+    assert "browser still open" in res.warnings[0]
+    assert "sign-in did not complete" in res.warnings[1]
+    assert slept == signInTimeout + 60.0
+    assert naps == int((signInTimeout + 60.0) / signInPollSeconds)
+    removeDir(home)
+
+  test "a token that lands during the wait reconnects once":
+    let home = freshTmpHome("waku-mcp-wait-late")
+    var naps = 0
+    let sleeper: SleepFn = proc(seconds: float) {.closure.} =
+      inc naps
+      if naps == 3:
+        writeTokenFile(home, "o",
+          "{\"email\": \"o@x\", \"exp\": " & $(fixedNow + 3600) & "}")
+    var attempts = 0
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      inc attempts
+      if attempts == 1:
+        raise newException(IOError, "browser still open")
+      let meth = parseJson(extractJsonResponse(body)){"method"}.getStr()
+      case meth
+      of "initialize":
+        HttpResult(status: 200, body: initOkLine, sessionId: "s")
+      of "tools/list":
+        HttpResult(status: 200, body: listOkLine, sessionId: "s")
+      else:
+        raise newException(ValueError, "unexpected: " & meth)
+    let oauth = McpServerSpec(name: "o", url: "https://rs.example/mcp",
+      oauth: true)
+    let res = connectAll(@[oauth], envOf([]), home, 30.0, nil, post,
+      fixedNow, sleeper)
+    assert res.tools.len == 2
+    assert res.warnings.len == 1
+    assert "signed in" in res.warnings[0]
+    assert naps == 3
+    removeDir(home)
+
+  test "the live clock waits for the same token, without burning time":
+    let home = freshTmpHome("waku-mcp-wait-live-clock")
+    var naps = 0
+    let sleeper: SleepFn = proc(seconds: float) {.closure.} =
+      inc naps
+      writeTokenFile(home, "o", "{\"email\": \"o@x\"}")
+    var attempts = 0
+    let post: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      inc attempts
+      if attempts == 1:
+        raise newException(IOError, "browser still open")
+      let meth = parseJson(extractJsonResponse(body)){"method"}.getStr()
+      case meth
+      of "initialize":
+        HttpResult(status: 200, body: initOkLine, sessionId: "s")
+      of "tools/list":
+        HttpResult(status: 200, body: listOkLine, sessionId: "s")
+      else:
+        raise newException(ValueError, "unexpected: " & meth)
+    let oauth = McpServerSpec(name: "o", url: "https://rs.example/mcp",
+      oauth: true)
+    # `nowUnix` 0 reads the wall clock, so the wait re-reads it after
+    # each sleep. The token lands on the first poll: one fake sleep, no
+    # real waiting.
+    let res = connectAll(@[oauth], envOf([]), home, 30.0, nil, post, 0,
+      sleeper)
+    assert res.tools.len == 2
+    assert res.warnings.len == 1
+    assert "signed in" in res.warnings[0]
+    assert naps == 1
+    removeDir(home)
+
+  test "a non-oauth failure waits for nothing":
+    let home = freshTmpHome("waku-mcp-nowait")
+    var naps = 0
+    let sleeper: SleepFn = proc(seconds: float) {.closure.} =
+      inc naps
+    let down: HttpPostFn = proc(url, body, sessionId,
+        bearer: string): HttpResult {.closure.} =
+      raise newException(IOError, "down")
+    let res = connectAll(@[remoteKeySpec()], envOf([("MEM_KEY", "t")]),
+      home, 30.0, nil, down, fixedNow, sleeper)
+    assert naps == 0
+    assert res.tools.len == 0
+    assert res.warnings.len == 2
+    assert "down" in res.warnings[0]
+    removeDir(home)
+
   test "registry http tools dispatch under the original name":
     var seenName = ""
     let post: HttpPostFn = proc(url, body, sessionId,

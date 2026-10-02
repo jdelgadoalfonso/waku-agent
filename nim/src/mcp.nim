@@ -15,11 +15,25 @@
 ##
 ## Every side effect travels through an injected seam (`ExchangeFn` for
 ## stdio lines, `HttpPostFn`/`HttpGetFn` for HTTP, `BrowserFn` /
-## `CallbackWaitFn` / `RandIntFn` for the interactive OAuth half) with `env` as a `Table` and
+## `CallbackWaitFn` / `RandIntFn` for the interactive OAuth half,
+## `SleepFn` for the connection deadline) with `env` as a `Table` and
 ## `home` as a plain path. The live adapters (`startStdioExchange`,
 ## `liveHttpPost`) are never called in tests, which replay recorded
 ## responses instead: zero real subprocesses, zero sockets, zero browser.
 ## No new dependencies: stdlib only (AGENTS.md rule 3).
+##
+## The bridge is synchronous by design, and that is its whole
+## concurrency story: `connectAll` walks the servers one at a time,
+## like the `for spec in servers` loop in `_connect_all` it ports, with
+## no thread and no event loop of its own (precedent: dashboard 8b,
+## gateways 7d1). Python wraps that same serial loop in a daemon thread
+## so the caller can block on `fut.result(deadline)`; this port waits
+## for itself instead — `connectionDeadline` is waited out, not
+## computed and dropped — and a blocking transport keeps its own
+## timeout (`liveHttpPost` still has its 30 s). Multiplexing servers
+## over one connection stays unbuilt by decision, the way the JSON-RPC
+## ids 1/2/3 are: a `mcp.json` does not need it, and a follow-up is
+## not a silent change (the 6a decision).
 
 import std/asyncdispatch
 import std/asynchttpserver
@@ -315,6 +329,14 @@ const signInTimeout* = 300.0
   ## oauth server has no token yet; 6c owns the callback server that
   ## this number also bounds.
 
+const signInPollSeconds* = 0.5
+  ## How often a wait re-reads the thing a person is about to finish.
+  ## One cadence for both waits on human time: the loopback callback in
+  ## 6c (`callbackPollAttempts`) and the token file the bridge polls
+  ## below. A 0.5s slice is short enough that a sign-in that finishes
+  ## costs half a second, long enough that 360 s of polling is 720
+  ## cheap file checks.
+
 type
   HttpResult* = object
     ## One stubbed-or-live HTTP POST outcome: status, body text, and the
@@ -332,6 +354,12 @@ type
   StdioFactory* = proc(spec: McpServerSpec): ExchangeFn {.closure.}
     ## Build one server's stdio exchange. Tests inject recorded fakes;
     ## the binary passes a `startStdioExchange` wrapper.
+
+  SleepFn* = proc(seconds: float) {.closure.}
+    ## Wait `seconds` while the bridge holds a connection deadline.
+    ## Injected because 360 s of sign-in is a test that never finishes,
+    ## and the suite's promise is zero real waiting like its promise of
+    ## zero network. A nil seam means the live `liveSleep`.
 
   McpConnectResult* = object
     ## What `connectAll` keeps: every connected server's registry tools
@@ -519,16 +547,47 @@ proc connectOneHttp(post: HttpPostFn, spec: McpServerSpec,
   return (toRegistryToolsHttp(spec.name, metas, post, spec.url, sid,
     bearer), sid)
 
+proc liveSleep*(seconds: float) =
+  ## The live `SleepFn`: the real wait a person spends on a consent
+  ## screen. `os.sleep` counts milliseconds, so a sub-millisecond poll
+  ## rounds to no wait at all rather than to a second.
+  os.sleep(int(seconds * 1000))
+
+proc waitForToken(home: string, spec: McpServerSpec, stopAt: float,
+                   pinned: bool, startAt: float,
+                   sleeper: SleepFn): bool =
+  ## Whether the token file a sign-in writes lands before `stopAt`.
+  ## This is the one thing Python's daemon thread covers and serial
+  ## code cannot: the attempt that triggered the browser has already
+  ## failed, a person is still reading the consent screen, and the
+  ## caller is still inside `fut.result(deadline)` when the callback
+  ## writes the file. Here the bridge polls the file itself and gives
+  ## up at the deadline, so a server that is never signed in costs one
+  ## deadline and no more (the file decides, like Python's).
+  ##
+  ## A pinned clock (tests pass `nowUnix`) advances with the sleep, so
+  ## human time costs a loop and no wall clock; a live call re-reads the
+  ## clock after every sleep, because the sleep itself moved it.
+  let nap = if sleeper != nil: sleeper else: liveSleep
+  var at = startAt
+  while at < stopAt:
+    if hasToken(home, spec):
+      return true
+    nap(signInPollSeconds)
+    at = if pinned: at + signInPollSeconds else: float(getTime().toUnix())
+  return hasToken(home, spec)
+
 proc connectAll*(specs: seq[McpServerSpec], env: Table[string, string],
                   home: string, timeout: float = 30.0,
                   makeExchange: StdioFactory = nil,
                   httpPost: HttpPostFn = nil,
-                  nowUnix: int64 = 0): McpConnectResult =
+                  nowUnix: int64 = 0,
+                  sleeper: SleepFn = nil): McpConnectResult =
   ## Port of `_connect_all` + the tool mapping in `start`: connect
-  ## every server, skip a bad one with a warning (plus `authHint` when
-  ## remote), retry once when a token appears after the first failure
-  ## (the sign-in completed while the attempt was already failing),
-  ## and compute `connectionDeadline` for parity.
+  ## every server in order, skip a bad one with a warning (plus
+  ## `authHint` when remote), retry once when a token appears after the
+  ## first failure, and wait out `connectionDeadline` for a sign-in
+  ## still in flight.
   ##
   ## 6c: an oauth spec with no `auth_env` bearer first tries its
   ## stored access token (fresh, else silently refreshed like the SDK
@@ -536,16 +595,51 @@ proc connectAll*(specs: seq[McpServerSpec], env: Table[string, string],
   ## outage. `nowUnix` pins time for the expiry check (0 reads the
   ## clock); homes without a token file behave exactly as in 6b.
   ##
-  ## Divergence: Python waits on an asyncio bridge (`fut.result` with
-  ## the deadline); this port is synchronous, so the deadline is
-  ## computed but not awaited — injected transports are instant in
-  ## tests and the live HTTP client owns its own 30s timeout.
-  ## Config refusals are detected upfront via `validateSpec` (same
-  ## observable warnings as Python's `ValueError`-without-hint path)
-  ## instead of branching on the exception type.
+  ## Synchronous by design, like the `for spec in servers` loop it
+  ## ports. Python runs the same loop on a daemon thread and blocks the
+  ## caller on `fut.result(deadline)`, so one deadline bounds one wait
+  ## for the whole batch. `connectionDeadline` is load-bearing here for
+  ## the same reason: the batch has one stop instant, and a server that
+  ## is still waiting on human time when it passes is abandoned with a
+  ## warning naming the deadline, and the next server is tried. What a
+  ## serial port cannot copy is a preempt: a transport that blocks past
+  ## the deadline is its own timeout's business (`liveHttpPost` keeps
+  ## 30 s), exactly as the injected transports are instant in tests.
+  ## The wait itself (`waitForToken`) is the sign-in case only — an
+  ## oauth server with no token whose first attempt failed — because a
+  ## key or stdio server has nothing a person can still be finishing.
+  ##
+  ## `sleeper` times that wait (nil means the live `liveSleep`); it is
+  ## a parameter so a test can pin 360 s of consent-screen time. Only
+  ## a caller that has a sign-in running should hand the bridge an
+  ## oauth spec with no token: this port never opens a browser, so
+  ## without one it waits the full deadline for a token nobody is
+  ## writing (Python waits the same way only when its attempt is the
+  ## thing a person is answering). Config refusals are detected upfront
+  ## via `validateSpec` (same observable warnings as Python's
+  ## `ValueError`-without-hint path) instead of branching on the
+  ## exception type.
   result = McpConnectResult(tools: @[], warnings: @[])
-  discard connectionDeadline(specs, home, timeout)
+  let deadline = connectionDeadline(specs, home, timeout)
   let effNow = if nowUnix != 0: nowUnix else: getTime().toUnix()
+  let pinned = nowUnix != 0
+  let stopAt = float(effNow) + deadline
+  proc attempt(s: McpServerSpec): tuple[ok: bool, err: string,
+                                        tools: seq[Tool]] =
+    ## One connect pass over `s` (Python's `_connect_one` inside
+    ## `_connect_all`'s `try`): the tools come back, and a failure
+    ## comes back as text for the caller to warn about.
+    try:
+      if s.isRemote:
+        let stored = storedBearerFor(home, s, env, httpPost, effNow)
+        return (true, "", connectOneHttp(httpPost, s, env, stored).tools)
+      if makeExchange == nil:
+        raise newException(IOError, "no stdio transport for '" & s.name &
+          "'")
+      let exc = makeExchange(s)
+      return (true, "", toRegistryTools(s.name, listToolsVia(exc, s), exc))
+    except CatchableError as exc:
+      return (false, exc.msg, @[])
   for spec in specs:
     let invalid = validateSpec(spec, env)
     if invalid.len > 0:
@@ -553,42 +647,33 @@ proc connectAll*(specs: seq[McpServerSpec], env: Table[string, string],
         "' failed to connect: " & invalid)
       continue
     let hadToken = hasToken(home, spec)
-    var firstErr = ""
-    var connected = false
-    try:
-      if spec.isRemote:
-        let stored = storedBearerFor(home, spec, env, httpPost, effNow)
-        for t in connectOneHttp(httpPost, spec, env, stored).tools:
-          result.tools.add(t)
-      else:
-        if makeExchange == nil:
-          raise newException(IOError, "no stdio transport for '" &
-            spec.name & "'")
-        let exc = makeExchange(spec)
-        for t in toRegistryTools(spec.name, listToolsVia(exc, spec), exc):
-          result.tools.add(t)
-      connected = true
-    except CatchableError as exc:
-      firstErr = exc.msg
-    if connected:
+    let first = attempt(spec)
+    if first.ok:
+      for t in first.tools:
+        result.tools.add(t)
       continue
-    if not hadToken and hasToken(home, spec):
+    var firstErr = first.err
+    # One retry, and only for a token that exists now and did not
+    # before: that is true exactly after a sign-in. The serial port has
+    # to wait for the sign-in itself (`waitForToken`), which is the
+    # wait Python's thread covers by holding `fut.result` open.
+    var reconnect = not hadToken and hasToken(home, spec)
+    var gaveUp = false
+    if not reconnect and spec.oauth and not hasToken(home, spec):
+      reconnect = waitForToken(home, spec, stopAt, pinned, float(effNow),
+        sleeper)
+      gaveUp = not reconnect
+    if reconnect:
       result.warnings.add("  signed in — reconnecting to '" & spec.name & "'")
-      try:
-        if spec.isRemote:
-          let stored = storedBearerFor(home, spec, env, httpPost, effNow)
-          for t in connectOneHttp(httpPost, spec, env, stored).tools:
-            result.tools.add(t)
-        else:
-          if makeExchange == nil:
-            raise newException(IOError, "no stdio transport for '" &
-              spec.name & "'")
-          let exc = makeExchange(spec)
-          for t in toRegistryTools(spec.name, listToolsVia(exc, spec), exc):
-            result.tools.add(t)
+      let retry = attempt(spec)
+      if retry.ok:
+        for t in retry.tools:
+          result.tools.add(t)
         continue
-      except CatchableError as exc:
-        firstErr = exc.msg
+      firstErr = retry.err
+    elif gaveUp:
+      firstErr = "no token within the " & $int(deadline) &
+        "s connection deadline (" & firstErr & ")"
     result.warnings.add("MCP server '" & spec.name &
       "' failed to connect: " & firstErr)
     if spec.isRemote:
@@ -1002,10 +1087,11 @@ proc redirectUri*(): string =
   "http://127.0.0.1:" & $callbackPort & callbackPath
 
 proc callbackPollAttempts*(): int =
-  ## Port of `range(int(SIGN_IN_TIMEOUT / 0.5))`: 0.5s slices of human
-  ## time (consent screens, picking between two accounts), sharing
-  ## 6b's `connectionDeadline` through `signInTimeout`.
-  int(signInTimeout / 0.5)
+  ## Port of `range(int(SIGN_IN_TIMEOUT / 0.5))`: `signInPollSeconds`
+  ## slices of human time (consent screens, picking between two
+  ## accounts), sharing 6b's `connectionDeadline` through
+  ## `signInTimeout`.
+  int(signInTimeout / signInPollSeconds)
 
 proc readTokenDoc*(path: string): JsonNode =
   ## Port of `FileTokenStorage._read`: a missing, corrupt or

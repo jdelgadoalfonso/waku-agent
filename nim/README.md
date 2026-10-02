@@ -4,16 +4,16 @@ This folder holds the Nim port of Waku. The port will ship one binary that
 reads and writes the same `.waku/` data as Python Waku. Landed: phases 0-5
 (skeleton, SQLite + memory, wire + loop + HTTP, session/app/graph/CLI,
 integrations + catalog + pricing + skills), phase 6 (MCP: config, stdio,
-streamable HTTP, OAuth browser flow in the binary), phase 7a-7c, 7d1 and
-7d2-1/7d2-2 (gateways: the runner/supervisor policy, telegram, discord,
-whatsapp, voice, plus the live loops for telegram/whatsapp/voice, the
-external voice engines, the Discord gateway WebSocket receive and the four
-`waku telegram|discord|whatsapp|voice` dispatches) and phase 8 (ops +
-dashboard: the server loop, the routes, the model arena and the
-memory/judgment arena). Not landed yet: MCP connection concurrency, the
-dashboard gateway supervisor (7d2-3), the TLS dial to
-`wss://gateway.discord.gg` (refused by name, no `ssl` package), OTel
-spans, and the evals.
+streamable HTTP, OAuth browser flow in the binary, and a synchronous bridge
+that connects the servers one at a time and waits out the connection
+deadline), phase 7a-7c, 7d1 and 7d2-1/7d2-2 (gateways: the
+runner/supervisor policy, telegram, discord, whatsapp, voice, plus the live
+loops for telegram/whatsapp/voice, the external voice engines, the Discord
+gateway WebSocket receive and the four `waku telegram|discord|whatsapp|voice`
+dispatches) and phase 8 (ops + dashboard: the server loop, the routes, the
+model arena and the memory/judgment arena). Not landed yet: the dashboard
+gateway supervisor (7d2-3), the TLS dial to `wss://gateway.discord.gg`
+(refused by name, no `ssl` package), OTel spans, and the evals.
 
 ## Build and test
 
@@ -192,8 +192,7 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
 
 Full tool wiring (`build_registry` — the
 registry takes injected tools until the remaining tools land), the memory
-layer (gated retrieval, consolidation, MEMORY.md sync), MCP connection
-concurrency, the `connect`
+layer (gated retrieval, consolidation, MEMORY.md sync), the `connect`
 flows, the dashboard gateway supervisor (7d2-3, so `waku dashboard` still
 reports each gateway instead of running it), the TLS dial to
 `wss://gateway.discord.gg` (`liveDiscordWire` refuses and names it),
