@@ -16,6 +16,8 @@
 ## not there is safe, the way reading its status already was.
 
 import std/json
+import std/net
+import std/os
 import std/sets
 import std/strutils
 import std/tables
@@ -391,6 +393,14 @@ proc getReq(target = "/webhook?hub.mode=subscribe" &
   "&hub.verify_token=letmein&hub.challenge=9182"): WhatsappRequest =
   WhatsappRequest(verb: "GET", target: target, body: "", signature: "")
 
+proc repoRoot(): string =
+  ## The repo root, from this file's own path and never from the working
+  ## directory — the same anchoring as `test_tls.nim` and
+  ## `test_repo_gates.nim`. One pin below reads `src/whatsapp.nim` as
+  ## text, and a pin that named a relative path would read whatever the
+  ## caller's shell happened to be in.
+  absolutePath(currentSourcePath().parentDir / ".." / "..")
+
 proc inbound(sender, text: string): string =
   ## A `messages` webhook body with one text message.
   result = $(%*{"entry": [{"changes": [{"value": {"messages": [
@@ -614,6 +624,57 @@ suite "phase 7d1 whatsapp startup lines":
       "WhatsApp gateway → listening on http://127.0.0.1:5001"
     assert webhookUrlLine == "  Webhook URL: http://<your-public-url>/webhook"
     assert ctrlCLine == "  Ctrl-C to stop."
+
+# ── the serve loop: a failed listener is not a stop ──────────────────
+
+suite "phase 7d1 whatsapp serve listener failure":
+  test "a failed listener reaches the caller instead of a clean stop":
+    # A dead listener used to be indistinguishable from a stop: the
+    # `except OSError` re-raised as a CatchableError, and then the
+    # `finally` that releases the listener — with a `try/except` around
+    # the close — caught that exception on its way out (the mechanism
+    # `test_tls.nim` pins), so `serveWhatsapp` returned normally and the
+    # supervisor read it as a gateway that stopped on purpose. The
+    # `take` seam is the only way to fail the listener here without a
+    # real socket, so this pins the raise and the `live.running` the
+    # supervisor reads on the way out; the next test pins the close that
+    # used to swallow it.
+    let w = newWire()
+    let (http, _) = httpOf(w)
+    let live = newWhatsappLive()
+    let take: TakeConn =
+      proc(): (bool, Socket) {.closure.} =
+        raise newException(OSError, "listener died")
+    var raised = ""
+    try:
+      serveWhatsapp(live, "vt", "shhh", "", "tok", "12345", http,
+        respondOf(newScript()), loggerOf(w), take)
+    except CatchableError as exc:
+      raised = exc.msg
+    check raised == "listener died"
+    check not live.running
+
+  test "the owned listener closes in a bare finally, not a swallowing one":
+    # The other half of the pin above, in the only place it can be: the
+    # swallow needs the OWNED listener (`take = nil`), which means a
+    # real socket, and a failure inside `accept` means an exhausted
+    # descriptor table. Neither is a thing a test should stage to pin a
+    # shape Nim already explains in `test_tls.nim`, so the source is
+    # read instead — and read as the whole construct, because
+    # `test_tls.nim`'s shape scan keys on a `finally:` whose body opens
+    # with a nested `try:` at one level of indentation, and this close
+    # sits one level deeper under an `if`. A bare close is total here:
+    # `owned` is a plain listening socket, never an SSL one, so `close`
+    # only closes the descriptor.
+    let text = readFile(repoRoot() / "nim" / "src" / "whatsapp.nim")
+    let swallowing = "finally:\n    if take.isNil:\n      try:"
+    let bare = "finally:\n    if take.isNil:\n      owned.close()\n" &
+      "    live.running = false"
+    assert swallowing notin text,
+      "the serve finally catches again and would swallow a listener " &
+      "failure in flight"
+    assert bare in text, "the serve finally no longer closes the owned " &
+      "listener bare"
 
 # ── the stop seam, for a handle that is not there ─────────────────────
 

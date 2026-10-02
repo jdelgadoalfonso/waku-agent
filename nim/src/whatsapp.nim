@@ -569,6 +569,15 @@ proc serveWhatsapp*(live: WhatsappLive, verifyToken, appSecret, allowed,
   ## request and an idle `waku whatsapp` needs a second Ctrl-C. The
   ## dashboard does not pay that: an injected `TakeConn` returns on a
   ## timeout, which is where the stop is observed.
+  ##
+  ## A failed listener PROPAGATES, and the bare `finally` is what does
+  ## it, for the reason `liveWhatsappPost` above records: a `try/except`
+  ## nested in a `finally` running during exception unwinding catches
+  ## the exception that is unwinding, so the defensive `except` around
+  ## this close used to swallow the `except OSError` re-raise and hand
+  ## the supervisor a clean stop it could not tell from a dead socket.
+  ## The close needs no defence: `owned` is a plain listening socket,
+  ## never an SSL one, so `close` only closes the descriptor.
   var owned: Socket
   if take.isNil:
     owned = newSocket()
@@ -612,8 +621,5 @@ proc serveWhatsapp*(live: WhatsappLive, verifyToken, appSecret, allowed,
     raise newException(CatchableError, exc.msg)
   finally:
     if take.isNil:
-      try:
-        owned.close()
-      except CatchableError:
-        discard
+      owned.close()
     live.running = false

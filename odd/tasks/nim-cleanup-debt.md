@@ -81,3 +81,14 @@ documentada que tiene fix claro. Rama
 4. Docs (nim-port.md Landed + este archivo).
 - Assess: limitación conocida con untracked residentes; vía
   cubierta por verify ACCEPT-WITH-NOTES.
+
+## Residual cerrado después (follow-up de L3)
+
+- `whatsappServe`: el `finally` cerraba `owned` con try/except
+  anidado y tragaba el re-raise de listener muerto. Fix igual
+  que L3 (close desnudo) + pin de forma en
+  `test_live_gateways.nim` (el comportamiento no es pineable
+  offline: EMFILE con límite 524288 no se monta en un test).
+  Suite 916. Propuesta de mejora del worker: ensanchar el shape
+  scan de `test_tls.nim` a "ningún `except` entre `finally:` y
+  el fin de su cuerpo" (hoy solo matchea un nivel).
