@@ -44,8 +44,35 @@ import ./voiceio
 import ./whatsapp
 import ./wire
 
+proc declaredVersion(manifest: string): string {.noSideEffect.} =
+  ## The `version = "..."` value in a nimble manifest, read the way nimble
+  ## reads it: the first `version` key, with its quotes stripped. Raises
+  ## when the manifest declares no quoted version, because a build that
+  ## cannot find the version should stop here rather than ship a blank
+  ## `--version`.
+  for line in manifest.splitLines():
+    let text = line.strip()
+    if not text.startsWith("version"):
+      continue
+    let first = text.find('"')
+    let last = text.rfind('"')
+    if first < 0 or last <= first:
+      raise newException(ValueError, "no quoted version in: " & text)
+    return text[first + 1 ..< last]
+  raise newException(ValueError, "waku.nimble declares no version")
+
 const
-  version* = "0.0.1-phase0"  # keep in sync with `version` in waku.nimble
+  nimbleManifest = staticRead("../waku.nimble")
+    ## The package manifest, read while the compiler runs. Phase 9a-2 put
+    ## the one editable version number in that file and made this module
+    ## read it, so the binary and `nimble` read the same line instead of
+    ## two literals a human had to keep equal. A build therefore needs the
+    ## manifest beside `src/`, the same checkout the dashboard embed needs.
+  version* = declaredVersion(nimbleManifest)
+    ## What `waku --version` prints, taken from `waku.nimble`. The manifest
+    ## keeps the literal because nimble also reads that file where `src/`
+    ## is not beside it, and because nimble refreshes what it read from a
+    ## manifest only when the manifest itself changes.
   cliCommands* = [
     "chat", "dashboard", "connections", "connect", "mcp", "voice",
     "telegram", "discord", "whatsapp", "brief", "gather", "skill",
