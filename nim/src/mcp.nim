@@ -689,6 +689,15 @@ proc liveHttpPost*(url, body, sessionId, bearer: string): HttpResult =
   ## The client comes from `http.nim`'s one helper, so an `https` MCP
   ## server gets the TLS context in a `-d:wakuTls` build — and the
   ## default build refuses the URL before the bearer token is written.
+  ##
+  ## Transport failures PROPAGATE, and the bare `finally` is what does it:
+  ## a `try/except` nested in a `finally` running during exception
+  ## unwinding catches the in-flight exception, which used to turn the
+  ## no-TLS refusal into a status-0 `HttpResult` that every caller then
+  ## had to decode as an HTTP failure. Both live callers are total and
+  ## name the refusal verbatim: `oauthSignIn` turns a `CatchableError`
+  ## into its `(false, msg, false)` triple, and `refreshAccessToken`
+  ## into `""` (a full sign-in).
   var client = newTlsHttpClient(timeout = 30000)
   try:
     var hdrs = newHttpHeaders([("Content-Type", "application/json"),
@@ -718,10 +727,7 @@ proc liveHttpPost*(url, body, sessionId, bearer: string): HttpResult =
       raise newException(IOError, exc.msg)
     return HttpResult(status: code, body: text, sessionId: sid)
   finally:
-    try:
-      client.close()
-    except CatchableError:
-      discard
+    client.close()
 
 proc decodeClaims*(token: string): JsonNode =
   ## Port of `_claims` in `mcp_cli.py`: the token's own claims, read
@@ -1252,7 +1258,11 @@ proc liveHttpGet*(url, bearer: string): tuple[status: int, body: string] =
   ## Live GET for OAuth metadata (discovery documents are GETs; the
   ## MCP wire stays on `liveHttpPost`). Real socket — never in tests.
   ## Same helper as the POST: the discovery document is fetched from the
-  ## same server, so it needs the same TLS context.
+  ## same server, so it needs the same TLS context. Transport failures
+  ## PROPAGATE (bare `finally`, as above), so `discoverOAuth`'s "HTTP 0
+  ## at <url>" no longer stands in for "this build was never allowed to
+  ## dial that server" — the refusal reaches `oauthSignIn` as the
+  ## exception it is.
   var client = newTlsHttpClient(timeout = 30000)
   try:
     var hdrs = newHttpHeaders([("Accept", "application/json")])
@@ -1271,10 +1281,7 @@ proc liveHttpGet*(url, bearer: string): tuple[status: int, body: string] =
       raise newException(IOError, exc.msg)
     return (code, text)
   finally:
-    try:
-      client.close()
-    except CatchableError:
-      discard
+    client.close()
 
 proc resourceMetadataUrl*(serverUrl: string): string =
   ## The RFC 9728 well-known lookup the SDK did: insert

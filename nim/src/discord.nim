@@ -210,6 +210,15 @@ proc liveDiscordPost*(url, payload, token: string): int =
   ## client comes from `http.nim`'s helper, so a `-d:wakuTls` build
   ## sends this over TLS and the default build refuses the `https://`
   ## before it writes a byte.
+  ##
+  ## Transport failures PROPAGATE. The `finally` closes the client in one
+  ## bare call on purpose: a `try/except` nested in a `finally` that is
+  ## running during exception unwinding catches the exception that is
+  ## unwinding, which used to turn the no-TLS refusal into a returned 0
+  ## and every transport error into a silent failure. `sendDiscordText`
+  ## and `runGatewayTurn` are the callers that must stay total, and both
+  ## already handle the raise (`runGatewayTurn` records it as `reply
+  ## delivery` and answers the turn `false`).
   var client = newTlsHttpClient(timeout = 15000)
   try:
     client.headers = newHttpHeaders([("Content-Type", "application/json"),
@@ -220,10 +229,7 @@ proc liveDiscordPost*(url, payload, token: string): int =
     except ValueError:
       return 0
   finally:
-    try:
-      client.close()
-    except CatchableError:
-      discard
+    client.close()
 
 # ── gateway constants (7d2) ───────────────────────────────────────────
 

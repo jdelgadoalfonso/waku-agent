@@ -208,6 +208,13 @@ proc liveWhatsappPost*(url, payload, token: string): int =
   ## client comes from `http.nim`'s helper, so the Meta call carries the
   ## TLS context in a `-d:wakuTls` build and is refused before the token
   ## is written in the default one.
+  ##
+  ## Transport failures PROPAGATE, and the bare `finally` is what does it:
+  ## a `try/except` nested in a `finally` running during exception
+  ## unwinding catches the in-flight exception, which used to turn the
+  ## no-TLS refusal into a returned 0. The caller that must stay total
+  ## is the webhook turn's `send` closure, which logs `sendFailedLine`
+  ## and re-raises so `runGatewayTurn` records `reply delivery`.
   var client = newTlsHttpClient(timeout = 15000)
   try:
     client.headers = newHttpHeaders([("Content-Type", "application/json"),
@@ -218,10 +225,7 @@ proc liveWhatsappPost*(url, payload, token: string): int =
     except ValueError:
       return 0
   finally:
-    try:
-      client.close()
-    except CatchableError:
-      discard
+    client.close()
 
 # ── the live webhook door (7d1) ───────────────────────────────────────
 

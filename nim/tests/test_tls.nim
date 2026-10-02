@@ -25,10 +25,11 @@
 ##   against the runtime helper — and, in the default build, against the
 ##   transport's own guard, which is a refusal you can watch.
 ## - Behaviour in the DEFAULT build: every live REST seam is handed an
-##   `https://` URL and none of them reaches a socket — either the
-##   refusal is raised at the caller, or the seam answers a status of 0,
-##   and the mechanism behind that second shape is pinned too. The
-##   gateway dial must refuse with `discordTlsMissingLine` unchanged.
+##   `https://` URL and none of them reaches a socket — all five RAISE
+##   the refusal at the caller, and the Nim subtlety that once made four
+##   of them answer a status of 0 instead is pinned both as a mechanism
+##   and as a shape no seam carries any more. The gateway dial must
+##   refuse with `discordTlsMissingLine` unchanged.
 ## - Structure in BOTH builds: the context exists exactly when the build
 ##   says it does, the one helper builds a client in either mode without
 ##   a network, the Discord upgrade is driven over a SCRIPTED transport
@@ -161,6 +162,14 @@ proc scriptedStream(s: Script): DiscordStreamFn =
     s.target = host & ":" & $port
     return (true, wireOf(s), "")
 
+proc repoRoot(): string =
+  ## The repo root, from this file's own path and never from the working
+  ## directory — the same anchoring as `test_repo_gates.nim` and
+  ## `test_version.nim`, and the reason no pin below names a relative
+  ## path. Declared up here because two suites need it: the default-build
+  ## shape scan and the one-helper scan at the bottom.
+  absolutePath(currentSourcePath().parentDir / ".." / "..")
+
 template tlsRefusalOf(body: untyped): string =
   ## Run one live seam at an `https://` URL and hand back the refusal it
   ## raised, or `"<no refusal>"`. A pin that only asked "did it raise?"
@@ -237,56 +246,61 @@ when not TlsCompiled:
       check NoTlsMessage in tlsRefusalOf(client.getContent(
         "https://example.invalid/"))
 
-    test "the seams that let the refusal out raise it":
+    test "the transport's own refusal reaches the caller":
       # `liveTelegramHttp` closes its client in a bare `finally`, so the
       # refusal reaches its caller — which is the shape a gateway wants
-      # (the poll turns a transport failure into a retry with backoff).
+      # (the poll turns a transport failure into a retry with backoff),
+      # and the shape the four seams below now share.
       assert NoTlsMessage in tlsRefusalOf(liveTelegramHttp(
         "https://api.telegram.org/bot000000:TEST/getMe", ""))
 
-    test "the seams that answer a status answer 0":
-      # These four return a status, so the interesting question is what
-      # they answer when the transport refuses. They answer 0 — and the
-      # reason is a real Nim subtlety, pinned by the next test: their
-      # `finally` closes the client inside its own `try/except`, which
-      # catches the refusal that is still in flight while the frame
-      # unwinds, so the proc returns its default result instead of
-      # raising.
-      #
-      # This is PINNED AS IT IS, not endorsed: this unit's promise is
-      # that the default build behaves exactly as it did, and it did
-      # this before `-d:wakuTls` existed. The no-leak claim does NOT rest
-      # on it — it rests on the transport pin above (the guard is in
-      # `newConnection`, before a socket is opened), and on the scan
-      # below (every one of these seams gets its client from the one
-      # helper, so none of them can be talking to anything else). What a
-      # caller sees is a failed call, not a crash: `false` in both
-      # gateway seams (each ends in `http(...) in 200 .. 299`, and 0 is
-      # not in that range) and a status-0 `HttpResult` in MCP.
-      check liveDiscordPost("https://discord.com/api/v10/channels/1/" &
-        "messages", "{}", "tok") == 0
-      check liveWhatsappPost("https://graph.facebook.com/v19.0/1/" &
-        "messages", "{}", "tok") == 0
-      let posted = liveHttpPost("https://mcp.example.invalid/rpc", "{}",
-        "", "")
-      check posted.status == 0
-      check posted.body == ""
-      check posted.sessionId == ""
-      let got = liveHttpGet("https://mcp.example.invalid/" &
-        ".well-known/oauth-authorization-server", "")
-      check got.status == 0
-      check got.body == ""
+    test "the four REST seams raise the refusal instead of answering 0":
+      # These four return a status, so the interesting question is what a
+      # caller sees when the transport refuses. They used to answer 0,
+      # for a real Nim reason pinned by the next two tests. A status of 0
+      # is a lie the caller has to decode: `discoverOAuth` turned one
+      # into `could not discover the authorization server … HTTP 0 at
+      # <url>`, which blames the SERVER for a build that was never
+      # allowed to dial it, and a gateway turn that got 0 counted a
+      # delivery that never happened. They now raise, like
+      # `liveTelegramHttp` and like `std/httpclient` itself: the refusal
+      # names the missing `-d:ssl`, and every caller of these four
+      # (`runGatewayTurn`'s `reply delivery` accounting, `oauthSignIn`
+      # and `refreshAccessToken`'s `except CatchableError`) already
+      # handles a raise.
+      let discord = tlsRefusalOf(liveDiscordPost(
+        "https://discord.com/api/v10/channels/1/messages", "{}", "tok"))
+      assert NoTlsMessage in discord, "liveDiscordPost swallowed the refusal"
+      let whatsapp = tlsRefusalOf(liveWhatsappPost(
+        "https://graph.facebook.com/v21.0/1/messages", "{}", "tok"))
+      assert NoTlsMessage in whatsapp,
+        "liveWhatsappPost swallowed the refusal"
+      let posted = tlsRefusalOf(liveHttpPost("https://mcp.example.invalid/rpc",
+        "{}", "", ""))
+      assert NoTlsMessage in posted, "liveHttpPost swallowed the refusal"
+      let got = tlsRefusalOf(liveHttpGet("https://mcp.example.invalid/" &
+        ".well-known/oauth-authorization-server", ""))
+      assert NoTlsMessage in got, "liveHttpGet swallowed the refusal"
+      # The exception that arrives is the TRANSPORT'S. `tlsRefusalOf`
+      # reports any other exception as `OTHER …`, so these four lines say
+      # that closing the client in the `finally` did not replace the
+      # refusal with an error of its own, and that nothing else failed
+      # first.
+      for refusal in [discord, whatsapp, posted, got]:
+        assert not refusal.startsWith("OTHER "),
+          "a seam failed some other way: " & refusal
 
     test "why a finally that catches swallows the refusal in flight":
       # The mechanism behind the pin above, in five lines and with no
       # socket, no URL and no transport involved: a `try/except` nested
       # in a `finally` that is running DURING exception unwinding
       # catches the exception that is unwinding, and the proc then
-      # returns normally. Written down because the four seams above read
-      # as if their `except CatchableError` were about `close()` failing,
-      # and it is not — it is about the refusal they are already
-      # propagating. Anyone changing those `finally` blocks should know
-      # this is the behaviour they are relying on.
+      # returns normally. This is the pin for the four seams' old shape,
+      # and it stays because the rule is a property of Nim rather than of
+      # this file: the next editor who wraps a `close()` in a defensive
+      # `except` has to read here first. Nobody relies on the swallowing
+      # any more — the seams close in a bare `finally` (pinned by the next
+      # test) and let the refusal out.
       var reached = "no"
       var caught = false
       try:
@@ -301,6 +315,24 @@ when not TlsCompiled:
           reached = reached & " caught"
       check reached == "no body finally caught"
       check caught     # the handler ran, and that is what let the proc return
+
+    test "no REST seam still closes its client inside a try/except":
+      # The mechanism above is a property of Nim, not of these four
+      # procs, so it never goes away on its own — a defensive
+      # `try/except` around a `close()` in a `finally` brings it back.
+      # A behavioural pin only exists in the default build, where the
+      # refusal is observable; the flagged build compiles the pins above
+      # out entirely, so the SHAPE is pinned here instead, in both modes:
+      # every seam that builds a client closes it in a bare `finally`,
+      # which is what `liveTelegramHttp` already did and what lets an
+      # in-flight exception out.
+      let swallowing = "finally:\n    try:"
+      let closing = "finally:\n    client.close()"
+      for name in ["discord.nim", "whatsapp.nim", "mcp.nim", "telegram.nim"]:
+        let text = readFile(repoRoot() / "nim" / "src" / name)
+        assert swallowing notin text,
+          name & " still catches inside a finally and would swallow again"
+        assert closing in text, name & " no longer closes in a bare finally"
 
     test "the live gateway dial refuses, unchanged":
       # The 7d2-2 line, byte for byte. This build cannot reach
@@ -483,13 +515,6 @@ when TlsCompiled:
       check discordHandshakeFault(Rfc6455Reply) == ""
 
 # ── the one helper, everywhere (both modes) ────────────────────────────
-
-proc repoRoot(): string =
-  ## The repo root, from this file's own path and never from the working
-  ## directory — the same anchoring as `test_repo_gates.nim` and
-  ## `test_version.nim`, and the reason no pin below names a relative
-  ## path.
-  absolutePath(currentSourcePath().parentDir / ".." / "..")
 
 suite "live TLS, one helper":
   test "no module builds an HTTP client behind the helper's back":
