@@ -30,6 +30,7 @@ import std/strutils
 import std/tables
 
 import ./gateway
+import ./http
 import ./mcp
 import ./wire
 
@@ -203,8 +204,11 @@ proc sendWhatsappText*(http: WhatsappHttpFn, token, phoneNumberId, to,
 
 proc liveWhatsappPost*(url, payload, token: string): int =
   ## The real Graph API call over `std/httpclient`. Real socket —
-  ## never called in tests (they inject `WhatsappHttpFn` fakes).
-  var client = newHttpClient(timeout = 15000)
+  ## never called in tests (they inject `WhatsappHttpFn` fakes). The
+  ## client comes from `http.nim`'s helper, so the Meta call carries the
+  ## TLS context in a `-d:wakuTls` build and is refused before the token
+  ## is written in the default one.
+  var client = newTlsHttpClient(timeout = 15000)
   try:
     client.headers = newHttpHeaders([("Content-Type", "application/json"),
       ("Authorization", "Bearer " & token)])

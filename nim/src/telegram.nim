@@ -33,6 +33,7 @@ import std/strutils
 import std/tables
 
 import ./gateway
+import ./http
 import ./wire
 
 const
@@ -178,7 +179,10 @@ proc liveTelegramHttp*(url, payload: string): string =
   ## The real Bot API call over `std/httpclient`: POST with a JSON body
   ## for `sendMessage`, GET for `getUpdates` (empty payload). The 45s
   ## timeout covers the 30s long-poll plus margin. Never called in tests.
-  let client = newHttpClient(timeout = 45000)
+  ## The client comes from `http.nim`'s helper: `api.telegram.org` is
+  ## `https://`, so a `-d:wakuTls` build needs the context, and the
+  ## default build refuses the URL before the token is written anywhere.
+  let client = newTlsHttpClient(timeout = 45000)
   try:
     if payload.len > 0:
       client.headers = newHttpHeaders([("Content-Type", "application/json")])

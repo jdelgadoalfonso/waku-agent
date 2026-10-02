@@ -51,6 +51,7 @@ import std/sysrand
 import std/tables
 import std/times
 
+import ./http
 import ./tools
 
 const mcpProtocolVersion* = "2024-11-05"
@@ -685,7 +686,10 @@ proc liveHttpPost*(url, body, sessionId, bearer: string): HttpResult =
   ## fakes with recorded responses). Port of the client half of
   ## `_open_streams` for `url` specs (`create_mcp_http_client` +
   ## `streamable_http_client` in the SDK).
-  var client = newHttpClient(timeout = 30000)
+  ## The client comes from `http.nim`'s one helper, so an `https` MCP
+  ## server gets the TLS context in a `-d:wakuTls` build — and the
+  ## default build refuses the URL before the bearer token is written.
+  var client = newTlsHttpClient(timeout = 30000)
   try:
     var hdrs = newHttpHeaders([("Content-Type", "application/json"),
       ("Accept", "application/json, text/event-stream")])
@@ -1247,7 +1251,9 @@ proc waitCallbackLive*(port: int, path: string,
 proc liveHttpGet*(url, bearer: string): tuple[status: int, body: string] =
   ## Live GET for OAuth metadata (discovery documents are GETs; the
   ## MCP wire stays on `liveHttpPost`). Real socket — never in tests.
-  var client = newHttpClient(timeout = 30000)
+  ## Same helper as the POST: the discovery document is fetched from the
+  ## same server, so it needs the same TLS context.
+  var client = newTlsHttpClient(timeout = 30000)
   try:
     var hdrs = newHttpHeaders([("Accept", "application/json")])
     if bearer.len > 0:

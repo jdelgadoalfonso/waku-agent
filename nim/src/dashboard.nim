@@ -74,6 +74,7 @@ import ./config
 import ./db
 import ./discord
 import ./gateway
+import ./http
 import ./integrations
 import ./memory
 import ./memory_arena
@@ -1708,8 +1709,10 @@ proc liveSessionFn*(box: WakuBox): SessionFn =
 proc liveCatalogFetch*(url, key: string): string =
   ## The catalog `FetchFn` with a live client: stdlib GET with a 15s
   ## timeout. Non-2xx raises, like the transport — `listModels` turns it
-  ## into the listed=false shape, never a 500.
-  var client = newHttpClient(timeout = 15000)
+  ## into the listed=false shape, never a 500. The client comes from
+  ## `http.nim`'s one helper, so a catalog URL gets the TLS context in a
+  ## `-d:wakuTls` build.
+  var client = newTlsHttpClient(timeout = 15000)
   try:
     if key.len > 0:
       client.headers = newHttpHeaders({"Authorization": "Bearer " & key})

@@ -33,6 +33,7 @@ import ./db
 import ./discord
 import ./gather
 import ./gateway
+import ./http
 import ./integrations
 import ./mcp
 import ./providers
@@ -243,8 +244,11 @@ proc fetchHttp(url: string): string =
   ## The real fetch for `skill install`: stdlib httpclient GET with a
   ## 15s timeout (Python's `urlopen(raw, timeout=15)`). Non-2xx raises
   ## `HttpRequestError`, like urllib's HTTPError; the dispatch turns any
-  ## fetch error into stderr + exit 1.
-  let client = newHttpClient(timeout = 15000)
+  ## fetch error into stderr + exit 1. The client comes from `http.nim`'s
+  ## one helper, so a skill from an `https` URL gets the TLS context in
+  ## a `-d:wakuTls` build and is refused before any byte goes out in the
+  ## default one.
+  let client = newTlsHttpClient(timeout = 15000)
   try:
     return client.getContent(url)
   finally:

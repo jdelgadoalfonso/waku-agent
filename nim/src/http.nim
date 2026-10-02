@@ -9,10 +9,16 @@
 ## OpenAI-compatible base like `https://api.openai.com/v1` + `/chat/completions`;
 ## Anthropic base like `https://api.anthropic.com` + `/v1/messages`.
 ## Tests run against a localhost stub (see `tests/test_http.nim`).
+##
+## This module also holds the port's ONE TLS helper (`tlsActive`,
+## `tlsContext`, `newTlsHttpClient`, `newTlsAsyncHttpClient`), because it
+## is the module that already owns an HTTP client and the transport is
+## what TLS is for. It is conditional: see the section below.
 
 import std/asyncdispatch
 import std/httpclient
 import std/json
+import std/net
 import std/strutils
 
 import ./loop
@@ -27,6 +33,83 @@ type
     baseUrl*: string
     apiKey*: string
     wire*: WireKind
+
+# ── live TLS, conditional on `-d:wakuTls` ─────────────────────────────
+
+proc tlsActive*(): bool =
+  ## Whether THIS build can open a TLS socket. The whole conditional
+  ## lives in the two `defined()` tests below: a port that asked the
+  ## user to flip a runtime flag would have to carry a "can I do
+  ## anything today?" path anyway, and this way the default build
+  ## contains no TLS code at all.
+  ##
+  ## Two switches, and BOTH are needed. `-d:ssl` is the compiler's own:
+  ## it links the system libssl and is what `std/httpclient`'s guard
+  ## checks, so without it every `https://` request raises
+  ## `HttpRequestError("SSL support is not available…")` before it
+  ## connects. `-d:wakuTls` is this port's, and it is what says a
+  ## developer meant it. A build with only the second one degrades to
+  ## the default rather than compiling something half-encrypted.
+  ##
+  ## No new package: `std/net` plus `wrappers/openssl` are stdlib, and
+  ## libssl is the system's, so rule 3 is intact.
+  when defined(wakuTls) and defined(ssl): true
+  else: false
+
+when defined(wakuTls) and defined(ssl):
+  var tlsCtx: SslContext
+    ## The process-wide context, built on first use. One, not one per
+    ## request: an `SslContext` carries a session cache and a cipher
+    ## setup, so a fresh one per call would re-read the trust store on
+    ## every request. Only exists in a build that can use it, so the
+    ## default build carries no TLS state at all.
+
+proc tlsContext*(): SslContext =
+  ## The one TLS context, or `nil` in a build without the flag. Nil is
+  ## the honest answer rather than a stub: with no TLS in the build
+  ## there is no context to hand out, which is why the constructors
+  ## below make the call this module always made instead of passing
+  ## nothing to a parameter that does not exist in that build.
+  ##
+  ## `CVerifyPeer` is the point: the certificate chain is checked
+  ## against the system trust store, and `newContext` raises rather than
+  ## handing back a context with nothing to verify against. Nothing here
+  ## ever asks for `CVerifyNone` — an unverified gateway dial would put
+  ## the bot token in front of whoever answered.
+  when defined(wakuTls) and defined(ssl):
+    if tlsCtx.isNil:
+      tlsCtx = newContext(verifyMode = CVerifyPeer)
+    return tlsCtx
+  else:
+    return nil
+
+proc newTlsHttpClient*(timeout = -1): HttpClient =
+  ## A blocking client that carries the TLS context, or exactly the
+  ## client this module built before this existed when there is no
+  ## context to carry. Every live REST call in the port goes through
+  ## here or `newTlsAsyncHttpClient`; building a client any other way is
+  ## a context-less one, which `tests/test_tls.nim` fails on.
+  ##
+  ## The two branches are NOT the same line: without `-d:ssl`,
+  ## `std/httpclient` declares its own private `SslContext` (a stub
+  ## `ref object`, since there is no TLS to hand out) and would not
+  ## accept a `std/net` one. So the default branch is literally the call
+  ## this module always made, which is what makes "the default build is
+  ## unchanged" checkable by reading rather than by testing.
+  when defined(wakuTls) and defined(ssl):
+    newHttpClient(timeout = timeout, sslContext = tlsContext())
+  else:
+    newHttpClient(timeout = timeout)
+
+proc newTlsAsyncHttpClient*(): AsyncHttpClient =
+  ## The streaming twin: same one-context rule, same default-build
+  ## behaviour. Separate because the two constructors differ (this one
+  ## has no timeout and returns a `FutureStream` body), and one helper
+  ## per shape is still one place to change.
+  when defined(wakuTls) and defined(ssl):
+    newAsyncHttpClient(sslContext = tlsContext())
+  else:
+    newAsyncHttpClient()
 
 proc openAiHeaders(t: Transport): HttpHeaders =
   newHttpHeaders([("Content-Type", "application/json"),
@@ -121,7 +204,7 @@ proc anthropicAssembled(resp: JsonNode): JsonNode =
   result["usage"] = usev
 
 proc postJson(t: Transport, path: string, payload: JsonNode): Future[(AsyncHttpClient, AsyncResponse)] {.async.} =
-  let client = newAsyncHttpClient()
+  let client = newTlsAsyncHttpClient()
   let headers = if t.wire == wkOpenAi: t.openAiHeaders()
                 else: t.anthropicHeaders()
   let resp = await client.request(t.baseUrl & path, HttpPost, $payload, headers)

@@ -1,5 +1,6 @@
 ## Discord gateway, phase 7b — access policy + REST send seam,
-## phase 7d2 — the gateway WebSocket receive and the command loop.
+## phase 7d2 — the gateway WebSocket receive and the command loop,
+## phase 7e — the live TLS dial, conditional on `-d:wakuTls`.
 ##
 ## Port of the testable core of `waku/gateway/discord.py`: `should_answer`
 ## (deny-by-default: an empty channel allowlist answers NO channel),
@@ -23,22 +24,25 @@
 ## an injected `DiscordWire` (`recv`/`send` plus the client mask key),
 ## every REST call through `DiscordHttpFn`, and `env` is a `Table` — zero
 ## sockets, zero randomness and zero wall time in tests. This module
-## owns the protocol, not the dial: `liveDiscordWire` (7d2-2) is where
-## the encrypted socket would be opened, and it refuses honestly today,
-## because Nim ships TLS separately (`ssl`, OpenSSL) and rule 3 keeps
-## that package out; `discordServe` is the `waku discord` command loop,
-## which dials, runs and re-dials.
+## owns the protocol AND, since 7e, the dial: `liveDiscordWire` is a
+## three-rung ladder (`discordTlsStream` -> `discordUpgrade` ->
+## `discordTlsWire`) that opens the encrypted socket in a `-d:ssl
+## -d:wakuTls` build and refuses honestly, with
+## `discordTlsMissingLine`, in the default build. `discordServe` is the
+## `waku discord` command loop, which dials, runs and re-dials, and it
+## reads the same either way because the seam's shape did not move.
 ##
 ## Two documented divergences: the port does not recompute the
 ## `Sec-WebSocket-Accept` digest (SHA-1 is deprecated in stdlib — see
-## `discordHandshakeFault`), and zlib-stream compression is not
-## implemented (Discord accepts its absence; `IDENTIFY` sends no
-## `compress` flag).
+## `discordHandshakeFault` and `discordUpgrade`, which is where the gap
+## is pinned), and zlib-stream compression is not implemented (Discord
+## accepts its absence; `IDENTIFY` sends no `compress` flag).
 
 import std/base64
 import std/httpclient
 import std/httpcore
 import std/json
+import std/net
 import std/random
 import std/sets
 import std/strutils
@@ -46,6 +50,7 @@ import std/tables
 import std/times
 
 import ./gateway
+import ./http
 
 const discordEnvFields* = ["DISCORD_BOT_TOKEN", "DISCORD_ALLOWED_USER",
   "DISCORD_ALLOWED_CHANNEL", "DISCORD_REQUIRE_MENTION",
@@ -201,8 +206,11 @@ proc sendDiscordText*(http: DiscordHttpFn, token, channelId,
 
 proc liveDiscordPost*(url, payload, token: string): int =
   ## The real Discord REST call over `std/httpclient`. Real socket —
-  ## never called in tests (they inject `DiscordHttpFn` fakes).
-  var client = newHttpClient(timeout = 15000)
+  ## never called in tests (they inject `DiscordHttpFn` fakes). The
+  ## client comes from `http.nim`'s helper, so a `-d:wakuTls` build
+  ## sends this over TLS and the default build refuses the `https://`
+  ## before it writes a byte.
+  var client = newTlsHttpClient(timeout = 15000)
   try:
     client.headers = newHttpHeaders([("Content-Type", "application/json"),
       ("Authorization", "Bot " & token)])
@@ -238,6 +246,23 @@ const
     ## What `liveDiscordWire` says instead of dialling, named after the
     ## host it cannot reach. Same policy as 7b's raising seams: say the
     ## one thing that is missing, never pretend to be connected.
+    ##
+    ## Only a DEFAULT build can print this. A build compiled with
+    ## `-d:ssl -d:wakuTls` dials for real (`discordTlsStream`); the text
+    ## is unchanged so the 7d2-2 pins stay byte-identical, and the
+    ## wording ("in this build") was already true of both.
+  discordDialFailedLine* = "(discord) gateway dial failed: "
+    ## The line a flagged build prints when the socket or the TLS
+    ## handshake itself fails — no route, a refused connection, a
+    ## certificate that would not verify. It names the dial rather than
+    ## the build, because by the time this one is printed TLS was
+    ## available and something else went wrong.
+
+const discordTlsPort* = 443
+  ## The port the flagged dial connects to. A const next to the host
+  ## rather than a literal in the socket code, so a pin can read the
+  ## address the live dial WOULD use without a socket: see
+  ## `tests/test_tls.nim`.
 
 # ── the opening handshake (RFC 6455 §4.1) ─────────────────────────────
 
@@ -894,29 +919,164 @@ type
     ## injects `liveDiscordWire`; tests inject a scripted dial, so the
     ## re-dial policy below is pinnable without a socket.
 
+  DiscordStreamFn* = proc(host: string, port: int):
+      (bool, DiscordWire, string) {.closure.}
+    ## One rung below the dial: open `host:port` and hand the connection
+    ## back as an UNMASKED wire. Unmasked because the RFC 6455 upgrade is
+    ## a raw HTTP head, not a frame — the client mask key belongs to the
+    ## upgrade (`discordUpgrade`), which is also where the frames start.
+    ## `(ok, wire, why)` like the dial above, because a socket that will
+    ## not open is a line to say. The live implementation is
+    ## `discordTlsStream`; tests inject a recording, so the whole upgrade
+    ## above it is pinnable with no socket in the room.
+
+proc discordTlsStream*(host: string, port: int): (bool, DiscordWire, string) =
+  ## THE one place this port opens a socket for the gateway, and the
+  ## only `net` call in the module. Three steps: connect, wrap in TLS,
+  ## hand back the transport.
+  ##
+  ## The hostname goes to `wrapConnectedSocket` as the SNI name AND as
+  ## the name the certificate is verified against, so a MITM without a
+  ## certificate for `gateway.discord.gg` cannot get the bot token. The
+  ## context is `http.nim`'s — one context, `CVerifyPeer`, built once.
+  ##
+  ## Without `-d:ssl -d:wakuTls` this returns `discordTlsMissingLine` and
+  ## opens nothing, which is what makes the default build's refusal
+  ## structural: the first rung of the ladder says no, so the rungs above
+  ## it never run and no amount of calling them reaches a network.
+  when defined(wakuTls) and defined(ssl):
+    var sock = newSocket()
+    try:
+      sock.connect(host, Port(port))
+      tlsContext().wrapConnectedSocket(sock, handshakeAsClient, host)
+    except CatchableError as exc:
+      try:
+        sock.close()
+      except CatchableError:
+        discard
+      # The head of the message, because the caller reports ONE line and
+      # exits 1 (`discordServe`), and an OpenSSL failure string is not
+      # guaranteed to be one line. The head is where the reason is, so
+      # nothing useful is dropped.
+      let lines = exc.msg.splitLines()
+      let reason = if lines.len > 0: lines[0] else: "no reason given"
+      return (false, nil, discordDialFailedLine & reason)
+    let recv: DiscordRecvFn = proc(timeoutMs: int): string {.closure.} =
+      sock.recv(65536, timeoutMs)
+    let send: DiscordSendFn = proc(bytes: string): int {.closure.} =
+      sock.send(bytes)
+    return (true, newDiscordWire(recv, send, ""), "")
+  else:
+    discard host
+    discard port
+    return (false, nil, discordTlsMissingLine)
+
+proc discordUpgradeReply*(wire: DiscordWire, timeoutMs = 15000):
+    tuple[head, leftover: string] =
+  ## The upgrade reply, split into the head and whatever arrived BEHIND
+  ## it. Reads through `wire.buffer` — the same buffer the frames use —
+  ## because a gateway's op 10 `HELLO` routinely shares one read with the
+  ## 101, and those bytes are the first frame `discordRun` must see.
+  ##
+  ## Stops at the blank line that ends the head, and stops at a quiet
+  ## read (a closed or silent peer answers `""` here, same as everywhere
+  ## else), so a peer that never speaks cannot hang the command. A head
+  ## with no blank line in it is handed back whole and refused by
+  ## `discordHandshakeFault` — half an answer is not an answer.
+  while true:
+    let endOfHead = wire.buffer.find("\r\n\r\n")
+    if endOfHead >= 0:
+      let cut = endOfHead + 4
+      result.head = wire.buffer[0 ..< cut]
+      if cut < wire.buffer.len:
+        result.leftover = wire.buffer[cut .. ^1]
+      return
+    let chunk = wire.recv(timeoutMs)
+    if chunk.len == 0:
+      result.head = wire.buffer
+      return
+    wire.buffer.add(chunk)
+
+proc discordUpgrade*(wire: DiscordWire, token: string, timeoutMs = 15000):
+    (bool, string) =
+  ## The middle rung: send the RFC 6455 opening handshake over an open
+  ## transport and read the 101 back. On success the wire carries the
+  ## connection's client mask key — every frame the loop sends after
+  ## this must be masked, and this is the one place that key exists —
+  ## plus the bytes that arrived behind the reply head.
+  ##
+  ## `(ok, why)` rather than an exception, for the reason every seam in
+  ## this module says it as a value: `discordServe` prints one line and
+  ## exits 1.
+  ##
+  ## KNOWN GAP, and it is the one 7d2-1 already documented at
+  ## `discordHandshakeFault`: the accept digest is NOT recomputed. RFC
+  ## 6455 §4.1 makes it `base64(SHA-1(key & GUID))`, SHA-1 is deprecated
+  ## in stdlib, and a hand-rolled digest or a vendored copy in a gateway
+  ## module is a worse trade than the gap. So this proc checks what it
+  ## can check — the `101` status line and the PRESENCE of
+  ## `Sec-WebSocket-Accept` — and the trust boundary is the token
+  ## travelling over the verified TLS socket `discordTlsStream` opened,
+  ## not this digest. `tests/test_tls.nim` pins the gap so it stays a
+  ## recorded decision instead of a silent one.
+  let key = newDiscordKey()
+  discard wire.send(discordHandshake(token, key))
+  let (head, leftover) = discordUpgradeReply(wire, timeoutMs)
+  let fault = discordHandshakeFault(head)
+  if fault.len > 0:
+    return (false, fault)
+  wire.maskKey = key
+  wire.buffer = leftover
+  return (true, "")
+
+proc discordTlsWire*(token: string, host = discordGatewayHost,
+    port = discordTlsPort, stream: DiscordStreamFn = discordTlsStream):
+    (bool, DiscordWire, string) =
+  ## The whole dial, assembled: open the stream, run the upgrade over it,
+  ## hand back a wire the 7d2-1 protocol can pump. Three rungs, so each
+  ## one is pinnable on its own — the stream with a recording, the
+  ## upgrade with the RFC's own handshake — and `liveDiscordWire` below
+  ## is the one line that wires the live stream in.
+  ##
+  ## A refused stream's line is passed through, not replaced: a build
+  ## with TLS can still fail because the network is down, and blaming the
+  ## build for that would send an operator looking in the wrong place.
+  let (opened, openedWire, why) = stream(host, port)
+  if not opened:
+    return (false, nil, why)
+  let (upgraded, fault) = discordUpgrade(openedWire, token)
+  if not upgraded:
+    return (false, nil, fault)
+  return (true, openedWire, "")
+
 proc liveDiscordWire*(token: string): (bool, DiscordWire, string) =
-  ## The real dial to `wss://gateway.discord.gg`: the one thing this port
-  ## cannot do yet, and it says so instead of pretending.
+  ## The real dial to `wss://gateway.discord.gg`, in two builds.
   ##
-  ## Honest refusal, in the shape every 7b seam used: `(false, nil,
-  ## discordTlsMissingLine)`. Nim moved TLS out of the compiler
-  ## distribution at 1.6 (the `ssl` package, which links OpenSSL), so
-  ## there is no standard-library TLS to import; taking that package is a
-  ## new dependency, which rule 3 forbids, and it could not be fetched
-  ## offline anyway. Nothing else is missing: `discordHandshake`,
-  ## `discordHandshakeFault` and the framing above are the whole
-  ## protocol, and they speak over any `DiscordWire`.
+  ## Compiled with `-d:ssl -d:wakuTls`: the real thing. One TLS socket
+  ## to `gateway.discord.gg:443` with the host as the SNI name and the
+  ## certificate chain verified, then the RFC 6455 upgrade over it —
+  ## `discordTlsWire` is the whole procedure and this proc is the line
+  ## that hands it the live stream. `discordServe` needs no change at
+  ## all: the shape of the seam did not move.
   ##
-  ## What a future build fills in, so the shape of the seam is already
-  ## the right one: connect TCP 443, wrap it in TLS with
-  ## `gateway.discord.gg` as the SNI name, send `discordHandshake(token,
-  ## newDiscordKey())`, read the upgrade reply (keeping any bytes that
-  ## arrived with it for `wire.buffer`), refuse on a non-empty
-  ## `discordHandshakeFault`, and hand back `newDiscordWire` over that
-  ## socket with the same key as the client mask. `discordServe` below
-  ## then needs no change at all.
-  discard token   # the seam's shape, until the dial lands
-  return (false, nil, discordTlsMissingLine)
+  ## Compiled WITHOUT those switches: the honest refusal 7d2-2 shipped,
+  ## byte for byte — `(false, nil, discordTlsMissingLine)`. Nothing
+  ## else is missing in this build: `discordHandshake`,
+  ## `discordHandshakeFault`, the framing and the protocol loop are all
+  ## compiled in and all speak over any `DiscordWire`; what is absent is
+  ## the encrypted socket, because Nim moved TLS out of the compiler
+  ## distribution at 1.6 and taking a package for it is a new
+  ## dependency, which rule 3 forbids.
+  ##
+  ## The refusal is a VALUE, which is why it was pinnable with no socket
+  ## before the dial existed and why it stays pinnable now: the default
+  ## build's `tests/test_discord_ws.nim` pin is about this build, and a
+  ## flagged build dials instead of answering.
+  when defined(wakuTls) and defined(ssl):
+    return discordTlsWire(token)
+  else:
+    discard token   # the seam's shape, until a build says otherwise
+    return (false, nil, discordTlsMissingLine)
 
 proc discordServe*(live: DiscordLive, token: string, respond: RespondFn,
     logger: LogFn, env: Table[string, string], http: DiscordHttpFn = nil,
@@ -943,8 +1103,17 @@ proc discordServe*(live: DiscordLive, token: string, respond: RespondFn,
   ## then drops every session ends the command instead of reconnecting
   ## forever. Returns 0 once a connection has run, 1 when the dial was
   ## refused.
-  let dialFn: DiscordDialFn = if dial.isNil: liveDiscordWire else: dial
-  let post: DiscordHttpFn = if http.isNil: liveDiscordPost else: http
+  # The two explicit `Fn(...)` conversions are load-bearing: a build
+  # compiled with `-d:ssl -d:wakuTls` refuses to type an `if` expression
+  # that mixes a nimcall proc with a closure-typed parameter, and naming
+  # the target type is what makes the two branches agree. Without the
+  # flag both lines are the same calls they always were — a conversion
+  # of one proc to the seam type it already has — so nothing about the
+  # default build's behaviour moves.
+  let dialFn: DiscordDialFn = if dial.isNil: DiscordDialFn(liveDiscordWire)
+    else: dial
+  let post: DiscordHttpFn = if http.isNil: DiscordHttpFn(liveDiscordPost)
+    else: http
   let allowedUsers = parseDiscordIds(env.getOrDefault("DISCORD_ALLOWED_USER", ""))
   let allowedChannels = parseDiscordIds(
     env.getOrDefault("DISCORD_ALLOWED_CHANNEL", ""))

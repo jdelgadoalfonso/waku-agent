@@ -718,18 +718,19 @@ suite "phase 7d2 discord run loop":
     check live.running == false
 # ── the dial seam and the command loop (7d2-2) ────────────────────────
 
-suite "phase 7d2 discord dial":
-  test "the live dial refuses honestly instead of pretending to connect":
-    # The one thing this port cannot do: `wss://gateway.discord.gg` needs
-    # TLS, and Nim ships TLS as a separate package (`ssl`, OpenSSL) that
-    # rule 3 keeps out of this build. There is no socket here — the
-    # refusal is a value, which is why it is pinnable offline.
-    let (ok, wire, why) = liveDiscordWire("tok123")
-    check not ok
-    check wire.isNil
-    check why == discordTlsMissingLine
-    check "wss://" & discordGatewayHost in why
-    check "ssl" in why       # names the missing piece, not just a failure
+when not defined(wakuTls):
+  suite "phase 7d2 discord dial":
+    test "the live dial refuses honestly instead of pretending to connect":
+      # The default build carries no TLS (rule 3): `wss://gateway.discord.gg`
+      # needs it, so the dial refuses with a value instead of pretending to
+      # connect — the refusal is pinnable offline. Under `-d:wakuTls` this
+      # suite is compiled out (the dial is real there; see test_tls.nim).
+      let (ok, wire, why) = liveDiscordWire("tok123")
+      check not ok
+      check wire.isNil
+      check why == discordTlsMissingLine
+      check "wss://" & discordGatewayHost in why
+      check "ssl" in why       # names the missing piece, not just a failure
 
 suite "phase 7d2 discord serve loop":
   proc scriptedDial(p: Pump, why = ""): DiscordDialFn =
