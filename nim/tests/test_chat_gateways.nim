@@ -4,9 +4,9 @@
 ## `DiscordHttpFn`/`WhatsappHttpFn` fakes (recorded status ints, zero
 ## sockets), and the HMAC is pinned by RFC 4231 vectors plus one
 ## waku-shaped case cross-checked against Python's `hmac`. The live
-## adapters (`liveDiscordPost`, `liveWhatsappPost`) are never called;
-## the live end (`receiveDiscordEvent`) raises
-## honestly naming 7d and are pinned doing exactly that.
+## adapters (`liveDiscordPost`, `liveWhatsappPost`) are never called,
+## and so is the gateway transport: `receiveDiscordEvent` reads an
+## injected `DiscordWire`, which the pin below keeps a scripted double.
 ##
 ## Split from `test_gateway.nim` on purpose: that file already covers
 ## three concerns (runner policy, supervisor lifecycle, telegram poll),
@@ -168,12 +168,25 @@ suite "phase 7b discord wire":
     except IOError:
       discard
 
-  test "receive stays an honest 7d seam":
-    try:
-      receiveDiscordEvent()
-      assert false, "must raise"
-    except CatchableError as exc:
-      assert "7d" in exc.msg
+  test "the receive seam reads an injected transport, not a socket":
+    # 7d2 replaced the raise that used to live here with the gateway
+    # protocol (handshake, frames, op 10, `MESSAGE_CREATE`); those pins
+    # are in test_discord_ws.nim. What stays here is the seam contract
+    # the REST send and the receive share: an empty transport is a quiet
+    # tick rather than an error, and a stop is honoured BEFORE the
+    # socket is touched at all.
+    var reads = 0
+    let recv: DiscordRecvFn = proc(timeoutMs: int): string {.closure.} =
+      inc reads
+      return ""
+    let send: DiscordSendFn = proc(bytes: string): int {.closure.} = 0
+    let wire = newDiscordWire(recv, send)
+    let live = newDiscordLive()
+    check receiveDiscordEvent(live, wire, timeoutMs = 1).kind == deTimeout
+    check reads == 1
+    discordStop(live)
+    check receiveDiscordEvent(live, wire).kind == deStopped
+    check reads == 1
 
 # ── whatsapp: HMAC-SHA256 ──────────────────────────────────────────────
 
