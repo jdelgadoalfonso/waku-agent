@@ -137,9 +137,11 @@ dispatch llega con la unidad que lo necesite); cambiarlo rompería
   `initialized` no tiene respuesta y el fake devuelve `""` (el
   `discard` del medio lo documenta).
 - Los ids JSON-RPC los lleva `listToolsVia`/`callToolVia` (1, 2, 3):
-  un `mcp.json` no necesita multiplexar; el bridge concurrente es
-  follow-up, no cambio silencioso (precedente: dashboard 8b
-  single-thread).
+  un `mcp.json` no necesita multiplexar; el bridge es síncrono por
+  diseño y `connectAll` espera el `connectionDeadline` como el
+  `fut.result(deadline)` de Python (cierre A+D, sin hilos:
+  el `_connect_all` Python también es serial, precedente dashboard
+  8b single-thread).
 - `waku.nim` intacto hasta que 6b traiga el bridge: el pin 4e sigue
   verde y el `mcp` del CLI sigue diciendo not-yet-implemented.
 - 6b cablea SOLO `mcp` en `waku.nim` (`runMcpCmd`: list/login/logout;
@@ -195,8 +197,8 @@ dispatch llega con la unidad que lo necesite); cambiarlo rompería
   (`word_count`, `memory.remember`) en 6a/6b/6c; `waku mcp`
   list/login/logout con paridad Python salvo el wiring de una línea.
 - Pendiente (no 6c): el wiring `runMcpCmd` + `oauthFlowWith` (una línea,
-  `waku.nim`, fuera de superficie 6c), el README de `nim/` (regla 9) y
-  el bridge concurrente (follow-up declarado en 6a).
+  `waku.nim`, fuera de superficie 6c) y el README de `nim/` (regla 9).
+  El bridge concurrente quedó cerrado como A+D (ver arriba).
 
 ## Follow-up — cableado vivo del OAuth en el binario (HECHO, sin commits)
 - `runMcpCmd` (`nim/src/waku.nim`) pasa
@@ -211,4 +213,5 @@ dispatch llega con la unidad que lo necesite); cambiarlo rompería
   0 warnings, 562 OK, EXIT=0.
 - README de `nim/` (regla 9): MCP sale de "not ported", matizado a
   lo pendiente real (concurrencia del bridge).
-- Estado: fase 6 cerrada salvo el bridge concurrente (sigue pendiente).
+- Estado: fase 6 cerrada (el bridge concurrente quedó cerrado como
+  A+D: bridge síncrono declarado + deadline esperado).
