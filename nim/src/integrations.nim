@@ -444,6 +444,27 @@ proc envExampleProviders*(providers: seq[Provider]): seq[Integration] =
     if not p.hiddenUnlessEnv:
       result.add(integrationFromProvider(p))
 
+proc gatewayEnvFields*(): seq[(string, seq[string])] =
+  ## The registry rows the gateway supervisor owns, as the `envFields`
+  ## the supervisor is built with (port of the `{item.key: tuple(f.name
+  ## for f in item.env) for item in gateway_items}` comprehension in
+  ## `dashboard.main`, with `gateway_items` being the rows whose reload
+  ## mode is `gateway`).
+  ##
+  ## Derived from the SAME `INTEGRATIONS` table the panel renders, so a
+  ## new gateway row is supervised the day it is added, and a field added
+  ## to a row joins its fingerprint the same day — the two tables Python
+  ## keeps in one file too. Order follows the registry (sorted anyway by
+  ## `reconcile` when it walks every key). Only the three chat gateways
+  ## qualify; voice is a foreground command in Python as well, so it has
+  ## no row, no fields and nothing to supervise.
+  for item in INTEGRATIONS:
+    if item.reload == gateway:
+      var names: seq[string] = @[]
+      for f in item.env:
+        names.add(f.name)
+      result.add((item.key, names))
+
 proc fieldConfigured*(field: EnvField, value: string): bool =
   ## Port of `_configured`: a bool field counts any non-empty, non-"0" value;
   ## every other kind counts any non-empty value.

@@ -798,6 +798,32 @@ suite "phase 8b POST connections and providers":
     assert node["status"]["message"].getStr() == "no test available"
     removeDir(root)
 
+  test "a gateway row renders the status the seam reports":
+    # The deps field 7d2-3 fills with the supervisor's provider: a save of
+    # a gateway row must report the handle's standing, not a bare
+    # "configured". Pinned here (the wiring itself lives in
+    # `test_supervisor_hookup.nim`) so a handler change that stops reading
+    # the seam fails in the handler's own suite.
+    let root = freshDir("waku-dash-conngw")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    d.dotenvPath = root / ".env"
+    d.env["TELEGRAM_BOT_TOKEN"] = "tok"
+    var asked: seq[string] = @[]
+    let status: GatewayStatusFn =
+      proc(key: string): (bool, IntegrationStatus) =
+        asked.add(key)
+        (true, IntegrationStatus(state: error,
+          message: "another instance is polling this token"))
+    d.gatewayStatus = status
+    let node = parseJson(handlePost(d, "/api/connections",
+      """{"key": "telegram", "values": {"TELEGRAM_BOT_TOKEN": "tok"}}""")[2])
+    assert node["ok"].getBool()
+    assert asked == @["telegram"]
+    assert node["view"]["status"]["state"].getStr() == "error"
+    assert "another instance" in node["view"]["status"]["message"].getStr()
+    removeDir(root)
+
   test "applying a connection writes the dotenv diff":
     let root = freshDir("waku-dash-connapply")
     createDir(root / "static")

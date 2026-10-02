@@ -46,6 +46,7 @@
 
 import std/httpclient
 import std/json
+import std/nativesockets
 import std/net
 import std/os
 import std/osproc
@@ -59,16 +60,21 @@ import db_connector/db_sqlite
 import ./app
 import ./arena
 import ./catalog
+import ./cli
 import ./client
 import ./config
 import ./db
+import ./discord
+import ./gateway
 import ./integrations
 import ./memory
 import ./memory_arena
 import ./pricing
 import ./providers
 import ./session
+import ./telegram
 import ./triage
+import ./whatsapp
 import ./wire
 
 export catalog.FetchFn
@@ -1464,6 +1470,16 @@ type
     waku*: Waku
     built*: bool
     buildError*: string
+    sessionId*: string
+      ## The conversation thread this box owns, when it is not the
+      ## dashboard's: a supervised gateway answers as its own gateway
+      ## (`session_id="telegram"`, Python's `GatewayAgentRunner` pair).
+      ## Empty means the `dashboard-<stamp>` thread of a browser chat.
+    apiKey*: string
+      ## `WAKU_API_KEY` out of the dashboard's own env table, so a
+      ## gateway turn reads the same key the panel saves (the process
+      ## environment is not mutated by a save). Empty means `os.getenv`,
+      ## which is what a browser chat has always used.
 
 proc ensureWaku*(box: WakuBox) =
   ## Build the shared agent once: settings → providers → client → db,
@@ -1475,8 +1491,8 @@ proc ensureWaku*(box: WakuBox) =
   box.built = true
   try:
     var s = box.settings
-    let client = clientFor(s, box.providers, getEnv("WAKU_API_KEY"),
-      box.dotenvPath)
+    let key = if box.apiKey.len > 0: box.apiKey else: getEnv("WAKU_API_KEY")
+    let client = clientFor(s, box.providers, key, box.dotenvPath)
     box.settings = s
     let db = connectDb(s.home)
     box.waku = newWaku(s, client, db)
@@ -1485,7 +1501,8 @@ proc ensureWaku*(box: WakuBox) =
         proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
           box.waku.runFullTurn(st.jget("message").getStr(), n, strm))
     box.waku.session.sessionId =
-      "dashboard-" & format(now(), "yyyyMMdd-HHmmss")
+      if box.sessionId.len > 0: box.sessionId
+      else: "dashboard-" & format(now(), "yyyyMMdd-HHmmss")
   except CatchableError as exc:
     box.buildError = errorText(exc)
 
@@ -1657,6 +1674,717 @@ proc buildDashboardDeps*(providers: seq[Provider], settings: Settings,
     providerProbe: nil, rebuild: nil, gatewayReload: nil,
     gatewayStatus: nil)
 
+# ---------------------------------------------------------------------------
+# Gateway supervision (7d2-3) — the supervisor `dashboard.py::main` builds,
+# the seams the connections panel reads, and the ONE serve loop that stands
+# in for the three threads Python gives this process.
+#
+# Python builds `GatewaySupervisor({"telegram": start_telegram, ...},
+# {key: field names for the gateway rows})`, registers its `status` as the
+# status provider and its `reconcile` as the reloader, reconciles before
+# `serve_forever()` and shuts down after. The port does the same with
+# `gateway.nim`'s `Supervisor`, the three 7d1/7d2 starters, and
+# `integrations.gatewayEnvFields` for the fields — the same registry table
+# the panel renders, so a row and its fingerprint cannot drift apart.
+#
+# The three differences are all the price of one thread, all documented at
+# the proc that owns them: `gatewayTick` pumps telegram's long-poll and one
+# step of the Discord gateway between browser requests (Python runs both on
+# daemon threads), `multiplexServe` answers the WhatsApp webhook off the
+# same loop (`TakeConn`), and every take is a select with a bounded wait so
+# a pass never parks. A gateway TURN still blocks the dashboard while it
+# runs — the posture 8b already accepted for streaming chat turns.
+
+const
+  telegramStartingLine* = "(telegram) starting:"
+    ## Python's `start_in_background` first line, printed by the wiring here
+    ## (7d1's `telegramStarter` deliberately stays about the lifecycle).
+  discordStartingLine* = "(discord) starting:"
+    ## The same line for the Discord gateway.
+  discordDialBudget* = 5
+    ## Consecutive dials one supervised gateway may burn before it stops
+    ## itself. `discordServe` caps a command's dials the same way; here the
+    ## cap keeps a gateway that accepts and drops every session from
+    ## re-dialling every pass forever, which is the same hot-loop shape
+    ## that cap exists to prevent.
+  discordDialBudgetLine* = "(discord) gave up after " & $discordDialBudget &
+    " connections in a row — save the settings or restart the dashboard"
+    ## Said once, plainly, when the budget runs out (the panel reads the
+    ## stopped handle; this line says why nobody is answering).
+  gatewayTickPollTimeout* = 0
+    ## The dashboard's telegram long-poll, in seconds: ZERO, so a poll
+    ## returns whatever Telegram already has and never holds a browser
+    ## request behind a server-side wait. Python's poller thread can afford
+    ## its 30 (and PTB's 10); a tick between requests cannot.
+  dashboardIdleWaitMs* = 250
+    ## What a pass that found nothing pays before looking again. This is the
+    ## sleep that stands in for "three threads": a burst of requests is
+    ## drained back-to-back (a pass that served one skips the wait) and an
+    ## idle dashboard wakes four times a second with no work to do.
+  discordTickTimeoutMs* = 250
+    ## One read of the Discord socket per pass: long enough not to spin,
+    ## short enough that a heartbeat's answer is on its way within a tick.
+
+type
+  GatewayRespondFn* = proc(source: string): RespondFn {.closure.}
+    ## The agent turn for one named gateway. Built ONCE per rig (Python
+    ## builds its runner inside `start_in_background`) and lazily per turn:
+    ## a dashboard with no keys set never builds an agent, and a build
+    ## failure surfaces as the turn's error instead of a dead gateway.
+  GatewayHooks* = object
+    ## Everything the supervised gateways reach outside this module. A
+    ## process passes the real clients; a test passes recorded ones, so
+    ## `nimble test` still opens zero sockets (the Bot API, the Graph API,
+    ## the Discord REST client, the gateway dial and the webhook bind are
+    ## all here).
+    envOf*: proc(): Table[string, string] {.closure.}
+      ## The credentials, read LIVE on every call — Python's `os.environ`,
+      ## the same live mapping the connections panel writes. It is a seam
+      ## and not a stored `Table` for one measured reason: a Nim `Table` is
+      ## a VALUE whose assignment copies its buffer, so a rig holding a copy
+      ## of the panel's env would go on reading the values it was built with
+      ## — saving a brand-new bot token would reconcile against the table
+      ## from startup and look like nothing had happened until a restart.
+      ## Returning a fresh copy per call costs one header and buys the one
+      ## property that matters: it is read where the panel writes it.
+    logger*: LogFn
+      ## The terminal mirror both `you › …` and every failure line uses.
+    respond*: GatewayRespondFn
+    telegramHttp*: TelegramHttpFn
+    whatsappHttp*: WhatsappHttpFn
+    discordHttp*: DiscordHttpFn
+    discordDial*: DiscordDialFn
+    openWebhook*: proc(host: string, port: int): Socket {.closure.}
+      ## The webhook bind itself, so the bind-FAILURE path (a busy port,
+      ## which Python's `start_in_background` also raises) is pinnable
+      ## without a socket. Nil means the real bind; it raises `OSError`
+      ## when the port is taken, and the supervisor reports that as the
+      ## gateway's error and rolls the save back.
+    now*: DiscordNowFn
+      ## The heartbeat/spend clock; nil means `epochTime()`, like
+      ## `discordRun`'s own default.
+    webhookHost*: string
+    webhookPort*: int
+      ## Where the supervised WhatsApp listener binds — Python's
+      ## `("0.0.0.0", 5000)`, kept as parameters so a second gateway (or a
+      ## test) can move it.
+  GatewayRig* = ref object
+    ## One supervised dashboard: the supervisor, the three handles it
+    ## supervises, their agent turns, and the three sockets the loop owns
+    ## (browser listener, webhook listener, gateway socket). A `ref` because
+    ## the seams outlive the call that built them and the handles' runners
+    ## are mutated by turns.
+    sup*: Supervisor
+    hooks*: GatewayHooks
+    logger*: LogFn
+    telegram*: TelegramLive
+    whatsapp*: WhatsappLive
+    discord*: DiscordLive
+    telegramTurn*: RespondFn
+    whatsappTurn*: RespondFn
+    discordTurn*: RespondFn
+    browser*: Socket
+    webhook*: Socket
+    gateway*: DiscordWire
+    discordIdleMs*: int
+    discordDials*: int
+
+proc loggerOf*(hooks: GatewayHooks): LogFn =
+  ## The terminal mirror, or the plain stdout default every gateway command
+  ## uses (`gatewayLog(nil)` in `waku.nim`) when no seam was injected.
+  if hooks.logger.isNil:
+    result = proc(line: string) = echo line
+  else:
+    result = hooks.logger
+
+proc gatewayReportStatus*(report: GatewayReport): IntegrationStatus =
+  ## Python's handle `status()` shape (`GatewayReport` → the panel's
+  ## status): `CONNECTED` when the gateway is healthy, `ERROR` plus its
+  ## message otherwise. No `installedButUnconfigured` here — a gateway
+  ## that never became ready says so in the message (`"starting"`).
+  if report.ok:
+    return IntegrationStatus(state: connected)
+  return IntegrationStatus(state: error, message: report.message)
+
+proc closeWebhook(rig: GatewayRig) =
+  ## The listener goes with the handle (`server_close()` in Python, folded
+  ## into the stop seam): a webhook with no server behind it would answer
+  ## requests the supervisor believes are stopped.
+  if rig.webhook.isNil:
+    return
+  try:
+    rig.webhook.close()
+  except CatchableError:
+    discard
+  rig.webhook = nil
+
+proc closeBrowser(rig: GatewayRig) =
+  ## The browser listener goes too at shutdown: the loop has already
+  ## returned, and leaving the port bound would make the next start walk
+  ## past it for no reason.
+  if rig.browser.isNil:
+    return
+  try:
+    rig.browser.close()
+  except CatchableError:
+    discard
+  rig.browser = nil
+
+proc dropGateway(rig: GatewayRig) =
+  ## The Discord connection goes with its handle, for the same reason the
+  ## webhook listener does. Divergence worth naming: `DiscordWire` is the
+  ## protocol's transport (a recv closure, a send closure and the read
+  ## buffer) and has no `close` — the socket belongs to whoever dialled it,
+  ## which `liveDiscordWire` documents. So dropping the reference is all
+  ## the supervisor can do here, and all it needs to: a dropped wire is
+  ## never pumped again, and the next dial opens its own socket.
+  rig.gateway = nil
+  rig.discordIdleMs = 0
+
+proc stopHook*(rig: GatewayRig): StopFn =
+  ## The supervisor's single `stop` seam, dispatched by key over 7d1's
+  ## three adapters — and the one place a stopped gateway's sockets go,
+  ## which is Python's `shutdown()` closing the server it started.
+  result = proc(key: string) {.closure.} =
+    case key
+    of "telegram":
+      telegramStopFn(rig.telegram)(key)
+    of "discord":
+      discordStopFn(rig.discord)(key)
+      rig.dropGateway()
+    of "whatsapp":
+      whatsappStopFn(rig.whatsapp)(key)
+      rig.closeWebhook()
+    else:
+      discard   # an unknown key has nothing to stop, like Python's `.get`
+
+proc statusSeam(rig: GatewayRig): StatusFn =
+  ## One `statusOf` for the supervisor's `reconcile`/`status`, over the
+  ## three handle adapters. A raising status becomes an error report
+  ## inside `supervisorStatus`, exactly like Python's `except`.
+  result = proc(key: string): GatewayReport {.closure.} =
+    case key
+    of "telegram": telegramStatusFn(rig.telegram)(key)
+    of "discord": discordStatusFn(rig.discord)(key)
+    of "whatsapp": whatsappStatusFn(rig.whatsapp)(key)
+    else: raise newException(CatchableError, "unknown gateway: " & key)
+
+proc liveWebhookBind*(host: string, port: int): Socket =
+  ## The real webhook bind: `0.0.0.0:5000` by default, exactly Python's
+  ## `ThreadingHTTPServer(("0.0.0.0", 5000), handler)`. Raises `OSError`
+  ## when the port is busy — the failure the supervisor is built to report.
+  var listener = newSocket()
+  try:
+    listener.setSockOpt(OptReuseAddr, true)
+    listener.bindAddr(Port(port), host)
+    listener.listen()
+  except CatchableError:
+    if not listener.isNil:
+      try:
+        listener.close()
+      except CatchableError:
+        discard
+    raise
+  listener
+
+proc openWebhook(rig: GatewayRig) =
+  ## Bind the supervised webhook listener: Python's
+  ## `ThreadingHTTPServer(("0.0.0.0", 5000), handler)` inside
+  ## `start_in_background`, with the port's own two startup lines (the
+  ## third, `Ctrl-C to stop.`, belongs to the standalone command — the
+  ## dashboard has its own banner). A bind failure RAISES on purpose: the
+  ## supervisor reports it as that gateway's error and rolls the previous
+  ## instance back, which is what its docstring promises.
+  let bindFn = if rig.hooks.openWebhook.isNil: liveWebhookBind
+               else: rig.hooks.openWebhook
+  rig.webhook = bindFn(rig.hooks.webhookHost, rig.hooks.webhookPort)
+  rig.logger(listeningLine(rig.hooks.webhookHost, rig.hooks.webhookPort))
+  rig.logger(webhookUrlLine)
+
+proc env*(rig: GatewayRig): Table[string, string] =
+  ## The credentials as they are RIGHT NOW (a fresh copy of what the panel
+  ## has written). Reads always go through here — see `GatewayHooks.envOf`
+  ## for why the rig stores no table of its own.
+  rig.hooks.envOf()
+
+proc rigStarter(rig: GatewayRig, key: string): StarterFn =
+  ## The supervisor's starter for one gateway: the gateway's own 7d1/7d2
+  ## adapter plus what only this wiring can do — build the agent turn the
+  ## way `start_in_background` builds its runner (a FRESH one per start),
+  ## print the startup lines it prints (a starter stays about the
+  ## lifecycle), and bind the webhook socket on whatsapp. `false` is
+  ## Python's `None` (not configured, quietly); a raising bind is the
+  ## failure the supervisor reports and rolls back.
+  result = proc(): bool {.closure.} =
+    let turn = rig.hooks.respond(key)
+    case key
+    of "telegram":
+      rig.telegramTurn = turn
+      if not telegramStarter(rig.telegram, rig.env(), rig.telegramTurn,
+          rig.hooks.telegramHttp, rig.logger)():
+        return false
+      rig.logger(telegramStartingLine)
+      rig.logger(posture(parseAllowedIds(
+        rig.env().getOrDefault("TELEGRAM_ALLOWED_USER", ""))))
+      return true
+    of "discord":
+      if not discordStarter(rig.discord, rig.env())():
+        return false
+      rig.discordTurn = turn
+      rig.logger(discordStartingLine)
+      rig.logger(describePosture(
+        parseDiscordIds(rig.env().getOrDefault("DISCORD_ALLOWED_USER", "")),
+        parseDiscordIds(rig.env().getOrDefault("DISCORD_ALLOWED_CHANNEL", "")),
+        rig.env().getOrDefault("DISCORD_HOME", ""),
+        rig.env().getOrDefault("DISCORD_MAX_TURNS_PER_HOUR", "30")))
+      return true
+    of "whatsapp":
+      rig.whatsappTurn = turn
+      if not whatsappStarter(rig.whatsapp, rig.env(), rig.whatsappTurn,
+          rig.hooks.whatsappHttp, rig.logger)():
+        return false
+      rig.openWebhook()
+      return true
+    else:
+      return false
+
+proc newGatewayRig*(hooks: GatewayHooks): GatewayRig =
+  ## The supervisor `dashboard.py::main` builds: three starters, the
+  ## registry's gateway fields, one stop seam — plus the three handles and
+  ## the agent turns they answer with. Builds nothing and starts nothing:
+  ## `reconcileHook` is the caller (Python reconciles after the port walk,
+  ## so a bind failure cannot leave half a dashboard behind).
+  result = GatewayRig(hooks: hooks, logger: hooks.loggerOf(),
+    telegram: newTelegramLive("telegram"),
+    whatsapp: newWhatsappLive("whatsapp"),
+    discord: newDiscordLive("discord"),
+    discordIdleMs: 0, discordDials: 0)
+  result.telegramTurn = hooks.respond("telegram")
+  result.whatsappTurn = hooks.respond("whatsapp")
+  result.discordTurn = hooks.respond("discord")
+  result.sup = newSupervisor(
+    [("telegram", result.rigStarter("telegram")),
+     ("discord", result.rigStarter("discord")),
+     ("whatsapp", result.rigStarter("whatsapp"))],
+    gatewayEnvFields(), result.stopHook())
+
+proc reconcileHook*(rig: GatewayRig): GatewayHook =
+  ## `supervisor.reconcile()` at startup (Python: one call, no keys, so
+  ## every known starter). Reports are discarded here on purpose: the panel
+  ## reads the handles themselves, and a failed gateway already says so on
+  ## its own status line.
+  result = proc() {.closure.} =
+    var env = rig.env()
+    discard rig.sup.reconcile(env, @[], rig.statusSeam())
+
+proc reloadHook*(rig: GatewayRig): GatewayReloadFn =
+  ## `_gateway_reloader`: a connections save reconciles the keys it touched
+  ## and hands the statuses back, which is where `applyIntegration` turns
+  ## a failed start into the save's error and a good one into health.
+  result = proc(keys: seq[string]): Table[string, IntegrationStatus] =
+    var env = rig.env()
+    for key, report in pairs(rig.sup.reconcile(env, keys, rig.statusSeam())):
+      result[key] = gatewayReportStatus(report)
+
+proc gatewayStatusFn*(rig: GatewayRig): GatewayStatusFn =
+  ## `_gateway_status_provider`: the panel's standing for one key.
+  ## `false` is Python's `None` — a key with no handle, which `_status`
+  ## then reads as "not proven", so a never-started gateway keeps whatever
+  ## the health store says instead of claiming a connection.
+  result = proc(key: string): (bool, IntegrationStatus) {.closure.} =
+    let (present, report) = supervisorStatus(rig.sup, key, rig.statusSeam())
+    if not present:
+      return (false, IntegrationStatus())
+    (true, gatewayReportStatus(report))
+
+proc shutdownHook*(rig: GatewayRig): GatewayHook =
+  ## `supervisor.shutdown()` at exit (`finally:` in Python): stop every
+  ## gateway, then leave nothing bound behind.
+  result = proc() {.closure.} =
+    rig.sup.supervisorShutdown()
+    rig.closeWebhook()
+    rig.dropGateway()
+    rig.closeBrowser()
+
+proc clockOf(rig: GatewayRig): DiscordNowFn =
+  ## The injected clock, or wall time — the same default `discordRun` uses,
+  ## so the heartbeat cadence and the spend cap are honest in production.
+  if rig.hooks.now.isNil:
+    result = proc(): float = epochTime()
+  else:
+    result = rig.hooks.now
+
+proc tickTelegram(rig: GatewayRig): bool =
+  ## ONE `getUpdates` cycle between browser requests (Python's poller
+  ## thread, one poll). Skipped when the poller is not live: unconfigured,
+  ## stopped, or dead on its own token — a handle that reported itself
+  ## stopped stays stopped until a `reconcile` restarts it, which is what
+  ## PTB's dead poller thread does. Returns whether a TURN ran.
+  if not rig.sup.running.getOrDefault("telegram", false) or
+      rig.telegram.stop or not rig.telegram.running:
+    return false
+  let token = rig.env().getOrDefault("TELEGRAM_BOT_TOKEN", "")
+  if token.len == 0:
+    return false
+  result = telegramPoll(rig.telegram, rig.hooks.telegramHttp,
+    parseAllowedIds(rig.env().getOrDefault("TELEGRAM_ALLOWED_USER", "")),
+    token, rig.telegramTurn, rig.logger, rig.env(),
+    gatewayTickPollTimeout) > 0
+
+proc endDiscordSession(rig: GatewayRig) =
+  ## A gateway session that ended: the socket goes and the handle stops (so
+  ## the panel stops claiming a live bot), then — unless the dial budget is
+  ## spent — the handle is re-armed for the next tick's dial. That is the
+  ## sequence `discordServe` runs, minus the command's exit.
+  ##
+  ## The budget counts CONSECUTIVE dials, and a connection that proved
+  ## itself (`READY`, a message) resets it: a gateway that worked for an
+  ## hour and then dropped must not inherit the debt of the connections
+  ## that failed before it.
+  discordStopFn(rig.discord)("discord")
+  rig.dropGateway()
+  if rig.discordDials >= discordDialBudget:
+    rig.logger(discordDialBudgetLine)
+    rig.discordDials = 0
+    return
+  if not rig.sup.running.getOrDefault("discord", false):
+    return
+  discordRearm(rig.discord, rig.env())
+  rig.discord.stop = false
+  rig.discord.running = true
+
+proc tickDiscord(rig: GatewayRig): bool =
+  ## ONE read of the Discord gateway between browser requests.
+  ##
+  ## Documented choice (the task file asked for it explicitly): the
+  ## supervised gateway does NOT call `discordServe`. `discordServe` owns
+  ## the socket AND blocks in its reconnect loop for the life of the
+  ## process, which is right for `waku discord` and wrong here — a
+  ## supervised bot that stops the dashboard from answering its own page is
+  ## the one shape this port must not ship. So the dashboard pumps the wire
+  ## itself, through the very seams 7d2-1/7d2-2 left open: `DiscordDialFn`
+  ## to connect, `receiveDiscordEvent` to read, `discordHandleMessage` to
+  ## answer. The step is the switch `discordRun` runs; the loop and the dial
+  ## stay in `discord.nim`, which is where a second reader can find them.
+  ##
+  ## Two policies carried over: a REFUSED dial is reported once and stops
+  ## the handle (a connection that never existed must read as stopped, not
+  ## as "starting" forever), and a socket quiet for two missed heartbeats
+  ## stops the handle too. Returns whether a TURN ran.
+  if not rig.sup.running.getOrDefault("discord", false) or rig.discord.stop:
+    rig.dropGateway()
+    return false
+  let token = rig.env().getOrDefault("DISCORD_BOT_TOKEN", "")
+  if rig.gateway.isNil:
+    inc rig.discordDials
+    if rig.discordDials > discordDialBudget:
+      rig.logger(discordDialBudgetLine)
+      rig.discordDials = 0
+      rig.discord.stop = true
+      rig.discord.running = false
+      rig.discord.ready = false
+      closeRunner(rig.discord.runner)
+      return false
+    let (ok, wire, why) = rig.hooks.discordDial(token)
+    if not ok:
+      rig.logger(why)
+      rig.discord.stop = true
+      rig.discord.running = false
+      rig.discord.ready = false
+      closeRunner(rig.discord.runner)
+      return false
+    rig.gateway = wire
+    rig.discord.running = true
+    rig.discordIdleMs = 0
+  let clock = rig.clockOf()
+  let env = rig.env()
+  let event = receiveDiscordEvent(rig.discord, rig.gateway,
+    discordTickTimeoutMs)
+  case event.kind
+  of deTimeout:
+    rig.discordIdleMs += discordTickTimeoutMs
+    # `discordRun` counts idle TICKS at the heartbeat interval; a tick here
+    # is milliseconds, so the honest question is "two heartbeats with
+    # nothing at all", which is what a dropped socket looks like.
+    if rig.discord.heartbeatMs > 0 and
+        rig.discordIdleMs > 2 * rig.discord.heartbeatMs:
+      rig.logger(discordQuietLine)
+      rig.endDiscordSession()
+  of deHello:
+    rig.discordIdleMs = 0
+    discard discordSendJson(rig.gateway,
+      discordIdentify(token, rig.discord.intents))
+    rig.discord.lastHeartbeat = clock()
+    discard discordSendJson(rig.gateway, discordHeartbeat(rig.discord.seq))
+  of deHeartbeat:
+    rig.discordIdleMs = 0
+    rig.discord.lastHeartbeat = clock()
+    discard discordSendJson(rig.gateway, discordHeartbeat(rig.discord.seq))
+  of deReady, deAck:
+    rig.discordIdleMs = 0
+    rig.discordDials = 0     # this connection works: the budget is fresh
+  of deStopped, deNone:
+    rig.discordIdleMs = 0
+  of deMessage:
+    rig.discordIdleMs = 0
+    rig.discordDials = 0
+    result = discordHandleMessage(rig.discord, event.message,
+      rig.hooks.discordHttp, token,
+      parseDiscordIds(env.getOrDefault("DISCORD_ALLOWED_USER", "")),
+      parseDiscordIds(env.getOrDefault("DISCORD_ALLOWED_CHANNEL", "")),
+      parseRequireMention(env.getOrDefault("DISCORD_REQUIRE_MENTION", "1")),
+      rig.discordTurn, rig.logger, clock(), env)
+  of deReconnect:
+    rig.logger(discordReconnectLine)
+    rig.endDiscordSession()
+  of deInvalidSession:
+    rig.logger(discordReconnectLine & "session invalid (" & event.detail & ")")
+    rig.endDiscordSession()
+  of deClosed:
+    rig.logger(discordSocketClosedLine & event.detail)
+    rig.endDiscordSession()
+
+proc gatewayTick*(rig: GatewayRig): bool =
+  ## What one pass of the loop does for the gateways Python ran on threads:
+  ## the telegram poll, then one step of the Discord gateway. Returns
+  ## whether anything was ANSWERED (a turn ran) — the loop uses it to skip
+  ## its idle wait, so a burst of messages is drained back-to-back.
+  result = tickTelegram(rig) or tickDiscord(rig)
+
+# ── the one loop ──────────────────────────────────────────────────────
+
+type
+  LoopStepFn* = proc(srv: var DashboardServer): bool {.closure.}
+    ## "Serve whatever is waiting on this channel, if anything": `true`
+    ## means a request was served. The browser channel takes one connection
+    ## and answers it through `serveOne`; the webhook channel takes one and
+    ## answers it through whatsapp's door. Both take it through a
+    ## `TakeConn`, which is what keeps this loop testable with no socket.
+  MultiplexSeams* = object
+    ## The three halves of the loop, injected so `multiplexPass` is
+    ## pinnable offline: nil means "nothing on this channel", which is what
+    ## a dashboard with no webhook and no browser request looks like.
+    browser*: LoopStepFn
+    webhook*: LoopStepFn
+    wait*: proc() {.closure.}
+      ## What a pass that found nothing pays before looking again.
+
+proc takeConn*(listener: Socket): TakeConn =
+  ## The dashboard's `TakeConn`: a select-based take, so "nothing waiting
+  ## right now" is an answer instead of a park. This is the seam
+  ## `serveWhatsapp` documents as "the dashboard injects a select-based
+  ## take" — `selectRead` over the listener's descriptor answers in zero
+  ## milliseconds and leaves the loop's own wait to bound the idle case.
+  result = proc(): (bool, Socket) {.closure.} =
+    if listener.isNil:
+      return (false, nil)
+    var handles: seq[SocketHandle] = @[listener.getFd()]
+    if selectRead(handles, 0) == 0:
+      return (false, nil)
+    var client: Socket
+    try:
+      listener.accept(client)
+    except OSError:
+      return (false, nil)   # a client that hung up between the two
+    return (true, client)
+
+proc serveWebhookRequest*(rig: GatewayRig, client: Socket) =
+  ## ONE Meta webhook request, answered through whatsapp's own door —
+  ## verification, signature, the 200-before-the-turn order and the turn
+  ## policy all stay in `whatsapp.nim`. A verb that does not parse answers
+  ## 404, the shape `serveWhatsapp` itself uses.
+  ##
+  ## Documented choice: this half of the loop calls `serveWhatsappRequest`,
+  ## not `serveWhatsapp`. `serveWhatsapp` is the standalone command's
+  ## blocking accept loop — it prints its banner, owns `running` from bind
+  ## to exit and only returns when the handle is stopped, so a supervisor
+  ## re-entering it per pass would re-print the banner every pass and leave
+  ## the panel reading "stopped" between requests. `TakeConn` is still the
+  ## seam connections arrive through, so the wire contract stays one thing.
+  let req = readWhatsappRequest(client)
+  if req.verb.len == 0:
+    writeWhatsappResponse(client, 404, "{}")
+    return
+  let env = rig.env()
+  proc write(status: int, body: string) =
+    writeWhatsappResponse(client, status, body)
+  discard serveWhatsappRequest(req,
+    env.getOrDefault("WHATSAPP_VERIFY_TOKEN", ""),
+    env.getOrDefault("WHATSAPP_APP_SECRET", ""),
+    env.getOrDefault("WHATSAPP_ALLOWED_PHONE", ""),
+    env.getOrDefault("WHATSAPP_TOKEN", ""),
+    env.getOrDefault("WHATSAPP_PHONE_NUMBER_ID", ""),
+    rig.hooks.whatsappHttp, rig.whatsappTurn, rig.logger, env,
+    live = rig.whatsapp, write = write)
+
+proc browserStep*(listener: Socket): LoopStepFn =
+  ## The browser channel: one accepted connection through `serveOne`,
+  ## closed exactly like `defaultServe` closes it (including the swallow —
+  ## one bad request must not take the loop down).
+  let take = takeConn(listener)
+  result = proc(srv: var DashboardServer): bool {.closure.} =
+    let (got, client) = take()
+    if not got:
+      return false
+    try:
+      serveOne(srv, client)
+    except CatchableError:
+      discard
+    try:
+      client.close()
+    except CatchableError:
+      discard
+    return true
+
+proc webhookStep*(rig: GatewayRig): LoopStepFn =
+  ## The webhook channel: one accepted connection through whatsapp's door,
+  ## skipped entirely while no webhook is bound (the row is off).
+  result = proc(srv: var DashboardServer): bool {.closure.} =
+    if rig.webhook.isNil:
+      return false
+    let (got, client) = takeConn(rig.webhook)()
+    if not got:
+      return false
+    try:
+      rig.serveWebhookRequest(client)
+    except CatchableError:
+      discard   # a client that hung up mid-request: serve the next one
+    try:
+      client.close()
+    except CatchableError:
+      discard
+    return true
+
+proc waitForListener*(listeners: seq[Socket],
+                      timeoutMs = dashboardIdleWaitMs) =
+  ## Block until one of `listeners` has a connection waiting or the window
+  ## closes — the bounded wait an idle pass pays, and the one place this
+  ## loop blocks at all. `selectRead` prunes the list down to the ready
+  ## descriptors, which is exactly the question ("is anyone there?") the
+  ## loop asks after a pass found nothing. An empty list sleeps the window:
+  ## with no listener bound there is nothing to watch.
+  var handles: seq[SocketHandle] = @[]
+  for listener in listeners:
+    if not listener.isNil:
+      handles.add(listener.getFd())
+  if handles.len == 0:
+    sleep(timeoutMs)
+    return
+  discard selectRead(handles, timeoutMs)
+
+proc liveSeams*(srv: var DashboardServer, rig: GatewayRig): MultiplexSeams =
+  ## The process's three halves: bind the browser listener (the port walk
+  ## already chose a free port, like `defaultServe`), take webhook requests
+  ## off the rig's own listener, and wait on both when a pass found
+  ## nothing. The wait reads the rig as it is NOW, because a connections
+  ## save can bind the webhook listener long after this ran.
+  var listener = newSocket()
+  listener.setSockOpt(OptReuseAddr, true)
+  listener.bindAddr(Port(srv.port), srv.host)
+  listener.listen()
+  rig.browser = listener
+  result = MultiplexSeams(
+    browser: browserStep(listener),
+    webhook: webhookStep(rig),
+    wait: proc() {.closure.} = waitForListener(@[listener, rig.webhook]))
+
+proc multiplexPass*(srv: var DashboardServer, rig: GatewayRig,
+                     seams: MultiplexSeams): bool =
+  ## ONE pass of the loop, in the order the port cares about: the browser
+  ## first (a person waiting on the page is served before a gateway asks
+  ## its own network), then the webhook, then the gateways. Returns whether
+  ## the pass found anything to do.
+  result = false
+  if not seams.browser.isNil and seams.browser(srv):
+    result = true
+  if not seams.webhook.isNil and seams.webhook(srv):
+    result = true
+  if rig.gatewayTick():
+    result = true
+
+proc multiplexStep*(srv: var DashboardServer, rig: GatewayRig,
+                    seams: MultiplexSeams): bool =
+  ## One iteration of `multiplexServe`, including the wait rule: a pass that
+  ## found something goes straight round again (a burst of requests or of
+  ## queued messages is drained back-to-back), and a pass that found
+  ## nothing pays the bounded wait. Returns whether the pass did anything —
+  ## the loop ignores it, a test reads it.
+  if multiplexPass(srv, rig, seams):
+    return true
+  if not seams.wait.isNil:
+    seams.wait()
+  return false
+
+proc multiplexServe*(srv: var DashboardServer, rig: GatewayRig,
+                     seams: MultiplexSeams) =
+  ## The accept loop that stands in for Python's `serve_forever()` plus
+  ## its three gateway threads. One pass at a time, one thread, no
+  ## scheduler: a gateway TURN still blocks the loop while it runs, which
+  ## is the posture 8b already accepted for streaming chat turns.
+  while true:
+    discard multiplexStep(srv, rig, seams)
+
+proc serveFn*(rig: GatewayRig): ServeFn =
+  ## The `ServeFn` `runDashboardCmd` is handed: the one loop, with the
+  ## process's real sockets bound here and nowhere else.
+  result = proc(srv: var DashboardServer) {.closure.} =
+    multiplexServe(srv, rig, liveSeams(srv, rig))
+
+proc gatewayAgents*(providers: seq[Provider], settings: Settings,
+    dotenvPath: string,
+    envOf: proc(): Table[string, string] {.closure.}): GatewayRespondFn =
+  ## One agent per supervised gateway, built on its first turn: Python's
+  ## `GatewayAgentRunner(_build_agent, session_id=key)` pair, where the
+  ## build happens inside the runner's first turn too. Each box owns its own
+  ## conversation thread named after the gateway, and Discord gets its own
+  ## memory home from `DISCORD_HOME` (the same override
+  ## `waku.discord`'s dispatch passes). A build failure raises inside the
+  ## turn, where `runGatewayTurn` records it as `message handling` and the
+  ## partner gets the shared error reply.
+  ##
+  ## The key and the home are read through `envOf` when the box is BUILT, so
+  ## a key saved in the panel is the key the next gateway turn uses — the
+  ## same "the process env is what the gateway reads" shape Python has.
+  ##
+  ## A call is a START: it builds that gateway's own box, and a restart
+  ## builds a fresh one, exactly like Python's `start_in_background` making a
+  ## new `GatewayAgentRunner` (new agent, new session thread) every time.
+  ## Nothing is cached here — the box lives exactly as long as the turn
+  ## closure the supervisor holds.
+  result = proc(source: string): RespondFn {.closure.} =
+    var s = settings
+    let env = envOf()
+    if source == "discord":
+      let home = env.getOrDefault("DISCORD_HOME", "")
+      if home.len > 0:
+        s.home = home
+    let box = WakuBox(providers: providers, dotenvPath: dotenvPath,
+      settings: s, sessionId: source,
+      apiKey: env.getOrDefault("WAKU_API_KEY", ""))
+    result = proc(text: string): string {.closure.} =
+      box.ensureWaku()
+      if box.buildError.len > 0:
+        raise newException(CatchableError, box.buildError)
+      box.waku.respond(text, cli.liveObserver, source, false).reply
+
+proc liveGatewayHooks*(providers: seq[Provider], settings: Settings,
+    dotenvPath: string,
+    envOf: proc(): Table[string, string] {.closure.}): GatewayHooks =
+  ## The process's seams: the real Bot API, Graph API and Discord REST
+  ## clients, the real gateway dial, stdout as the terminal mirror, and one
+  ## lazy agent per gateway. Only here does a gateway touch the network.
+  result = GatewayHooks(
+    envOf: envOf,
+    logger: nil,   # plain stdout, the default `loggerOf` resolves
+    respond: gatewayAgents(providers, settings, dotenvPath, envOf),
+    telegramHttp: liveTelegramHttp,
+    whatsappHttp: liveWhatsappPost,
+    discordHttp: liveDiscordPost,
+    discordDial: liveDiscordWire,
+    now: nil,      # wall time, the default `clockOf` resolves
+    webhookHost: "0.0.0.0",
+    webhookPort: whatsappPort)
+
 proc checkDashboardCmd*(providers: seq[Provider], settings: Settings,
                         dotenvPath: string): int =
   ## In-process dashboard entry: build live deps and walk the port with
@@ -1674,11 +2402,32 @@ proc checkDashboardCmd*(providers: seq[Provider], settings: Settings,
 proc serveDashboardCmd*(providers: seq[Provider], settings: Settings,
                         dotenvPath: string): int =
   ## Process dashboard entry: build, walk past busy ports for real,
-  ## print the URL, serve until Ctrl-C.
+  ## print the URL, reconcile the gateways, serve the ONE loop (browser +
+  ## webhook + the two polled gateways), shut the gateways down.
+  ##
+  ## 7d2-3 owns the wiring, and it lives HERE rather than in
+  ## `buildDashboardDeps` on purpose: `DashboardDeps` is a flat object
+  ## literal every constructor and test fills positionally, so the seams
+  ## this unit needs (a supervisor bound to a live env, a serve loop that
+  ## pumps it) belong to the process entry, not to the handler bundle. The
+  ## in-process `checkDashboardCmd` above therefore validates a dashboard
+  ## with no gateway running, exactly like Python's embedders.
   try:
     var deps = buildDashboardDeps(providers, settings, dotenvPath)
     var srv = prepareDashboard(deps)
-    return runDashboardCmd(srv)
+    # The rig reads the env the panel writes: `srv.deps` is reached through
+    # a `var` local (the nested proc captures it by reference), so a save
+    # from the connections panel is the next `reconcile`'s input. Building
+    # this after `prepareDashboard` is what makes it the SERVER's table
+    # rather than the local one the server was copied from — see
+    # `GatewayHooks.envOf` for why that distinction is load-bearing.
+    proc envLive(): Table[string, string] = srv.deps.env
+    let rig = newGatewayRig(
+      liveGatewayHooks(providers, settings, dotenvPath, envLive))
+    srv.deps.gatewayStatus = rig.gatewayStatusFn()
+    srv.deps.gatewayReload = rig.reloadHook()
+    return runDashboardCmd(srv, rig.reconcileHook(), rig.shutdownHook(),
+      rig.serveFn())
   except CatchableError as exc:
     stderr.writeLine(exc.msg)
     return 1
