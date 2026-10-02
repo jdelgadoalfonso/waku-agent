@@ -43,7 +43,15 @@
 ##   the caller prints it. `dashboardPort` falls back to 7777 on a
 ##   non-numeric env value where Python would raise — startup must not
 ##   crash on a typo.
+## - `/` and `/static/...` answer from the compile-time embed of
+##   `waku/ops/static/` when `DashboardDeps.staticDir` is `""`, which is
+##   what `findStaticDir` returns for a binary with no checkout beside it.
+##   A configured `staticDir` still wins and still reads the disk, so
+##   frontend edits in a checkout need no rebuild and the Python
+##   behaviour is unchanged there. The embed is what makes the shipped
+##   binary a single file (see the embed section below).
 
+import std/algorithm
 import std/httpclient
 import std/json
 import std/nativesockets
@@ -179,13 +187,20 @@ type
     ## The blocking accept loop. Nil means the stdlib socket loop below;
     ## tests inject a stub that captures host/port and returns.
 
+  StaticAsset* = tuple[name, body: string]
+    ## One `waku/ops/static/` file frozen into the executable: its
+    ## checkout-relative name (always `/`-separated, so a Windows build
+    ## looks up the same keys) and its exact bytes. Built by the
+    ## compile-time walk in the embed section.
+
   DashboardDeps* = object
     ## Everything the handlers read, injected so tests stay offline.
     home*: string
       ## `WAKU_HOME`: usage ledger, traces, state.db.
     staticDir*: string
-      ## The `waku/ops/static/` checkout served as-is from disk. The
-      ## compile-time embed is a phase-close decision, still pending.
+      ## A `waku/ops/static/` checkout served from disk; `""` means
+      ## there is none and the compile-time embed answers instead (a bare
+      ## binary). Set by `findStaticDir`, injected by tests.
     provider*: string
     model*: string
     smallModel*: string
@@ -299,15 +314,87 @@ proc splitTarget*(target: string): (string, Table[string, string]) =
       query[urlDecode(pair[0 ..< eq])] = urlDecode(pair[eq + 1 .. ^1])
   return (target[0 ..< q], query)
 
+# ---------------------------------------------------------------------------
+# Compile-time asset embed (9a-1) — the dashboard frontend in the binary.
+#
+# `waku/ops/static/` holds 55 files / ~668 KB (largest: `style.css`,
+# 67 KB) and EVERY one of them embeds byte-identically, the three
+# `.woff2` fonts included: `staticRead` keeps raw bytes, so there is no
+# escaping, no codegen pass and NO asset left behind for size or format.
+# The checkout is only ever READ. Nothing under `design/` is edited
+# (AGENTS.md rule 8), and LICENSE-BRAND's "included and unmodified"
+# still holds: the design copies reach the binary exactly as they sit on
+# disk, never copied into `nim/` and never touched.
+#
+# The walk happens in the VM, so the checkout must exist when the
+# COMPILER runs. Compiling without one (a source drop with no
+# `waku/ops/static/`) is not a build error: the table comes out empty
+# and the SPA routes answer with the same missing-frontend 404 Python
+# gives. At RUN time no binary needs a checkout either way — the served
+# bytes are the literals below, never a path.
+
+const
+  staticCheckoutDir = currentSourcePath().parentDir / ".." / ".." / "waku" /
+    "ops" / "static"
+    ## This module's own checkout, derived from this file's path so the
+    ## walk works from any working directory and any relative compile.
+
+proc collectStaticAssets(root: string): seq[StaticAsset] {.compileTime.} =
+  ## `(name, bytes)` for every file under `root`, name-sorted so the
+  ## table order is the same on every machine. Compile-time only: the
+  ## literals it reads reach the binary, the proc never does.
+  proc byName(a, b: StaticAsset): int = cmp(a.name, b.name)
+  result = @[]
+  for found in walkDirRec(root, relative = true):
+    result.add((name: found.replace(DirSep, '/'),
+      body: staticRead(root / found)))
+  result.sort(byName)
+
+const
+  embeddedStaticAssets = collectStaticAssets(staticCheckoutDir)
+  embeddedStaticCount* = embeddedStaticAssets.len
+    ## How many files the compiler froze. The suite walks the checkout
+    ## and holds the two counts equal, so an asset added but not
+    ## embedded fails loudly instead of serving a quiet 404.
+
+proc embeddedAsset*(name: string): (bool, string) =
+  ## `(true, bytes)` for a checkout-relative asset name, `(false, "")`
+  ## when the embed has no such file. An exact match is traversal-safe
+  ## by construction: `..`, a leading `/`, a backslash and the empty name
+  ## are simply not keys, so there is nothing to confine and no path to
+  ## read.
+  for asset in embeddedStaticAssets:
+    if asset.name == name:
+      return (true, asset.body)
+  return (false, "")
+
+proc embeddedIndex*(): (bool, string) =
+  ## The SPA shell from the embed — what `serveIndex` answers with when
+  ## there is no checkout on disk.
+  embeddedAsset("index.html")
+
+proc embeddedStaticNames*(): seq[string] =
+  ## Every checkout-relative name in the embed, name-sorted (the suite
+  ## compares it against its own walk of the checkout).
+  for asset in embeddedStaticAssets:
+    result.add(asset.name)
+
 proc serveStatic*(staticDir, reqPath: string): (int, string, string) =
   ## Port of `_serve_static`: strip the query, confine to `staticDir`
   ## (a resolved path outside it is a 404, never a read), map the
   ## content type, serve with no-cache semantics left to the HTTP layer.
+  ## With no `staticDir` the same route answers from the compile-time
+  ## embed, whose exact-name lookup is the confinement that half.
   var path = reqPath.split('?')[0]
   const prefix = "/static/"
   if not path.startsWith(prefix):
     return (404, "text/plain", "not found")
   let name = path[prefix.len .. ^1]
+  if staticDir.len == 0:
+    let (embedded, body) = embeddedAsset(name)
+    if not embedded:
+      return (404, "text/plain", "not found")
+    return (200, contentTypeFor(name), body)
   let target = absolutePath(staticDir / name)
   let root = absolutePath(staticDir)
   if target != root and not target.startsWith(root & DirSep):
@@ -319,7 +406,13 @@ proc serveStatic*(staticDir, reqPath: string): (int, string, string) =
 proc serveIndex*(staticDir: string): (int, string, string) =
   ## The `else` branch of `do_GET`: every non-API path renders the SPA.
   ## Python would 500 on a missing `index.html`; the port 404s instead
-  ## (a missing frontend is a deployment bug, not a traceback).
+  ## (a missing frontend is a deployment bug, not a traceback). With no
+  ## `staticDir` the shell comes from the compile-time embed.
+  if staticDir.len == 0:
+    let (embedded, body) = embeddedIndex()
+    if not embedded:
+      return (404, "text/plain", "not found")
+    return (200, "text/html; charset=utf-8", body)
   let index = staticDir / "index.html"
   if not fileExists(index):
     return (404, "text/plain", "not found")
@@ -1625,9 +1718,12 @@ proc liveCatalogFetch*(url, key: string): string =
     client.close()
 
 proc findStaticDir*(): string =
-  ## Locate the dashboard frontend, trying the caller's working directory
-  ## first (repo checkout layout) and the binary directory last — the
-  ## same shape as the provider-registry lookup in `waku.nim`.
+  ## Locate the dashboard frontend in a checkout, trying the caller's
+  ## working directory first (repo checkout layout) and the binary
+  ## directory last — the same shape as the provider-registry lookup in
+  ## `waku.nim`. `""` when no checkout is on disk anywhere: that is the
+  ## shipped-binary case, and the compile-time embed answers the SPA
+  ## routes instead of the filesystem.
   for candidate in ["waku/ops/static", "../waku/ops/static",
       "../../waku/ops/static"]:
     if dirExists(candidate):
@@ -1635,14 +1731,17 @@ proc findStaticDir*(): string =
   let besideBin = getAppDir() / "static"
   if dirExists(besideBin):
     return besideBin
-  return "waku/ops/static"
+  ""
 
 proc memoryExampleFor*(staticDir: string): string =
   ## The shipped probe fixture next to a checkout's static dir
   ## (`<repo>/evals/memory_arena.json`), or "" in a bare binary — then
   ## `/api/memory-arena` answers `available: false`, like the pip wheel
-  ## that never shipped `evals/`.
-  let cand = normalizedPath(staticDir / ".." / ".." / ".." / "evals" /
+  ## that never shipped `evals/`. With no checkout there is no directory
+  ## to walk up from, so the same three levels are measured from the
+  ## working directory: the spot a developer's checkout runs in.
+  let root = if staticDir.len > 0: staticDir else: "."
+  let cand = normalizedPath(root / ".." / ".." / ".." / "evals" /
     "memory_arena.json")
   if fileExists(cand): cand else: ""
 
