@@ -14,6 +14,11 @@
 ## process: the recorder and the engines travel through `MicStarter` and
 ## `RunCommandFn`, and the one real thing a test touches is a spool file
 ## in the temp dir, which is where the audio would have been.
+##
+## Phase 7d2 adds one line to all of that: the message a failed engine
+## raises goes through `safeException`, so a credential the engine
+## echoed back comes out as `***` instead of a live token in a terminal
+## log and a crash report.
 
 import std/os
 import std/strutils
@@ -220,6 +225,60 @@ suite "phase 7d1 external engines":
       assert false, "must raise"
     except CatchableError as exc:
       check "WAKU_MIC_COMMAND" in exc.msg
+
+# ── the failure a terminal gets to read ───────────────────────────────
+
+suite "phase 7d2 engine failure":
+  test "a credential the engine echoed is redacted":
+    # A credential reaches an engine INSIDE WAKU_STT_COMMAND, the way a
+    # CLI takes one: `HF_TOKEN=… whisper-cli`. Engines quote their argv
+    # back on stderr, so an unredacted failure line writes a live token
+    # into a terminal log and a crash report.
+    let secret = "fake-token-9f3a71"
+    let msg = engineFailure("HF_TOKEN=" & secret & " whisper-cli -m model.bin",
+      1, "whisper-cli: 401 unauthorized, token " & secret)
+    check secret notin msg
+    check "***" in msg
+    # the failure still says what failed and how
+    check "voice engine whisper-cli failed (exit 1)" in msg
+    check "unauthorized" in msg
+
+  test "the raising path redacts too, whatever the engine said":
+    let secret = "fake-api-key-4c8d02"
+    let run: RunCommandFn =
+      proc(argv: seq[string], stdin: string): (int, string) {.closure.} =
+        return (1, "tts-cli: unauthorized: " & secret & "\n")
+    try:
+      discard externalStt(run, "COHERE_API_KEY=" & secret & " tts-cli",
+        "/tmp/a.wav")
+      assert false, "must raise"
+    except CatchableError as exc:
+      check secret notin exc.msg
+      check "***" in exc.msg
+      check "tts-cli" in exc.msg
+
+  test "an argument that is not a credential stays readable":
+    # Over-redaction is its own bug: the model path in the stderr is the
+    # whole reason the failure prints what the engine printed.
+    let msg = engineFailure("MODEL=base.bin whisper-cli -m base.bin", 1,
+      "whisper-cli: cannot open base.bin")
+    check "cannot open base.bin" in msg
+    check "***" notin msg
+
+  test "a plain failure keeps its name, its exit code and its detail":
+    let msg = engineFailure("whisper-cli -m model.bin", 1,
+      "  whisper-cli: cannot open model.bin  \n")
+    check msg ==
+      "voice engine whisper-cli failed (exit 1): " &
+      "whisper-cli: cannot open model.bin"
+
+  test "a shouty engine is capped, like every other gateway line":
+    # the redaction comes with `safe_exception`'s 500-character cap: a
+    # terminal line is a log line, not a transcript of the engine
+    let label = "voice engine whisper-cli failed (exit 1): "
+    let msg = engineFailure("whisper-cli -m model.bin", 1, "x".repeat(900))
+    check msg.len == label.len + 500
+    check msg.endsWith("x")
 
 # ── the recorder spool ────────────────────────────────────────────────
 

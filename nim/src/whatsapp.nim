@@ -421,6 +421,13 @@ proc whatsappStop*(live: WhatsappLive) =
   ## `shutdown()` from the dashboard thread and joins the worker). The
   ## loop in `serveWhatsapp` leaves at its next turn around; the caller
   ## owns the socket, so the port closes it there.
+  ##
+  ## A nil handle stops nothing, exactly as `whatsappStatus` reads it as
+  ## stopped: the supervisor's stop seam can be called for a gateway that
+  ## never started, and a nil deref while shutting down would take the
+  ## dashboard down at the worst possible moment.
+  if live.isNil:
+    return
   live.stop = true
   live.running = false
   closeRunner(live.runner)

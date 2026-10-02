@@ -43,6 +43,9 @@ import std/os
 import std/osproc
 import std/streams
 import std/strutils
+import std/tables
+
+import ./gateway
 
 proc le16(value: int): string =
   ## One little-endian 16-bit field (a WAV chunk is a byte layout, not
@@ -174,16 +177,59 @@ proc splitCommand*(raw: string): seq[string] =
   for word in raw.splitWhitespace():
     result.add(word)
 
+proc assignmentName(word: string): string =
+  ## The `NAME` of a `NAME=value` variable assignment, or `""` when the
+  ## token is an ordinary argument. The name has to look like a
+  ## variable (letters, digits and underscores, not starting with a
+  ## digit), so `--model=a.bin` and `/models/base=1.bin` are arguments.
+  let eq = word.find('=')
+  if eq < 1:
+    return ""
+  let name = word[0 ..< eq]
+  if not (name[0] in {'A'..'Z', 'a'..'z', '_'}):
+    return ""
+  for c in name:
+    if not (c in {'A'..'Z', 'a'..'z', '0'..'9', '_'}):
+      return ""
+  name
+
+proc commandEnv(command: string): Table[string, string] =
+  ## The `NAME=value` assignments a command line carries, as the `env`
+  ## table `safeException` redacts from. A credential can only reach an
+  ## external engine INSIDE `WAKU_STT_COMMAND`/`WAKU_TTS_COMMAND` (rule 2:
+  ## nothing here reads the process environment), the way a CLI takes
+  ## one: `HF_TOKEN=… whisper-cli`. WHICH names are credentials stays
+  ## `safeException`'s suffix policy (`_TOKEN`, `_API_KEY`, `_SECRET`,
+  ## `_PASSWORD`, at least 4 chars) instead of a second policy here.
+  result = initTable[string, string]()
+  for word in splitCommand(command):
+    let name = assignmentName(word)
+    if name.len > 0:
+      result[name] = word[name.len + 1 .. ^1]
+
 proc engineFailure*(command: string, code: int, output: string): string =
   ## The message a failed engine raises: the command, the exit code and
   ## whatever the engine printed, so the terminal says why without the
-  ## person re-running it by hand first.
-  let name = splitCommand(command)
-  let head = if name.len > 0: name[0] else: "the engine"
-  var msg = "voice engine " & head & " failed (exit " & $code & ")"
-  if output.len > 0:
-    msg.add(": " & output.strip())
-  msg
+  ## person re-running it by hand first. Composed through `safeException`
+  ## like every other gateway path, so a credential the engine echoed is
+  ## redacted — an engine that quotes its argv back on stderr would
+  ## otherwise write a live token into a terminal log and a crash report.
+  ## Two divergences from the wording this had before, both forced by the
+  ## redaction: the engine named is the first token that is not a
+  ## `NAME=value` assignment (a variable is not a program, and the
+  ## assignment IS the secret), and the detail is capped at 500
+  ## characters with an empty one reading `"no details"`, both exactly
+  ## like every other gateway failure line.
+  var head = ""
+  for word in splitCommand(command):
+    if assignmentName(word).len == 0:
+      head = word
+      break
+  if head.len == 0:
+    head = "the engine"
+  let label = "voice engine " & head & " failed (exit " & $code & ")"
+  safeException(label, if output.len > 0: output.strip() else: "",
+    commandEnv(command))
 
 proc externalStt*(run: RunCommandFn, command: string, wavPath: string): string =
   ## `Ears.transcribe` over the external engine: the WAV path is the

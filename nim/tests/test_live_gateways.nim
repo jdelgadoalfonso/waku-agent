@@ -11,6 +11,9 @@
 ## `WhatsappHttpFn` plus a `take` seam that hands over a fake connection:
 ## no socket is opened, no subprocess is spawned, and `waku.nim` keeps its
 ## phase-4e stubs (7d2 wires the dispatch).
+##
+## Phase 7d2 adds the stop seam's other half: stopping a handle that is
+## not there is safe, the way reading its status already was.
 
 import std/json
 import std/sets
@@ -611,3 +614,14 @@ suite "phase 7d1 whatsapp startup lines":
       "WhatsApp gateway → listening on http://127.0.0.1:5001"
     assert webhookUrlLine == "  Webhook URL: http://<your-public-url>/webhook"
     assert ctrlCLine == "  Ctrl-C to stop."
+
+# ── the stop seam, for a handle that is not there ─────────────────────
+
+suite "phase 7d2 stop guards":
+  test "stopping nothing is safe, the way status reads nothing":
+    # `telegramStatus`/`whatsappStatus` answer for a nil handle, so the
+    # supervisor can ask about a gateway that never started. Their stop
+    # siblings take the same key: a nil deref here would take the
+    # dashboard down while shutting down, the worst possible moment.
+    telegramStop(nil)
+    whatsappStop(nil)

@@ -373,6 +373,13 @@ proc telegramStop*(live: TelegramLive) =
   ## poll is honoured at the end of that poll — the turns of the poll
   ## still land, like Python's in-flight handler, and the runner retires
   ## there; asked for between polls it takes effect at once.
+  ##
+  ## A nil handle stops nothing, exactly as `telegramStatus` reads it as
+  ## stopped: the supervisor's stop seam can be called for a gateway that
+  ## never started, and a nil deref while shutting down would take the
+  ## dashboard down at the worst possible moment.
+  if live.isNil:
+    return
   live.stop = true
   if not live.polling:
     live.running = false
