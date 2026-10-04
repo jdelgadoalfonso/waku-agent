@@ -33,11 +33,11 @@ documentada que tiene fix claro. Rama
 
 ## Tareas
 
-- [ ] L1 Limpieza /tmp + .gitignore.orig (route: inline, padre).
-- [ ] L2 removeDir en test_workflows (route: delegated).
-- [ ] L3 Propagar refusal en seams REST (route: delegated).
+- [x] L1 Limpieza /tmp + .gitignore.orig (route: inline, padre). HECHO 2026-10-02: `.gitignore.orig` fuera y sweep de nuestro scratch en `/tmp` (`getTempDir` honra TMPDIR; solo nombres conocidos).
+- [x] L2 removeDir en test_workflows (route: delegated). HECHO: commit `843f02b` (limpieza en test_workflows + test_integrations, con sweep del registry).
+- [x] L3 Propagar refusal en seams REST (route: delegated). HECHO: commit `e560477` (discord/whatsapp/mcp propagan; pines de test_tls actualizados al contrato de propagación). Residual `whatsappServe` cerrado aparte en `4285655` y el shape scan ensanchado en `c1bf516`.
 - [x] L4 Backoff poll telegram (route: delegated mur5hd1y-x-8w6a; primer intento murió sin escribir). Checks OBSERVED: parent spot 39/39; worker: RED (seam sin ventana) → GREEN 39/39, full 914 OK, 0 warnings. Idle 250ms ×2^vacías con cap 2000ms; resetea en turn/webhook/Discord no-timeout; browser no resetea. `wait` ahora recibe la ventana (cambio de firma contenido a 2 archivos).
-- [ ] L5 nim-port.md Landed al día (route: inline, padre).
+- [x] L5 nim-port.md Landed al día (route: inline, padre). HECHO: la sección Landed registra 7d2, 9a/9b/9c, bridge, TLS y las landings de paridad posteriores; se volvió a actualizar en `a5a68a7`/`29e0769` y en las notas de este port.
 - [x] L6 Verificación + commits (route: delegated verify mur5why5-y-qycb). Veredicto ACCEPT-WITH-NOTES. Checks OBSERVED: `nimble test` 914 OK / 0 FAIL (39 suites, 4 corridas idénticas), rulebook 17 passed, cross-count 925 = 914 + 11 flagged-only, finally desnudo confirmado en diff, backoff [250,500,1000,2000,2000,2000] pineado. Notas: task doc untracked (entra al commit), scratch del verificador borrado por el padre.
 
 ## Criterios de aceptación
@@ -53,11 +53,16 @@ documentada que tiene fix claro. Rama
 
 ## Evidencia de verificación
 
-- (pendiente)
+- Suite del cierre: `nimble test` 925 OK / 0 FAILED (39 suites), rulebook
+  17 passed, cross-count 925 = 914 + 11 flagged-only. Cero warnings.
+- Veredicto del verificador independiente: ACCEPT-WITH-NOTES (notas
+  resueltas: doc de tarea untracked incluido en el commit, scratch del
+  verificador borrado).
 
 ## Siguiente paso
 
-- L1: listar scratch y borrar solo lo conocido. HECHO.
+- Ninguno: las seis unidades están cerradas. Lo que sigue al port es
+  entrega (push + PRs en cadena), no más código de este documento.
 
 ## Commits
 
