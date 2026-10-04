@@ -90,6 +90,8 @@
 - Live TLS landed como switch (`-d:wakuTls`, default sin TLS, regla 3 intacta): suite 900 OK + 17 flagged.
 - Brecha de paridad del dashboard cerrada (connect + slash-commands + memoria viva + build_registry + judgment arenas + collect() completo): 1c54533, suite 1043 OK, cero warnings.
 - MCP stdio: sin lectura tras notificaciones (bloqueo contra `engram mcp` en vivo): d66e40c, test_mcp 82 OK.
+- `waku connect treg` (tercera puerta + state/card, spec 007 B2): 45dea75.
+- GET `/api/session` + `/embed/chat` + key `mcp_connections` (el pin blackbox comparaba contra binario viejo y escondía el gap): 0e95e01. Suite 1060 OK, cero warnings.
 - Next: entrega (push + PRs en cadena por fase) y judge evals (siguen Python-only por diseño).
 
 ## Next
