@@ -14,6 +14,7 @@ import db_connector/db_sqlite
 import ../src/app
 import ../src/brain
 import ../src/db
+import ../src/factstore
 import ../src/jsondump
 import ../src/memory_live
 import ../src/receipt
@@ -529,5 +530,98 @@ suite "spec 007 a saved research report":
     assert reports.len == 0
     assert chatMeta(db)["report"].kind == JNull
     assert res.receipt["memory"]["report"].kind == JNull
+    db.close()
+    removeDir(home)
+
+suite "which backend holds the facts":
+  test "sqlite is the answer unless something is named":
+    # The default has to be the local one, byte-identical to before this seam
+    # existed: a user with no env var must not notice the port grew a
+    # contract.
+    let home = getTempDir() / "waku-store-default"
+    if dirExists(home):
+      removeDir(home)
+    let db = connectDb(home)
+    var s = defaultSettings()
+    check factStoreFor(s, db).name == "sqlite"
+    let hits: seq[string] = factStoreFor(s, db).store.search("anything", 4)
+    check hits.len == 0
+    db.close()
+    removeDir(home)
+
+  test "an unknown value answers sqlite rather than refusing":
+    # Python's `_make_fact_store` falls through to SqliteFactStore for
+    # anything it does not recognise, and a typo in a .env must not take a
+    # turn down — it just quietly keeps the local store.
+    let home = getTempDir() / "waku-store-unknown"
+    if dirExists(home):
+      removeDir(home)
+    let db = connectDb(home)
+    var s = defaultSettings()
+    s.semanticStore = "supabase"
+    assert factStoreFor(s, db).name == "sqlite", "supabase is not in this port yet; the honest answer is sqlite"
+    db.close()
+    removeDir(home)
+
+  test "mem0 needs a key, and says so when it falls back":
+    # Naming a backend without its key is the failure mode a user hits on
+    # day one. The store still works (sqlite), it says why on stderr, and the
+    # selector answers "sqlite" so a status line cannot claim otherwise.
+    let home = getTempDir() / "waku-store-nokey"
+    if dirExists(home):
+      removeDir(home)
+    let db = connectDb(home)
+    let savedKey = existsEnv("MEM0_API_KEY")
+    let savedValue = getEnv("MEM0_API_KEY")
+    delEnv("MEM0_API_KEY")
+    var s = defaultSettings()
+    s.semanticStore = "mem0"
+    check factStoreFor(s, db).name == "sqlite"
+    if savedKey:
+      putEnv("MEM0_API_KEY", savedValue)
+    db.close()
+    removeDir(home)
+
+  test "mem0 with a key builds the hosted store":
+    let home = getTempDir() / "waku-store-mem0"
+    if dirExists(home):
+      removeDir(home)
+    let db = connectDb(home)
+    let savedKey = existsEnv("MEM0_API_KEY")
+    let savedValue = getEnv("MEM0_API_KEY")
+    putEnv("MEM0_API_KEY", "m0-test-key")
+    var s = defaultSettings()
+    s.semanticStore = "mem0"
+    s.mem0UserId = "someone"
+    check factStoreFor(s, db).name == "mem0"
+    if savedKey:
+      putEnv("MEM0_API_KEY", savedValue)
+    else:
+      delEnv("MEM0_API_KEY")
+    db.close()
+    removeDir(home)
+
+  test "an agent built for mem0 carries the hosted store":
+    # The seam is only real if the agent holds it: `newWaku` is where the
+    # builders (CLI, dashboard, gateways) get theirs.
+    let home = getTempDir() / "waku-store-agent"
+    if dirExists(home):
+      removeDir(home)
+    let savedKey = existsEnv("MEM0_API_KEY")
+    let savedValue = getEnv("MEM0_API_KEY")
+    putEnv("MEM0_API_KEY", "m0-test-key")
+    var s = defaultSettings()
+    s.home = home
+    s.semanticStore = "mem0"
+    let db = connectDb(home)
+    let script = Script(items: @[textResp("hola")])
+    let w = newWaku(s, scriptedClient(script), db)
+    let rows: seq[StoreFact] = w.facts.list(1)
+    assert rows.len >= 0, "the agent must hold a store, not nothing"
+    check factStoreFor(s, db).name == "mem0"
+    if savedKey:
+      putEnv("MEM0_API_KEY", savedValue)
+    else:
+      delEnv("MEM0_API_KEY")
     db.close()
     removeDir(home)

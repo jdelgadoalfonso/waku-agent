@@ -74,6 +74,16 @@ type
       ## `WAKU_CONSOLIDATE_EVERY` (default 6): exchanges between memory
       ## consolidations; the dashboard shows it and doubles it as the
       ## trigger threshold.
+    semanticStore*: string
+      ## `WAKU_SEMANTIC_STORE`: where facts live. `sqlite` (default, zero
+      ## setup) or `mem0` (the hosted service). Python reads the same var in
+      ## `config.py` and dispatches in `waku/memory/__init__.py`.
+    mem0UserId*: string
+      ## `MEM0_USER_ID`: the person mem0 scopes memories to. Defaults to
+      ## `waku`, and an EMPTY value falls back to the default rather than
+      ## scoping the memory to "" — the Connections form writes optional
+      ## fields even when you leave them blank, so `getenv(name, default)`
+      ## is wrong here and Python's `env_or` is the port.
     otelEndpoint*: string
       ## `OTEL_EXPORTER_OTLP_ENDPOINT`: an OTLP collector as `host:port`
       ## (Python's `Settings.otel_endpoint`). Empty means JSONL traces
@@ -90,7 +100,8 @@ proc defaultSettings*(): Settings =
            maxTokens: defaultMaxTokens, historyTurns: defaultHistoryTurns,
            graphWorkflows: false, consolidateEvery: 6, retrievalTopK: 4,
            experimental: false, appleTools: false, ghTool: false,
-           ghRepo: "", otelEndpoint: "")
+           ghRepo: "", semanticStore: "sqlite", mem0UserId: "waku",
+           otelEndpoint: "")
 
 proc envInt(name: string, default: int): int =
   ## `int(os.getenv(name, default))` with a fallback: a non-numeric value
@@ -102,6 +113,20 @@ proc envInt(name: string, default: int): int =
     return parseInt(raw)
   except ValueError:
     return default
+
+proc envOrDefault*(name, fallback: string): string =
+  ## `os.getenv(name)` that treats an EMPTY value as absent, the port of
+  ## `env_or` in `waku/memory/semantic/base.py`.
+  ##
+  ## The Connections form writes every optional field it is shown, so
+  ## leaving one blank does not omit it: it stores `NAME=''`, and
+  ## `getenv(name, default)` only falls back when the variable is MISSING.
+  ## A blank "User id" would then scope somebody's memory to the empty
+  ## string instead of the default, and nobody would notice until the memory
+  ## was gone. Found the first time a real key was saved through the
+  ## dashboard — a hand-edited .env just omits the line.
+  let raw = getEnv(name).strip()
+  if raw.len == 0: fallback else: raw
 
 proc loadFromEnv*(s: var Settings) =
   ## Read the `WAKU_*` env vars into `s`, keeping the sensible default
@@ -123,6 +148,8 @@ proc loadFromEnv*(s: var Settings) =
   s.graphWorkflows = getEnv("WAKU_GRAPH_WORKFLOWS") in ["1", "true", "yes"]
   s.consolidateEvery = envInt("WAKU_CONSOLIDATE_EVERY", 6)
   s.otelEndpoint = getEnv("OTEL_EXPORTER_OTLP_ENDPOINT")
+  s.semanticStore = getEnv("WAKU_SEMANTIC_STORE", "sqlite")
+  s.mem0UserId = envOrDefault("MEM0_USER_ID", "waku")
 
 proc loadSettings*(): Settings =
   ## Port of `waku/config.py` `load_settings`: read the env vars once

@@ -13,10 +13,13 @@ import db_connector/db_sqlite
 import ../src/app
 import ../src/config
 import ../src/db
+import ../src/factstore
 import ../src/loop
 import ../src/memory
 import ../src/memory_live
 import ../src/wire
+
+proc store(db: DbConn): FactStore = sqliteFactStore(db)
 
 proc freshHome(name: string): string =
   result = getTempDir() / name
@@ -75,12 +78,13 @@ suite "gated retrieval":
   test "a skip announces itself and searches nothing":
     let home = freshHome("waku-memlive-skip")
     let db = connectDb(home)
+    let facts = store(db)
     addFact(db, "Alex", "prefers mornings")
     let client = scriptedClient(
       """{"retrieve": false, "query": "", "reason": "small talk"}""")
     var kinds: seq[string] = @[]
     var decisions: seq[string] = @[]
-    let found = gatedRetrieve(db, client, "mini", 4, "thanks!",
+    let found = gatedRetrieve(db, facts, client, "mini", 4, "thanks!",
       proc(kind: string, ev: JsonNode) {.closure.} =
         kinds.add(kind)
         if kind == "gate":
@@ -94,13 +98,14 @@ suite "gated retrieval":
   test "the gate call is metered with kind and model":
     let home = freshHome("waku-memlive-gatemeter")
     let db = connectDb(home)
+    let facts = store(db)
     addFact(db, "Alex", "prefers mornings")
     let client = LlmClient(create: proc(req: JsonNode): JsonNode =
       %*{"stop_reason": "end_turn", "usage": {"in": 11, "out": 2},
         "content": [{"type": "text",
           "text": """{"retrieve": false, "query": "", "reason": "x"}"""}]})
     var llms: seq[JsonNode] = @[]
-    discard gatedRetrieve(db, client, "mini", 4, "thanks!",
+    discard gatedRetrieve(db, facts, client, "mini", 4, "thanks!",
       proc(kind: string, ev: JsonNode) {.closure.} =
         if kind == "llm":
           llms.add(ev))
@@ -114,11 +119,12 @@ suite "gated retrieval":
   test "a retrieve returns facts and episodes":
     let home = freshHome("waku-memlive-hit")
     let db = connectDb(home)
+    let facts = store(db)
     addFact(db, "Alex", "prefers morning meetings")
     addEpisode(db, "planned the demo with Alex", "2026-09-01")
     let client = scriptedClient(
       """{"retrieve": true, "query": "Alex", "reason": "asks about Alex"}""")
-    let found = gatedRetrieve(db, client, "mini", 4, "when is Alex free?")
+    let found = gatedRetrieve(db, facts, client, "mini", 4, "when is Alex free?")
     assert "morning meetings" in found
     assert "demo with Alex" in found
     db.close()
@@ -141,25 +147,27 @@ suite "consolidation":
   test "fewer than N exchanges is not due":
     let home = freshHome("waku-memlive-notdue")
     let db = connectDb(home)
+    let facts = store(db)
     logChat(db, "hi", "hello")
     let client = scriptedClient("""{"facts": [], "episode": ""}""")
-    assert consolidateIfDue(db, client, "mini", 6) == 0
+    assert consolidateIfDue(db, facts, client, "mini", 6) == 0
     db.close()
     removeDir(home)
 
   test "a due backlog distills facts, an episode and flips the rows":
     let home = freshHome("waku-memlive-due")
     let db = connectDb(home)
+    let facts = store(db)
     logChat(db, "Alex likes mornings", "noted")
     logChat(db, "ok", "bye")
     let client = scriptedClient(
       """{"facts": [{"subject": "Alex", "content": "likes mornings"}],
          "episode": "talked about Alex"}""")
-    assert consolidateIfDue(db, client, "mini", 1) == 1
-    let facts = listFacts(db)
-    assert facts.len == 1
-    assert facts[0].subject == "alex"
-    assert facts[0].source == "consolidation"
+    assert consolidateIfDue(db, facts, client, "mini", 1) == 1
+    let kept = listFacts(db)
+    assert kept.len == 1
+    assert kept[0].subject == "alex"
+    assert kept[0].source == "consolidation"
     assert listEpisodes(db).len == 1
     for row in db.getAllRows(sql"SELECT consolidated FROM chat_log"):
       assert row[0] == "1"
@@ -169,9 +177,10 @@ suite "consolidation":
   test "a factless summary still retires the rows":
     let home = freshHome("waku-memlive-nofacts")
     let db = connectDb(home)
+    let facts = store(db)
     logChat(db, "hi", "hello")
     let client = scriptedClient("""{"episode": "said hi"}""")
-    assert consolidateIfDue(db, client, "mini", 1) == 0
+    assert consolidateIfDue(db, facts, client, "mini", 1) == 0
     assert listEpisodes(db).len == 1
     for row in db.getAllRows(sql"SELECT consolidated FROM chat_log"):
       assert row[0] == "1"
@@ -181,9 +190,10 @@ suite "consolidation":
   test "garbage from the summarizer keeps the log pending":
     let home = freshHome("waku-memlive-garbage")
     let db = connectDb(home)
+    let facts = store(db)
     logChat(db, "hi", "hello")
     let client = scriptedClient("thinking only, no JSON here")
-    assert consolidateIfDue(db, client, "mini", 1) == 0
+    assert consolidateIfDue(db, facts, client, "mini", 1) == 0
     for row in db.getAllRows(sql"SELECT consolidated FROM chat_log"):
       assert row[0] == "0"
     db.close()
@@ -193,6 +203,7 @@ suite "MEMORY.md mirror":
   test "the mirror counts what the tables hold":
     let home = freshHome("waku-memlive-mirror")
     let db = connectDb(home)
+    let facts = store(db)
     addFact(db, "Alex", "prefers mornings")
     addEpisode(db, "a quiet week", "2026-09-01")
     exportMarkdown(db, home)
@@ -208,6 +219,7 @@ suite "wiring":
   test "wireMemory fills the seams and syncs after a turn":
     let home = freshHome("waku-memlive-wire")
     let db = connectDb(home)
+    let facts = store(db)
     addFact(db, "Alex", "prefers morning meetings")
     logChat(db, "remember Alex", "done")
     let client = scriptedClient(

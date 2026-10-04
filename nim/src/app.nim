@@ -51,6 +51,8 @@ import db_connector/db_sqlite
 
 import ./brain
 import ./config
+import ./factstore
+import ./mem0
 import ./jsondump
 import ./loop
 import ./memory
@@ -79,6 +81,13 @@ type
   Waku* = object
     settings*: Settings
     db*: DbConn
+    facts*: FactStore
+      ## Where the facts live — sqlite by default, mem0 when
+      ## `WAKU_SEMANTIC_STORE` names it. Every read and write of a FACT
+      ## goes through this, never through `db`; the episodic side stays on
+      ## sqlite because Python's selector only ever moved the semantic
+      ## store. Holding it here is what keeps one client (and therefore one
+      ## pending `settle` event) per agent instead of one per registry.
     client*: LlmClient
     tools*: ToolRegistry
     session*: Session
@@ -91,6 +100,38 @@ type
       ## `var Waku`, which cannot capture the agent itself) reads it. Empty
       ## every other turn.
 
+type
+  StoreChoice* = tuple[store: FactStore, name: string]
+    ## The store AND which backend it is. The name is not part of the contract
+    ## (a store cannot be asked what it is) but assembly needs to answer it:
+    ## the status line says where the facts live, a test pins the selector,
+    ## and `WAKU_SEMANTIC_STORE=mem0` with no key has to be able to say it
+    ## fell back rather than answering a search that quietly came from
+    ## another backend.
+
+proc factStoreFor*(settings: Settings, db: DbConn): StoreChoice =
+  ## Which backend holds the facts, from `WAKU_SEMANTIC_STORE`. The port of
+  ## `_make_fact_store` in `waku/memory/__init__.py`: an unknown value
+  ## answers with sqlite rather than refusing, which is what Python does and
+  ## what keeps a typo from taking a turn down.
+  ##
+  ## `MEM0_API_KEY` is read here, not from `Settings`, because that is what
+  ## Python's adapter does: the key belongs to the connections registry, not
+  ## to the settings dataclass. No key means no mem0 client — the loop then
+  ## answers from sqlite and says nothing, because a half-wired remote store
+  ## is worse than a local one.
+  case settings.semanticStore
+  of "mem0":
+    let key = envOrDefault("MEM0_API_KEY", "")
+    if key.len > 0:
+      let client = newMem0Client(key, settings.mem0UserId,
+                                 topK = settings.retrievalTopK)
+      return (store: mem0FactStore(client), name: "mem0")
+    stderr.writeLine("(memory) WAKU_SEMANTIC_STORE=mem0 but MEM0_API_KEY is " &
+      "empty — falling back to sqlite, which will not show those memories.")
+  else: discard
+  (store: sqliteFactStore(db), name: "sqlite")
+
 proc newWaku*(settings: Settings, client: LlmClient, db: DbConn = nil,
               tools = ToolRegistry(), graphTurn: GraphTurn = nil,
               afterTurn: AfterTurn = nil): Waku =
@@ -100,6 +141,7 @@ proc newWaku*(settings: Settings, client: LlmClient, db: DbConn = nil,
   result.db = db
   result.client = client
   result.tools = tools
+  result.facts = factStoreFor(settings, db).store
   result.session = newSession(settings, db = db)
   result.tracer = newTracer(settings.home, settings.provider, settings.model,
                            settings.otelEndpoint)

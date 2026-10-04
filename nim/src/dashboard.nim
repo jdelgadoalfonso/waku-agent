@@ -81,6 +81,7 @@ import ./config
 import ./db
 import ./discord
 import ./experimental
+import ./factstore
 import ./gather
 import ./gateway
 import ./github
@@ -1068,10 +1069,16 @@ proc toolCatalog*(db: DbConn, home: string): JsonNode =
         mcpNames.add(if n.len > 0: n else: "?")
     except JsonParsingError, IOError:
       discard
+  # The catalog renders DESCRIPTORS (name, description, JSON schema), so the
+  # store behind `manage_memory` is never called from here: sqlite's is
+  # built so the entry exists, and which backend a live agent uses is decided
+  # once, in the agent's own registry. Threading a live store through the
+  # whole collector would buy nothing and touch every route.
   var tools: seq[Tool] = @[makeCreateEventTool(db, home),
     makeListEventsTool(db), makeSaveNoteTool(db),
     makeSendMessageTool(home), makeUpdateSoulTool(home),
-    makeManageMemoryTool(db), makeCreateSkillTool(home)]
+    makeManageMemoryTool(db, sqliteFactStore(db)),
+    makeCreateSkillTool(home)]
   var items: seq[JsonNode] = @[]
   for t in tools:
     var source = "other"
@@ -2428,7 +2435,8 @@ proc ensureWaku*(box: WakuBox) =
       liveEnv[k] = v
     box.waku.tools = buildRegistry(db, s.home, s, liveSearchFetch,
       liveGhRun, livePiSeams(s.home, s.provider, s.model),
-      liveAppleSeams(), mcpRegistryTools(s.home, liveEnv,
+      liveAppleSeams(), box.waku.facts,
+      mcpRegistryTools(s.home, liveEnv,
         getTime().toUnix(), liveStdioFactory(), liveHttpPostFn()))
     wireMemory(box.waku, s, db, client, bundledSkillDirs())
     if s.graphWorkflows:

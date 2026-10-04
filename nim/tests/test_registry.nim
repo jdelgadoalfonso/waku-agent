@@ -13,6 +13,7 @@ import db_connector/db_sqlite
 import ../src/apple
 import ../src/config
 import ../src/db
+import ../src/factstore
 import ../src/experimental
 import ../src/registry
 import ../src/tools
@@ -63,7 +64,7 @@ suite "buildRegistry":
     let home = freshHome("waku-reg-base")
     let db = connectDb(home)
     let reg = buildRegistry(db, home, baseSettings(home), stubFetch,
-      stubGh, stubPi(), stubApple())
+      stubGh, stubPi(), stubApple(), sqliteFactStore(db))
     db.close()
     assert toolNames(reg) == @["create_event", "list_events", "save_note",
       "send_message", "search_web", "manage_memory", "update_soul",
@@ -78,7 +79,7 @@ suite "buildRegistry":
     settings.appleTools = true
     settings.ghTool = true
     let reg = buildRegistry(db, home, settings, stubFetch, stubGh,
-      stubPi(), stubApple())
+      stubPi(), stubApple(), sqliteFactStore(db))
     db.close()
     let names = toolNames(reg)
     assert "delegate_task" in names
@@ -95,7 +96,7 @@ suite "buildRegistry":
       inputSchema: %*{"type": "object"},
       fn: proc(args: JsonNode): string = "mcp!")
     let reg = buildRegistry(db, home, baseSettings(home), stubFetch,
-      stubGh, stubPi(), stubApple(), @[mcpTool])
+      stubGh, stubPi(), stubApple(), sqliteFactStore(db), @[mcpTool])
     db.close()
     let names = toolNames(reg)
     assert names[^1] == "mcp_x_y"
@@ -107,7 +108,7 @@ suite "buildRegistry":
     let home = freshHome("waku-reg-exec")
     let db = connectDb(home)
     let reg = buildRegistry(db, home, baseSettings(home), stubFetch,
-      stubGh, stubPi(), stubApple())
+      stubGh, stubPi(), stubApple(), sqliteFactStore(db))
     db.close()
     let text = reg.execute("search_web", %*{"query": "nim"})
     delEnv("TAVILY_API_KEY")

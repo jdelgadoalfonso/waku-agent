@@ -29,6 +29,7 @@ import std/unicode
 import db_connector/db_sqlite
 
 import ./app
+import ./factstore
 import ./loop
 import ./memory
 import ./skills
@@ -105,8 +106,8 @@ proc shouldRetrieve*(client: LlmClient, smallModel,
   except CatchableError as exc:
     return (true, message, "gate failed open (" & $exc.name & ")")
 
-proc gatedRetrieve*(db: DbConn, client: LlmClient, smallModel: string,
-    topK: int, message: string,
+proc gatedRetrieve*(db: DbConn, facts: FactStore, client: LlmClient,
+    smallModel: string, topK: int, message: string,
     notify: Observer = nil): string =
   ## Port of `Memory.gated_retrieve`: the gate decides (and is announced
   ## on `notify`, like Python), then facts plus 3 episodes join with
@@ -120,7 +121,10 @@ proc gatedRetrieve*(db: DbConn, client: LlmClient, smallModel: string,
                        "reason": reason})
   if not retrieve:
     return ""
-  var found = searchFacts(db, query, topK)
+  # Facts through the contract, episodes through sqlite: Python's selector
+  # only ever moved the semantic store, and the episodic side has no hosted
+  # option in this port.
+  var found = facts.search(query, topK)
   for e in searchEpisodes(db, query, 3):
     found.add(e)
   return found.join("\n")
@@ -220,8 +224,8 @@ proc aboutReport*(fact: JsonNode, report: string): bool =
   except RegexError:
     false
 
-proc consolidateIfDue*(db: DbConn, client: LlmClient, smallModel: string,
-    everyN: int, notify: Observer = nil,
+proc consolidateIfDue*(db: DbConn, facts: FactStore, client: LlmClient,
+    smallModel: string, everyN: int, notify: Observer = nil,
     reportBody: string = ""): int =
   ## Port of `consolidate_if_due`: fewer than `everyN` exchanges (2 rows
   ## each) pending means not due. A distilled fact needs subject AND
@@ -279,7 +283,7 @@ proc consolidateIfDue*(db: DbConn, client: LlmClient, smallModel: string,
         let subject = fact.jget("subject").getStr()
         let content = fact.jget("content").getStr()
         if subject.len > 0 and content.len > 0:
-          addFact(db, subject, content, "consolidation")
+          facts.add(subject, content, "consolidation")
           inc count
     let episode = distilled.jget("episode").getStr()
     if episode.len > 0:
@@ -325,13 +329,15 @@ proc wireMemory*(w: var Waku, settings: Settings, db: DbConn,
   ## gateways) call this once per agent; tests keep building unwired
   ## agents straight from `newWaku`.
   let cell = w.reportCell   ## the turn's saved report, read through a ref
+  let facts = w.facts       ## ditto: a `var Waku` cannot be captured
   let home = settings.home
   let smallModel = settings.smallModel
   let topK = settings.retrievalTopK
   let everyN = settings.consolidateEvery
   w.session.retrieve =
     proc(userMessage: string, notify: Observer): string {.closure.} =
-      gatedRetrieve(db, client, smallModel, topK, userMessage, notify)
+      gatedRetrieve(db, facts, client, smallModel, topK, userMessage,
+        notify)
   w.session.skillsFor =
     proc(userMessage: string, notify: Observer): string {.closure.} =
       matchingSkills(home, bundled, userMessage)
@@ -344,8 +350,8 @@ proc wireMemory*(w: var Waku, settings: Settings, db: DbConn,
       # read through the agent's own cell, which the turn sets just before
       # (spec 009 B).
       let reportBody = if cell.isNil: "" else: cell[]
-      let fresh = consolidateIfDue(db, client, smallModel, everyN, notify,
-        reportBody)
+      let fresh = consolidateIfDue(db, facts, client, smallModel, everyN,
+        notify, reportBody)
       if fresh > 0 and not notify.isNil:
         notify("consolidation", %*{"new_facts": fresh})
       exportMarkdown(db, home)

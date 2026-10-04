@@ -24,10 +24,12 @@ import std/unicode
 
 import db_connector/db_sqlite
 
+import ./factstore
 import ./memory
 import ./messages
 import ./notes
 import ./tools
+import ./wire
 
 const
   soulMax* = 8000
@@ -63,10 +65,36 @@ let
   slugRe = re(slugPattern)
   skillFrontRe = re(skillFrontPattern)
 
-proc manageMemory*(db: DbConn, action: string, kind = "fact", id = 0i64,
-                   query = "", content = "", subject = ""): string =
+proc rawId(args: JsonNode): string =
+  ## The row id as it came in, whatever JSON type it arrived as: a number
+  ## from sqlite's dashboard, a string from a hosted store's. Coercing both
+  ## to text here is what lets one call site serve every backend — the same
+  ## `str(payload.get("id", ""))` the Python dashboard does.
+  let raw = args.jget("id")
+  case raw.kind
+  of JString: raw.getStr()
+  of JInt: $raw.getBiggestInt()
+  else: ""
+
+proc episodeId(id: string): int64 =
+  ## An episode id is sqlite's counter, so it is a number; a fact id is
+  ## whatever backend issued it. A non-numeric episode id is a miss, not a
+  ## crash: the same contract rule, on the side that really does count.
+  try:
+    result = parseBiggestInt(id)
+  except ValueError:
+    result = 0
+
+proc manageMemory*(db: DbConn, facts: FactStore, action: string,
+                   kind = "fact", id = "", query = "", content = "",
+                   subject = ""): string =
   ## Port of `manage_memory`. Episode search lists + substring-filters
-  ## (no FTS there, same as Python); fact search is FTS with ids.
+  ## (no FTS there, same as Python); facts go through the contract, so this
+  ## is the same code whichever backend holds them.
+  ##
+  ## `id` is a string because it is opaque: sqlite's counter for the local
+  ## store, a UUID for mem0. The dashboard has always handed it back
+  ## verbatim, so nothing downstream had to parse it.
   let act = action.toLowerAscii()
   if act == "search":
     if kind == "episode":
@@ -78,21 +106,24 @@ proc manageMemory*(db: DbConn, action: string, kind = "fact", id = 0i64,
             break
       return if hits.len > 0: hits.join("\n") else: "no episodes"
     var lines: seq[string] = @[]
-    for f in searchFactsWithIds(db, query, 8):
-      lines.add("#" & $f.id & " [" & f.subject & "] " & f.content)
+    for f in facts.searchWithIds(query, 8):
+      lines.add("#" & f.id & " [" & f.subject & "] " & f.content)
     return if lines.len > 0: lines.join("\n") else: "no matching facts"
   if act == "update":
     if kind != "fact":
       return "Only facts can be updated (episodes are historical)."
-    let ok = if subject.len > 0: updateFact(db, id, content, subject)
-             else: updateFactContent(db, id, content)
+    # An empty subject means "leave it alone" — that is the contract's
+    # `subject=None`, and the adapter is where each backend's own shape gets
+    # absorbed (a remote store rewrites one blob).
+    let ok = facts.update(id, content, subject)
     return if ok: "Updated fact #" & $id & "." else: "No fact with id " & $id & "."
   if act == "delete":
     if kind == "episode":
-      return if deleteEpisode(db, id): "Deleted episode #" & $id & "."
-             else: "No episode with id " & $id & "."
-    return if deleteFact(db, id): "Deleted fact #" & $id & "."
-           else: "No fact with id " & $id & "."
+      let row = episodeId(id)
+      return if deleteEpisode(db, row): "Deleted episode #" & $row & "."
+             else: "No episode with id " & $row & "."
+    return if facts.delete(id): "Deleted fact #" & id & "."
+           else: "No fact with id " & id & "."
   return "action must be one of: search, update, delete"
 
 proc loadSoul*(home: string): string =
@@ -183,7 +214,7 @@ proc makeSendMessageTool*(home: string): Tool =
     fn: proc(args: JsonNode): string =
       messages.sendMessage(home, strArg(args, "to"), strArg(args, "body")))
 
-proc makeManageMemoryTool*(db: DbConn): Tool =
+proc makeManageMemoryTool*(db: DbConn, facts: FactStore): Tool =
   Tool(name: "manage_memory",
     description: "Search, correct, or delete the user's long-term memory (facts and episodes). " &
       "ALWAYS search first to get the id, then update or delete that id. " &
@@ -193,15 +224,17 @@ proc makeManageMemoryTool*(db: DbConn): Tool =
         "action": {"type": "string", "enum": ["search", "update", "delete"]},
         "kind": {"type": "string", "enum": ["fact", "episode"], "description": "default fact"},
         "id": {"type": ["integer", "string"],
-                 "description": "row id (from a prior search); a number for sqlite"},
+                 "description": "row id (from a prior search); an opaque " &
+                   "string — a number on sqlite, a UUID on a hosted store"},
         "query": {"type": "string", "description": "keywords for search"},
         "content": {"type": "string", "description": "new text for update"},
         "subject": {"type": "string", "description": "optional new subject for a fact update"}},
       "required": ["action"]},
     fn: proc(args: JsonNode): string =
-      manageMemory(db, strArg(args, "action"), strArg(args, "kind", "fact"),
-                   intArg(args, "id").int64, strArg(args, "query"),
-                   strArg(args, "content"), strArg(args, "subject")))
+      manageMemory(db, facts, strArg(args, "action"),
+                   strArg(args, "kind", "fact"), rawId(args),
+                   strArg(args, "query"), strArg(args, "content"),
+                   strArg(args, "subject")))
 
 proc makeUpdateSoulTool*(home: string): Tool =
   Tool(name: "update_soul",

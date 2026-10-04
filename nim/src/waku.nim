@@ -190,7 +190,8 @@ proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
   w.tools = buildRegistry(db, settings.home, settings, liveSearchFetch,
     liveGhRun, livePiSeams(settings.home, settings.provider,
       settings.model),
-    liveAppleSeams(), mcpRegistryTools(settings.home, processEnv(),
+    liveAppleSeams(), w.facts,
+    mcpRegistryTools(settings.home, processEnv(),
       getTime().toUnix(), liveStdioFactory(), liveHttpPostFn()))
   wireMemory(w, settings, db, client, bundledSkillDirs())
   if settings.graphWorkflows:

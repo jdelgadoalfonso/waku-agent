@@ -11,15 +11,16 @@ const wakuEnvNames = ["WAKU_PROVIDER", "WAKU_API_KEY", "WAKU_MODEL", "WAKU_HOME"
   # Not a `WAKU_*` var, but it lands in Settings the same way and the
   # snapshot has to cover it or a developer's real collector endpoint
   # would leak into the "unset" pin below.
-  "OTEL_EXPORTER_OTLP_ENDPOINT"]
+  "OTEL_EXPORTER_OTLP_ENDPOINT", "WAKU_SEMANTIC_STORE", "MEM0_USER_ID",
+  "MEM0_API_KEY"]
 
-proc saveEnv(): array[5, (string, bool, string)] =
+proc saveEnv(): array[8, (string, bool, string)] =
   ## Snapshot the covered vars so tests restore, never clobber, the
   ## developer's exported environment.
   for i, name in wakuEnvNames:
     result[i] = (name, existsEnv(name), getEnv(name))
 
-proc restoreEnv(saved: array[5, (string, bool, string)]) =
+proc restoreEnv(saved: array[8, (string, bool, string)]) =
   for (name, wasSet, value) in saved:
     if wasSet:
       putEnv(name, value)
@@ -52,6 +53,29 @@ suite "phase 0 config":
     var s = defaultSettings()
     s.loadFromEnv()
     assert s.otelEndpoint == "localhost:6006"
+    restoreEnv(saved)
+
+  test "WAKU_SEMANTIC_STORE names the backend, MEM0_USER_ID the person":
+    # Python: `semantic_store` from `WAKU_SEMANTIC_STORE` (config.py) and the
+    # mem0 adapter's `env_or("MEM0_USER_ID", "waku")`. The BLANK case is the
+    # one that matters: the Connections form writes optional fields even when
+    # you leave them empty, so a bare getenv would scope somebody's memory to
+    # "" and the memory would be gone with no error anywhere.
+    let saved = saveEnv()
+    for name in wakuEnvNames:
+      delEnv(name)
+    var s = defaultSettings()
+    s.loadFromEnv()
+    assert s.semanticStore == "sqlite", "no store named means the local one"
+    assert s.mem0UserId == "waku", "and the default person"
+    putEnv("WAKU_SEMANTIC_STORE", "mem0")
+    putEnv("MEM0_USER_ID", "   ")
+    s.loadFromEnv()
+    assert s.semanticStore == "mem0"
+    assert s.mem0UserId == "waku", "a blank user id is absent, not a scope"
+    putEnv("MEM0_USER_ID", "jose")
+    s.loadFromEnv()
+    assert s.mem0UserId == "jose"
     restoreEnv(saved)
 
   test "loadFromEnv respects every WAKU_* override":
