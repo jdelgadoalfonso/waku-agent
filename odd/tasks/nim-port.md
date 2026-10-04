@@ -93,6 +93,7 @@
 - `waku connect treg` (tercera puerta + state/card, spec 007 B2): 45dea75.
 - GET `/api/session` + `/embed/chat` + key `mcp_connections` (el pin blackbox comparaba contra binario viejo y escondía el gap): 0e95e01. Suite 1060 OK, cero warnings.
 - Turn receipts spec 011 A (turn_id + metered side calls + builder + surfacing + done frame): T1 22dc543, T2 8aedaca, T3 88ddf9c + esta. Suite 1090 OK, cero warnings.
+- Exporter OTLP a mano (spans, sin SDK): T1 `otelproto.nim` 2ccb4f9, T2 `otel.nim` 6110e75, T3 cableado a5a51bc, T4 docs. Spec y Log en `odd/tasks/nim-otel-exporter.md`. Decisiones del usuario: OTLP/HTTP + **protobuf** a mano (el spec hace `http/protobuf` el default y JSON es opcional en collectors), endpoint `host:port` igual que Python, espejo 1:1 de los spans de `tracing.py`.
 - Next: entrega (push + PRs en cadena por fase) y judge evals (siguen Python-only por diseño).
 
 ## Next

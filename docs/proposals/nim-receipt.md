@@ -65,10 +65,14 @@ has the bug.
 - New model calls anywhere: metering wraps calls that already happen.
 - Changing what any tool does, or any prompt text.
 - OTel span export (trace rows already carry everything a span needs:
-  turn_id, kind, model, latency via ts). When it lands it will be a
+  turn_id, kind, model, latency via ts). **Landed**, as the promised
   minimal hand-rolled OTLP/HTTP exporter on stdlib `httpclient` — there
   is no Nim OTel SDK and binding opentelemetry-cpp would break the
   zero-default-dependency rule for a protocol that is plain JSON POSTs.
+  See `odd/tasks/nim-otel-exporter.md`; it is OTLP/HTTP with a
+  hand-written protobuf body (`nim/src/otelproto.nim`), not JSON,
+  because the spec makes `http/protobuf` the default and collectors are
+  only required to speak it.
 
 ## 5. Verification
 

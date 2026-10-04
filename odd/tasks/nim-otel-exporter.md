@@ -38,10 +38,10 @@ Nombres de campo del OTLP (`opentelemetry/proto/trace/v1/trace.proto`) que hay q
 
 | # | Task | Specs | Route | Commit |
 |---|---|---|---|---|
-| T1 | `nim/src/otelproto.nim`: writer protobuf mínimo (varint, tag, length-delimited, fixed64) + `Span`/`buildRequest` que arma el `ExportTraceServiceRequest`. Puro, sin HTTP. Pines de bytes dorados en `nim/tests/test_otelproto.nim` con ids y timestamps inyectados | S2 | test-first, suite offline | work unit |
-| T2 | `nim/src/otel.nim`: parser del endpoint (mismo validador que el probe de `nim/src/dashboard.nim:2641`), árbol de spans del turno, exporter con POST `/v1/traces` `application/x-protobuf` y seams inyectados (send, clock, ids). `nim/tests/test_otel.nim`: pines del árbol de spans y del flush + un test loopback real sobre 127.0.0.1 con el precedente de `nim/tests/test_http.nim:52` que fija puerto, headers y bytes | S3, S4 | test-first, suite offline | work unit |
-| T3 | Cableado: `otelEndpoint` en `nim/src/config.nim` + `loadFromEnv`, `newTracer` recibe el endpoint, `trace.nim` abre/cierra/cierra-span por turno, `app.nim` pasa `settings.otelEndpoint`. TLS solo por `newTlsHttpClient` (gate de `nim/tests/test_tls.nim:519`). Con endpoint vacío el port se comporta exactamente como hoy | S1 | test-first, pins en `nim/tests/test_trace.nim` | work unit |
-| T4 | Docs que la unidad vuelve falsos (regla 9): `nim/README.md` (tres sitios), `docs/proposals/nim-receipt.md` §4, `odd/tasks/nim-port.md` (landing + phase list), `docs/architecture.md` si lo exige, y el mensaje de `trace.nim` | S1 | doc + pins | work unit |
+| T1 | `nim/src/otelproto.nim`: writer protobuf mínimo (varint, tag, length-delimited, fixed64) + `Span`/`buildRequest` que arma el `ExportTraceServiceRequest`. Puro, sin HTTP. Pines de bytes dorados en `nim/tests/test_otelproto.nim` con ids y timestamps inyectados | S2 | test-first, suite offline | `2ccb4f9` |
+| T2 | `nim/src/otel.nim`: parser del endpoint (mismo validador que el probe de `nim/src/dashboard.nim:2641`), árbol de spans del turno, exporter con POST `/v1/traces` `application/x-protobuf` y seams inyectados (send, clock, ids). `nim/tests/test_otel.nim`: pines del árbol de spans y del flush + un test loopback real sobre 127.0.0.1 con el precedente de `nim/tests/test_http.nim:52` que fija puerto, headers y bytes | S3, S4 | test-first, suite offline | `6110e75` |
+| T3 | Cableado: `otelEndpoint` en `nim/src/config.nim` + `loadFromEnv`, `newTracer` recibe el endpoint, `trace.nim` abre/cierra/cierra-span por turno, `app.nim` pasa `settings.otelEndpoint`. TLS solo por `newTlsHttpClient` (gate de `nim/tests/test_tls.nim:519`). Con endpoint vacío el port se comporta exactamente como hoy | S1 | test-first, pins en `test_trace.nim` (cableado) y `test_phase0.nim` (env) | `a5a51bc` |
+| T4 | Docs que la unidad vuelve falsos (regla 9): `nim/README.md` (tres sitios + una sección nueva), `docs/proposals/nim-receipt.md` §4, `odd/tasks/nim-port.md` (landing). y el mensaje de `trace.nim`, corregido en T3 con el código | S1 | doc + pines | este |
 
 ## Non-goals
 
@@ -58,6 +58,10 @@ Nombres de campo del OTLP (`opentelemetry/proto/trace/v1/trace.proto`) que hay q
 - T2: sin endpoint no se crea exporter; con endpoint, un turno emite raíz + hijos en orden y **un** POST al cerrarse; el loopback comprueba método, ruta, `Content-Type` y que el cuerpo decodifica a los spans esperados.
 - T3: `OTEL_EXPORTER_OTLP_ENDPOINT` leída de env; `newTracer` con endpoint vacío no cambia ni un byte del JSONL existente (pin de los tests de `test_trace.nim` sin tocar).
 - T4: `rg -n "OTel spans|otel" nim/README.md docs/proposals/nim-receipt.md` ya no afirma que sea trabajo futuro.
+
+Evidencia final (T1-T4): `nimble test` = **1172 OK, 0 FAILED, 56 suites, EXIT=0**, sin warnings de compilador. Las suites tocadas se compilaron además con `--forceBuild` (`test_otelproto` 23, `test_otel` 25, `test_trace` 11, `test_phase0` 7, `test_cli` 24, `test_app` 27, `test_session` 15, `test_tls` 17), porque `nimble test` puede enlazar `.o` anteriores a los fuentes. `evals/deterministic/test_rulebook.py` = 17 passed; ningún eval de Python toca `nim/`, así que la cobertura determinista de esta unidad es la suite Nim, que es la convención de todas las fases del port. `pytest evals/deterministic` completo no corre en esta máquina (falta `anthropic`), preexistente.
+
+**No verificado:** que Phoenix o un collector real acepten el payload — no hay collector offline. La evidencia más fuerte disponible es que los bytes de T1 los decodificó el `opentelemetry-proto` real (1.39.1) byte a byte, y que el POST real del test loopback de T2 lleva exactamente esos bytes con los headers correctos. Un build `-d:wakuTls -d:ssl` con un collector `https://` tampoco se probó (necesita libssl y un collector remoto).
 
 ## Log
 

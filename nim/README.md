@@ -19,8 +19,9 @@ loop, the routes, the model arena, the memory/judgment arena and the `graph`
 block in `/api/data` — flag, engine-drawn topologies, runs and quick/full
 stats from the trace events — plus `turns`/`stats` and the rest of the
 `collect()` blob the tabs read (state.db rows, db introspection, skills,
-tools, settings, providers, eval report, inline trace sections). Not landed
-yet: OTel spans.
+tools, settings, providers, eval report, inline trace sections), and OTLP
+span export (`OTEL_EXPORTER_OTLP_ENDPOINT` -> `src/otel.nim`, one POST per
+turn, hand-rolled protobuf, no SDK).
 
 ## Build and test
 
@@ -74,6 +75,25 @@ dashboard assets need anyway. From the repo root, `make nim-build` and
 `make nim-test` are those same two commands (they `cd nim` first, because the
 suite's pins read the checkout relative to the working directory).
 
+## Traces are JSONL; spans need a collector you name
+
+Every turn already writes two files under `WAKU_HOME`: `traces/<date>.jsonl`
+(what happened, in order) and `usage.jsonl` (tokens and dollars, never wiped).
+That needs nothing and stays on.
+
+Point `OTEL_EXPORTER_OTLP_ENDPOINT` at a collector and the same events also
+leave the machine as a span tree any OTel backend can draw:
+
+    phoenix serve                                                  # localhost:6006
+    OTEL_EXPORTER_OTLP_ENDPOINT=localhost:6006 ./waku chat
+
+`6006`, not `4317`: the port POSTs OTLP/HTTP to `<host>:port/v1/traces`,
+whereas Python's SDK ships the gRPC exporter, and Phoenix serves OTLP/HTTP
+on the port its own UI is on. The value is `host:port` under the same rules
+as the dashboard's `otel` connection probe, so a typo is one stderr line and
+no spans rather than a crash. One POST per turn, and a collector that is
+down costs that turn's spans and nothing else.
+
 ## The dashboard frontend is inside the binary
 
 `src/dashboard.nim` freezes `waku/ops/static/` into the executable at
@@ -103,7 +123,8 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
 
 - `waku.nimble` declares one package (stdlib plus `db_connector`).
 - `src/config.nim` defines the `Settings` object (provider, apiKey, model,
-  home) with `WAKU_PROVIDER`, `WAKU_API_KEY`, `WAKU_MODEL` and `WAKU_HOME` env overrides,
+  home, otelEndpoint) with `WAKU_PROVIDER`, `WAKU_API_KEY`, `WAKU_MODEL`,
+  `WAKU_HOME` and `OTEL_EXPORTER_OTLP_ENDPOINT` env overrides,
   a small `.env` line parser, and the cwd-walk loader (`findDotenv` /
   `loadDotenvFile` / `loadDotenv`): the `.env` is found upward from where you
   run, not where the binary lives. This ports `waku/config.py` `_load_env`.
@@ -161,8 +182,19 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
   `history_turns` window.
 - `src/app.nim` ports `app.py`: the `Waku` assembly, `respond` (capture +
   fail-open graph door + canonical-JSON meta), the bounded history window.
-- `src/trace.nim` ports `ops/tracing.py` minus OTel: JSONL traces,
-  `usage.jsonl` ledger, `compose` fanout.
+- `src/trace.nim` ports `ops/tracing.py`: JSONL traces, the `usage.jsonl`
+  ledger, `compose` fanout, and the OTLP span tree.
+- `src/otelproto.nim` is a hand-rolled protobuf writer (varint, tag,
+  length-delimited, fixed64) plus the `ExportTraceServiceRequest` tree. It
+  exists because there is no Nim OTel SDK and binding opentelemetry-cpp
+  would break the zero-dependency rule for what is plain length-delimited
+  messages; it mints nothing, so ids and timestamps stay the caller's.
+- `src/otel.nim` is the exporter itself: the `OTEL_EXPORTER_OTLP_ENDPOINT`
+  rules the dashboard's `otel` probe already applies, the span tree Python's
+  SDK builds (`agent_run` root, one zero-duration child per event,
+  `openinference.span.kind` as an attribute, `waku.<field>` holding
+  Python-shaped JSON text), and one POST to `http://host:port/v1/traces` per
+  turn. A collector that is down costs one stderr line, never the turn.
 - `src/jsondump.nim` renders `json.dumps`-shaped meta/ledger bytes and
   Python-`str()`-shaped tool args.
 - `src/graph/` ports `graph/engine.py` + `graph/nodes.py` (waves, routers,
@@ -265,7 +297,7 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
 ## What is not ported yet
 
 The hosted memory backends (supabase/mem0/zep/langmem/notion — no switch
-in `Settings`, sqlite answers honestly), OTel spans, and the evals. The
+in `Settings`, sqlite answers honestly) and the evals. The
 phase list with its
 gates lives in
 [docs/nim-port-design.md](../docs/nim-port-design.md).
