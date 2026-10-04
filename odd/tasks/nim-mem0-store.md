@@ -90,7 +90,7 @@ agente dijera "no hay facts coincidentes" con los facts en la base.
 | # | Task | Specs | Route | Commit |
 |---|---|---|---|---|
 | T1 | `nim/src/factstore.nim`: el contrato como record de closures (`Fact`, `FactId` string, `FactStore`), el adaptador `sqliteFactStore*(db)` sobre los procs que ya existen, y la **suite de conformance** `nim/tests/test_factstore.nim` corriendo contra él. Aditivo: no cambia ninguna firma existente | S3 | test-first, suite offline | work unit |
-| T2 | `nim/src/mem0.nim`: cliente REST a mano (add/search/get_all/update/delete + `settle` por estabilización) sobre `newTlsHttpClient`, con seams de reloj y de envío para testear sin red. Adaptador `mem0FactStore*` que pasa el conformance suite con un mem0 falso (loopback) | S2 | test-first, suite offline | work unit |
+| T2 | `nim/src/mem0.nim`: cliente REST a mano (add/search/get_all/update/delete + `settle` por estabilización) sobre `newTlsHttpClient`, con seams de reloj y de envío para testear sin red. Adaptador `mem0FactStore*` que pasa el conformance suite con un mem0 falso (loopback) | S2 | test-first, suite offline | `3c9d630` |
 | T3 | Cableado: `semanticStore*` en `Settings` (`WAKU_SEMANTIC_STORE`, default `sqlite`) + `MEM0_USER_ID`, el selector junto a donde se arma el `Waku`, `manageMemory` y los call sites pasan a hablar con el `FactStore` en vez de con `db`, y el dashboard serializa el id como el string opaco que ya viaja | S1, S2 | test-first, pins de dashboard y CLI | work unit |
 | T4 | Docs que la unidad vuelve falsos (regla 9): `nim/README.md` (la lista de "what is not ported yet" y la de módulos), `odd/tasks/nim-port.md` (landing) | S1 | doc + pines | work unit |
 
@@ -168,3 +168,19 @@ agente dijera "no hay facts coincidentes" con los facts en la base.
   sobre un id desconocido devuelven `false` en vez de excepción. El round-trip
   estricto queda como caso opt-in y documentado, no como una puerta que un
   servicio externo puede poner en rojo sin que nadie haya roto código.
+- **L8** (T3, decisiones de implementador): el store se construye UNA vez en
+  `newWaku` y se pasa al registro como seam. Construirlo dentro de
+  `buildRegistry` habría dado dos clientes por agente y por lo tanto dos
+  `pendingEvent`, y el que nadie polla es el que miente.
+- **L9** (T3, hueco declarado): el **dashboard todavía lee y escribe los facts
+  por `db`**, no por el store. Con mem0 elegido, la página de memoria del
+  dashboard muestra la base local, que está vacía. Es un estado visiblemente
+  incorrecto, y por eso `WAKU_SEMANTIC_STORE=mem0` sigue siendo opt-in, la
+  rama está sin pushear y esto queda anotado como follow-up (T3b) antes de
+  habilitarlo para un usuario real. Lo que sí está cableado y es el camino que
+  el agente usa cada turno: el gate de retrieval, la consolidación y la tool
+  `manage_memory`.
+- **L10** (T3, desviación del plan original): el plan ponía el cableado del
+  dashboard en la misma unidad; se partió porque los pines de `manageMemory` y
+  del selector ya exigían toda la superficie de `src/`, y agregar el dashboard
+  encima habría dejado una unidad sin verificar de forma útil.
