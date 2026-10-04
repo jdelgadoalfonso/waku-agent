@@ -21,6 +21,16 @@ esta unidad construye el contrato y el primer implementación que no es local.
   > pasando el string verbatim — el mismo criterio que el docstring: nunca
   > parsees el id de otro backend.
 
+- **S4** (decisión del usuario, verbatim — contra qué versión de la API se
+  escribe el cliente, contestada después de encontrar que la v3 eliminó
+  `infer`):
+  > **v3 en todo, como el SDK** — "add `POST /v3/memories/add/` async ->
+  > event_id / search `POST /v3/memories/search/` {query, user_id} / all
+  > `POST /v3/memories/` paginado / update `PUT /v1/memories/{id}/` / delete
+  > `DELETE /v1/memories/{id}/`". Acepta que `infer:false` no existe, que
+  > `add()` deja de garantizar que el fact quede guardado, y que "el
+  > conformance suite puede no ser cumplible tal cual".
+
 ## Contrato a espejar (ground truth: `waku/memory/semantic/`)
 
 `base.py` es un `Protocol`, no una clase base: en Nim se traduce a un record de
@@ -43,28 +53,37 @@ costaron un bug cada una: **nunca levantar ante un miss**; **los ids son
 mentira silenciosa** — el `hasattr(search_with_ids, else [])` hacía que el
 agente dijera "no hay facts coincidentes" con los facts en la base.
 
-## Qué necesita mem0 (de `mem0_store.py`)
+## Qué necesita mem0 (contra la v3 que S4 elige)
 
-- Servicio hosted `api.mem0.ai` con `MEM0_API_KEY`; `MEM0_USER_ID` con default
-  `"waku"` y **valor vacío tratado como ausente** (`env_or`, no `getenv`: el
-  form de Connections escribe los campos opcionales aunque los dejes en
-  blanco, así que un `MEM0_USER_ID=''` debe caer al default y no dejar la
-  memoria de la persona huérfana en un id generado).
-- `infer=False`, y no por simplificación: con inferencia un `add()` puede
-  decidir que una frase no vale la pena y `add` se vuelve no-op, lo que rompe
-  la promesa del contrato. El docstring lo dice sin rodeos: un bake-off con
-  este adaptador mide la **recuperación** de mem0, no su extracción.
+- Servicio hosted `api.mem0.ai` con `MEM0_API_KEY` (header
+  `Authorization: Token <key>`); `MEM0_USER_ID` con default `"waku"` y **valor
+  vacío tratado como ausente** (`env_or`, no `getenv`: el form de Connections
+  escribe los campos opcionales aunque los dejes en blanco, así que un
+  `MEM0_USER_ID=''` debe caer al default y no dejar la memoria de la persona
+  huérfana en un id generado).
+- Las rutas, tal como las usa el SDK pineado (`mem0ai 2.2.0`):
+  `POST /v3/memories/add/`, `POST /v3/memories/search/`, `POST /v3/memories/`
+  (POST, no GET, y paginado con `page`/`page_size`), `PUT /v1/memories/{id}/`
+  y `DELETE /v1/memories/{id}/`. Es la misma mezcla v3/v1 que hace el SDK: la
+  v3 cubre add/search/get_all y la v1 sigue sirviendo update y delete.
+- **`infer=False` ya no existe** (S4). La v3 es el *additive pipeline*:
+  extracción con LLM en una llamada, sin UPDATE ni DELETE, y **asíncrona**.
+  Consecuencia asumida: `add()` pasa a significar "encolado para extracción",
+  no "guardado y buscable".
 - Waku separa sujeto y contenido; mem0 guarda un blob. El ida y vuelta es
   `"subject: content"` con el sujeto en minúscula, y `_unpack` parte por
   `": "`.
-- `settle` **espera a que el conteo se estabilice** (3 lecturas iguales, cada
-  2s, hasta 120s) porque mem0 no tiene ninguna señal de readiness: `add()`
-  vuelve en menos de un segundo y la fila aparece ~14s después. Esperar un
-  conteo objetivo también está mal: con `infer` el servicio decide cuántas
-  memorias son tus frases.
-- Tolerancia de forma: la API devuelve lista suelta o `{"results": [...]}` o
-  `{"memories": [...]}` según versión. Fijarse a una rompe el día que sube el
-  SDK, y un benchmark que se rompe por un bump menor no sirve.
+- `settle()` **mejora** con la v3: `add` devuelve un `event_id` consultable en
+  `GET /v1/event/{event_id}/`, así que "settled" se puede preguntar en vez de
+  inferido. Es la primera señal de readiness real de esta integración, y
+  reemplaza el conteo estabilizado del adaptador de Python (3 lecturas iguales
+  cada 2s) porque ahí no había nada mejor. Con `event_id` pendiente se pollea
+  hasta que el evento termina; sin evento pendiente —el caso del contestante
+  de control del arena, que no siembra nada— `settle` responde `true` de
+  inmediato.
+- Tolerancia de forma: se acepta lista suelta o `{"results": [...]}` o
+  `{"memories": [...]}`. Fijarse a una rompe el día que sube el SDK, y un
+  benchmark que se rompe por un bump menor no sirve.
 
 ## Tasks
 
@@ -99,10 +118,11 @@ agente dijera "no hay facts coincidentes" con los facts en la base.
   `settle` que significa buscable, `settle` seguro en store vacío), más el
   test que se vigila a sí mismo: **todo método del contrato tiene que estar
   ejercitado en la suite**, o el contrato se ensancha en silencio.
-- **T2**: el cliente se prueba contra un servidor loopback que Asserta método,
-  ruta, headers y cuerpo de cada llamada (incluido `infer: false`), y el
-  `settle` con un reloj inyectado y una secuencia de conteos que se estabiliza
-  a la tercera, más el caso de timeout y el de excepción.
+- **T2**: el cliente se prueba contra un servidor loopback que asserte método,
+  ruta, headers y cuerpo de cada llamada (incluido que `add` NO manda `infer`),
+  y el `settle` con un reloj inyectado contra un evento que el fake reporta
+  pendiente y luego terminado, más el caso de timeout, el de evento ya listo
+  y el de excepción.
 - **T3**: con `WAKU_SEMANTIC_STORE=mem0` el `Waku` arma el store remoto y con
   cualquier otro valor (o ninguno) el sqlite, byte-idéntico a hoy. El pin del
   id opaco: el dashboard lo manda como string y el tool lo devuelve verbatim.
@@ -130,3 +150,21 @@ agente dijera "no hay facts coincidentes" con los facts en la base.
   vive al lado de los procs con `db` que ya existen, y el adaptador sqlite es
   una capa fina encima. Ninguna firma existente cambia hasta T3, que es la
   unidad invasiva y por eso va sola.
+- **L6** (hallazgo que forzó la pregunta): el SDK pineado ya no habla v1. En
+  `mem0ai 2.2.0`, `add` postea a `/v3/memories/add/`, `search` a
+  `/v3/memories/search/` y `get_all` a `/v3/memories/` por POST; `update` y
+  `delete` siguen en v1. Consecuencia que conviene mirar aparte: el adaptador
+  de Python pasa `infer=False` a `client.add(...)`, pero si la v3 ya no honra
+  ese flag, la garantía que su docstring promete ("`add` promete guardar
+  esto") **no la está cumpliendo nadie aguas arriba**. No lo arregla esta
+  unidad — es un hallazgo para Python — pero es la razón por la que S4 se
+  tomó con los ojos abiertos y no por ser la última versión.
+- **L7** (decisión de implementador, consecuencia de S4): con la v3, el
+  conformance suite no puede prometer round-trip estricto contra mem0 real sin
+  una salvedad. Contra el fake loopback sí (el fake cumple lo que la v3
+  promete); contra el servicio de verdad el caso se gatea detrás de
+  `WAKU_TEST_MEM0=1` y su aserción se centra en lo que la v3 sí garantiza:
+  que `add` encoló un evento, que `settle` lo espera, y que `update`/`delete`
+  sobre un id desconocido devuelven `false` en vez de excepción. El round-trip
+  estricto queda como caso opt-in y documentado, no como una puerta que un
+  servicio externo puede poner en rojo sin que nadie haya roto código.

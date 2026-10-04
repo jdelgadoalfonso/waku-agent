@@ -28,10 +28,14 @@ import db_connector/db_sqlite
 import ../src/db
 import ../src/factstore
 
+import factstore_fakes
+
 const
-  backends = ["sqlite"]
-    ## Every backend in this build. A hosted one joins here when it has a fake
-    ## that can answer the wire; the suite itself never grows a conditional.
+  backends = ["sqlite", "mem0-fake"]
+    ## Every backend in this build. `mem0-fake` is the stateful fake in
+    ## `factstore_fakes.nim`, so the hosted contract is a gate that always
+    ## runs and never reaches a network. Adding a real backend means adding
+    ## its factory here; the suite itself never grows a conditional.
 
   contractMethods = [
     # (name in Python, field name here) — read off the contract, not off the
@@ -54,6 +58,8 @@ proc freshStore(name, tag: string): tuple[store: FactStore, db: DbConn,
   case name
   of "sqlite":
     result.store = sqliteFactStore(result.db)
+  of "mem0-fake":
+    result.store = mem0FakeStore()
   else:
     raise newException(ValueError, "no fake for backend: " & name)
 
@@ -120,8 +126,9 @@ suite "the FactStore contract":
     for name in backends:
       let f = freshStore(name, "update")
       f.store.add("elon", "The launch is in March", "user")
-      let rid = f.store.searchWithIds("elon launch", 8)[0].id
-      discard f.store.update(rid, "The launch is in June", "")
+      let rows = f.store.searchWithIds("elon launch", 8)
+      assert rows.len > 0, name & ": found nothing it just stored"
+      discard f.store.update(rows[0].id, "The launch is in June", "")
       var june = false
       for hit in f.store.search("elon launch", 4):
         if "June" in hit:
@@ -138,8 +145,9 @@ suite "the FactStore contract":
     for name in backends:
       let f = freshStore(name, "subject")
       f.store.add("Tom Holland", "cannot keep a secret", "user")
-      let rid = f.store.searchWithIds("Tom Holland", 8)[0].id
-      discard f.store.update(rid, "cannot keep a quiet one", "")
+      let before = f.store.searchWithIds("Tom Holland", 8)
+      assert before.len > 0, name & ": found nothing it just stored"
+      discard f.store.update(before[0].id, "cannot keep a quiet one", "")
       let rows = f.store.searchWithIds("Tom Holland", 8)
       assert rows.len > 0, name & ": the fact went missing"
       if rows.len > 0:
@@ -151,8 +159,9 @@ suite "the FactStore contract":
     for name in backends:
       let f = freshStore(name, "delete")
       f.store.add("tom", "Tom Holland cannot keep a secret", "user")
-      let rid = f.store.searchWithIds("tom holland secret", 8)[0].id
-      assert f.store.delete(rid) == true, name & ": delete said False"
+      let rows = f.store.searchWithIds("tom holland secret", 8)
+      assert rows.len > 0, name & ": found nothing it just stored"
+      assert f.store.delete(rows[0].id) == true, name & ": delete said False"
       var still = false
       for hit in f.store.search("tom holland secret", 4):
         if "secret" in hit:
