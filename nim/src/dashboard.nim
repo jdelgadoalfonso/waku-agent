@@ -2475,7 +2475,8 @@ proc donePayload*(box: WakuBox, res: LoopResult, gate, cons, route,
      "tools": tools, "consolidation": consObj,
      "iterations": res.iterations, "latency_ms": latencyMs,
      "model": (if quick: box.waku.settings.smallModel
-                 else: box.waku.settings.model)}
+                 else: box.waku.settings.model),
+     "receipt": res.receipt}
 
 type
   SlashConnectFn* = proc(arg, home: string): string {.closure.}

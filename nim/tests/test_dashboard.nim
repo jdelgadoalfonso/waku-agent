@@ -12,9 +12,12 @@ import std/unittest
 
 import db_connector/db_sqlite
 
+import ../src/app
 import ../src/catalog
+import ../src/config
 import ../src/dashboard
 import ../src/db
+import ../src/loop
 import ../src/integrations
 import ../src/memory
 import ../src/pricing
@@ -876,6 +879,25 @@ suite "phase 8b chat/stream and graph/stream":
     assert frameKind(frames[1]) == "done"
     assert parseJson(frames[1][6 .. ^3])["reply"].getStr() == "hi"
     removeDir(root)
+
+  test "the done frame carries the turn receipt, or null without one":
+    # Like Python's `getattr(result, "receipt", None)`: a turn that went
+    # through `respond` names its dollars, an older literal stays null.
+    var res = LoopResult(reply: "hi", toolCalls: @[], iterations: 1)
+    res.receipt = buildReceipt(
+      @[("llm", %*{"usage": {"in": 10, "out": 2}})], "anthropic")
+    let box = WakuBox(waku: Waku(settings: Settings(provider: "anthropic",
+      model: "m", smallModel: "mini")))
+    let done = donePayload(box, res, newJNull(), newJNull(), newJNull(),
+      newJNull(), 5)
+    assert done["reply"].getStr() == "hi"
+    assert done["receipt"] == res.receipt
+    assert done["receipt"]["model"]["in"].getInt() == 10
+    assert done["model"].getStr() == "m"
+    let bare = donePayload(box,
+      LoopResult(reply: "hi", toolCalls: @[], iterations: 1),
+      newJNull(), newJNull(), newJNull(), newJNull(), 5)
+    assert bare["receipt"].kind == JNull
 
   test "a dying turn ends the stream with a done error":
     let root = freshDir("waku-dash-csboom")

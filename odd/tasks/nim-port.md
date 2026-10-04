@@ -92,6 +92,7 @@
 - MCP stdio: sin lectura tras notificaciones (bloqueo contra `engram mcp` en vivo): d66e40c, test_mcp 82 OK.
 - `waku connect treg` (tercera puerta + state/card, spec 007 B2): 45dea75.
 - GET `/api/session` + `/embed/chat` + key `mcp_connections` (el pin blackbox comparaba contra binario viejo y escondía el gap): 0e95e01. Suite 1060 OK, cero warnings.
+- Turn receipts spec 011 A (turn_id + metered side calls + builder + surfacing + done frame): T1 22dc543, T2 8aedaca, T3 88ddf9c + esta. Suite 1090 OK, cero warnings.
 - Next: entrega (push + PRs en cadena por fase) y judge evals (siguen Python-only por diseño).
 
 ## Next
