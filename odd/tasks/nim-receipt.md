@@ -16,7 +16,9 @@ Three units in order, one work-unit commit each, no push.
   L2: judge queda con notify=nil en el seam vivo (el grading de arena
   emite por SSE fuera de todo tracer); meteredClient + gate/consolidation/
   triage/quick cableados al observer del turno.
-- [ ] T2 (S3): receipt.nim builder + pins — route: implement + nimble test
+- [x] T2 (S3): receipt.nim builder + pins — worker-built, parent review
+  found the input shape wrong ("type" field vs oracle's (kind, ev)
+  pairs); corrected before commit. Judge con notify=nil (ver T1 L2).
 - [ ] T3 (S4): surfacing in app/turnSection — route: implement + nimble test
 
 ## Log
