@@ -1381,6 +1381,92 @@ suite "phase 8a pinned-but-later GET branches":
     assert "unknown api path" in body
     removeDir(root)
 
+suite "phase 8a hosted front-door GETs":
+  proc seedSessions(root: string) =
+    let db = connectDb(root)
+    let now = format(getTime().utc, "yyyy-MM-dd HH:mm:ss")
+    db.exec(sql("INSERT INTO chat_log (role, content, session_id, source, " &
+      "created_at) VALUES ('user', 'hello   world', 'dashboard-keep', " &
+      "'dashboard', '" & now & "')"))
+    db.exec(sql("INSERT INTO chat_log (role, content, session_id, source, " &
+      "created_at) VALUES ('assistant', 'hi', 'dashboard-keep', " &
+      "'dashboard', '" & now & "')"))
+    db.exec(sql("INSERT INTO chat_log (role, content, session_id, source, " &
+      "created_at) VALUES ('user', 'other', 's-2', 'cli', " &
+      "'2026-09-01 00:00:01')"))
+    db.close()
+
+  test "session list reads the conversations and the current thread":
+    let root = freshDir("waku-dash-getsession-list")
+    seedSessions(root)
+    let (status, ctype, body) = handleGet(testDeps(root, root),
+      "/api/session?action=list")
+    assert status == 200
+    assert ctype == "application/json"
+    let node = parseJson(body)
+    assert node["ok"].getBool()
+    assert node["conversations"].len == 2
+    assert node["conversations"][0]["id"].getStr() == "dashboard-keep"
+    assert node["conversations"][0]["title"].getStr() == "hello world"
+    assert node["conversations"][0]["messages"].getInt() == 2
+    assert node["current"].getStr() == "dashboard-keep"
+    removeDir(root)
+
+  test "session history and state read without touching the agent":
+    let root = freshDir("waku-dash-getsession-state")
+    seedSessions(root)
+    let d = testDeps(root, root)
+    let hist = parseJson(handleGet(d, "/api/session?action=history&id=s-2")[2])
+    assert hist["ok"].getBool()
+    assert hist["session_id"].getStr() == "s-2"
+    assert hist["history"].len == 1
+    let st = parseJson(handleGet(d, "/api/session?action=state")[2])
+    assert st["ok"].getBool()
+    assert st["sessions"].len == 2
+    assert st["current_session"].getStr() == "dashboard-keep"
+    for k in ["provider", "model", "small_model", "pinned",
+        "disabled_providers"]:
+      assert st["settings"].hasKey(k), k
+    removeDir(root)
+
+  test "session writes stay POST-only on GET":
+    let root = freshDir("waku-dash-getsession-ro")
+    let d = testDeps(root, root)
+    for target in ["/api/session", "/api/session?action=delete",
+        "/api/session?action=new"]:
+      let (status, ctype, body) = handleGet(d, target)
+      assert status == 200, target
+      assert ctype == "application/json", target
+      assert "reads only: action=list, history or state" in body, target
+    removeDir(root)
+
+  test "embed chat stamps origins and an allowlisted theme":
+    let root = freshDir("waku-dash-embed")
+    let web = root / "static"
+    createDir(web)
+    writeFile(web / "embed.html",
+      "<html@@THEME@@><body data-embed-origins=\"@@EMBED_ORIGINS@@\">x")
+    let d = testDeps(root, web)
+    let (status, ctype, body) = handleGet(d, "/embed/chat")
+    assert status == 200
+    assert ctype == "text/html; charset=utf-8"
+    assert "https://www.waku.one" in body
+    assert "data-theme" notin body
+    assert "@@" notin body
+    let themed = handleGet(d, "/embed/chat?theme=dark")[2]
+    assert "<html data-theme=\"dark\">" in themed
+    let evil = handleGet(d, "/embed/chat?theme=evil")[2]
+    assert "data-theme" notin evil
+    removeDir(root)
+
+  test "embed chat 404s without the page, like a missing index":
+    let root = freshDir("waku-dash-embed404")
+    let web = root / "static"
+    createDir(web)
+    let (status, _, _) = handleGet(testDeps(root, web), "/embed/chat")
+    assert status == 404
+    removeDir(root)
+
 suite "phase 8b server loop":
   test "pickPort walks past busy ports, ten tries only":
     let taken = proc(port: int): bool = port in [7777, 7778]

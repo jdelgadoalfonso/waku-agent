@@ -125,11 +125,13 @@ const
 
   pythonPinnedGet* = [
     "/api/data",
+    "/api/session",
     "/api/models",
     "/api/events",
     "/api/reveal",
     "/api/compare/history",
     "/static/",
+    "/embed/chat",
     "/api/judgment-arena",
     "/api/memory-arena",
     "/api/memory-arena/stores",
@@ -275,12 +277,13 @@ type
 
 proc readGetRoutes*(): seq[string] =
   ## The served GET API surface (8a reads + the 8b `reveal` side effect +
-  ## the 8c compare history + the 8d arena GETs). Each MUST be in
-  ## `pythonPinnedGet` (there is a test) — the surface is pinned, 8d only
-  ## turns the last three from 501s into real answers.
-  @["/api/data", "/api/models", "/api/events", "/api/reveal",
-    "/api/compare/history", "/api/judgment-arena", "/api/memory-arena",
-    "/api/memory-arena/stores"]
+  ## the 8c compare history + the 8d arena GETs + the hosted-front-door
+  ## session reads). Each MUST be in `pythonPinnedGet` (there is a test).
+  ## Static paths (`/`, `/static/`, `/embed/chat`) are served too but
+  ## walk the checkout, not this list — like Python's trailing `else`.
+  @["/api/data", "/api/session", "/api/models", "/api/events",
+    "/api/reveal", "/api/compare/history", "/api/judgment-arena",
+    "/api/memory-arena", "/api/memory-arena/stores"]
 
 proc readPostRoutes*(): seq[string] =
   ## The served POST API surface (8b routes + the 8c compare trio + the
@@ -822,6 +825,18 @@ proc settingsInfo*(d: DashboardDeps): JsonNode =
       ["1", "true", "yes"],
   }
 
+proc sessionIdleMinutes*(env: Table[string, string]): int =
+  ## The dashboard-thread freshness window (`WAKU_SESSION_IDLE_MINUTES`,
+  ## 60 like Python): resume the most recent dashboard thread only while
+  ## it is still fresh, else mint a new dated one.
+  let raw = env.getOrDefault("WAKU_SESSION_IDLE_MINUTES", "").strip()
+  if raw.len > 0:
+    try:
+      return parseInt(raw)
+    except ValueError:
+      discard
+  60
+
 proc stateRows*(home: string): JsonNode =
   ## Everything in Python `collect()` that reads state.db and the home
   ## files: facts, sqlite episodes, calendar, outbox, SOUL, chat counters
@@ -1209,15 +1224,7 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
     d.providers)
   let state = stateRows(d.home)
   let db = connectDb(d.home)
-  let idleMin = block:
-    let raw = d.env.getOrDefault("WAKU_SESSION_IDLE_MINUTES", "").strip()
-    var minutes = 60
-    if raw.len > 0:
-      try:
-        minutes = parseInt(raw)
-      except ValueError:
-        discard
-    minutes
+  let idleMin = sessionIdleMinutes(d.env)
   # The consolidation cadence, env-read like `loadSettings` (the deps
   # carry no Settings object, only the injected env table — which also
   # makes it pinnable in tests). Default 6, like Python.
@@ -1245,6 +1252,7 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
               "total_out": usage.totalOut, "total_cost": usage.totalCost,
               "by_day": byDay, "by_provider": byProvider},
     "connections": conns,
+    "mcp_connections": %*[tregCard(d.home)],
     "trace": traceInfo,
     "graph": graphSection(d.home, graphOn),
     "turns": turns,
@@ -1337,6 +1345,12 @@ proc revealTarget*(home, rel: string, env: Table[string, string],
   %*{"ok": true, "revealed": target}
 
 # ---------------------------------------------------------------------------
+proc sessionAction*(d: DashboardDeps, payload: JsonNode): JsonNode
+proc embedPage*(staticDir, theme: string): (bool, string)
+  ## Forward declarations: both are defined below beside their
+  ## siblings (`sessionAction` with the POST mutations, `embedPage`
+  ## with the static servers), but `handleGet` answers their routes.
+
 proc handleGet*(d: DashboardDeps, target: string): (int, string, string) =
   ## Pure GET dispatch. Returns `(status, contentType, body)`; the HTTP
   ## layer adds framing (Content-Length, no-cache on statics, SSE for
@@ -1420,13 +1434,35 @@ proc handleGet*(d: DashboardDeps, target: string): (int, string, string) =
     except CatchableError as exc:
       return (200, "application/json", $ %*[{"store": "?",
         "error": $exc.name & ": " & exc.msg}])
+  if path == "/api/session":
+    # The two reads of chat history for the hosted front door (spec
+    # 007 D): ?action=list, history&id or state. Writes (new, switch)
+    # stay POST-only — anything else answers the reads-only error.
+    let action = query.getOrDefault("action", "").strip()
+    if action in ["list", "history", "state"]:
+      return (200, "application/json", $sessionAction(d,
+        %*{"action": action, "id": query.getOrDefault("id", "")}))
+    return (200, "application/json", $(%*{"error": "GET /api/session " &
+      "reads only: action=list, history or state"}))
   if path.startsWith("/api/"):
-    # A pinned-but-later GET (the 8d arenas): honest 501, not a silent
-    # index render — the browser must not mistake the SPA shell for data.
+    # Safety net, not a state: every pinned GET is served above, so this
+    # fires only for a path added to `pythonPinnedGet` without its route
+    # (the pin comparing the two sets names it). Never the SPA shell as
+    # data — the browser must not mistake it for an answer.
     if path in pythonPinnedGet:
       return (501, "application/json",
         $ %*{"error": "not yet implemented in the Nim port: " & path})
     return (404, "application/json", $ %*{"error": "unknown api path"})
+  if path == "/embed/chat":
+    # The chat column alone for waku.one to frame (spec 008): the page
+    # posts outward only to the origins stamped into it, and `?theme=`
+    # paints first paint. No-cache like Python — the console must see
+    # edits, and the HTTP layer owns that header.
+    let (found, page) = embedPage(d.staticDir,
+      query.getOrDefault("theme", "").strip())
+    if not found:
+      return (404, "text/plain", "not found")
+    return (200, "text/html; charset=utf-8", page)
   return serveIndex(d.staticDir)
 
 proc bindHost*(env: Table[string, string]): string =
@@ -1719,6 +1755,55 @@ proc threadHistory*(home, sid: string): JsonNode =
   finally:
     db.close()
 
+proc conversationList*(db: DbConn): JsonNode =
+  ## Port of `session_list` in `waku/ops/dashboard.py`: one row per
+  ## conversation (id, first-user-message title, message count, newest
+  ## first) for the history picker and the GET `/api/session` reads.
+  ## Sessions are just a label on `chat_log` rows — no new storage.
+  proc cell(row: Row, i: int): string =
+    if i < row.len: row[i] else: ""
+  result = newJArray()
+  for g in db.getAllRows(sql("SELECT session_id, COUNT(*) AS messages, " &
+      "MAX(created_at) AS last_at FROM chat_log GROUP BY session_id " &
+      "ORDER BY last_at DESC")):
+    let sid = cell(g, 0)
+    let first = db.getRow(sql("SELECT content FROM chat_log WHERE " &
+      "session_id=? AND role='user' ORDER BY id LIMIT 1"), sid)
+    let title = if first.len > 0: first[0].splitWhitespace().join(" ")
+      else: ""
+    result.add(%*{"id": sid, "title": title,
+      "messages": parseInt(cell(g, 1)), "last_at": cell(g, 2)})
+
+const embedOrigins* = ["https://www.waku.one", "https://waku.one",
+  "https://dev.waku.one"]
+    ## Who may frame `/embed/chat`. Port of Python's `EMBED_ORIGINS`:
+    ## locally nothing sends the gateway's `X-Waku-Embed-Origins` header
+    ## and Python defaults to exactly these three, so the binary serves
+    ## the same default. The gateway-carried header stays Python-only —
+    ## `handleGet` answers from deps, never from request headers.
+
+proc embedPage*(staticDir, theme: string): (bool, string) =
+  ## The framed chat column (`static/embed.html`, spec 008) with the
+  ## embed origins stamped in and `?theme=light|dark` painted on `<html>`
+  ## before first paint. From the checkout when one is configured, else
+  ## from the compile-time embed; a missing page 404s like `serveIndex`.
+  var page = ""
+  if staticDir.len == 0:
+    let (embedded, body) = embeddedAsset("embed.html")
+    if not embedded:
+      return (false, "")
+    page = body
+  else:
+    let target = staticDir / "embed.html"
+    if not fileExists(target):
+      return (false, "")
+    page = readFile(target)
+  let attr = if theme in ["light", "dark"]: " data-theme=\"" &
+      theme & "\"" else: ""
+  return (true, page.replace("@@EMBED_ORIGINS@@",
+    embedOrigins.join(" ")).replace("<html@@THEME@@>",
+    "<html" & attr & ">"))
+
 proc sessionAction*(d: DashboardDeps, payload: JsonNode): JsonNode =
   ## Port of `session_action`. `history` is a direct db read (safe to
   ## poll live — it never touches the agent). `new`/`switch` mutate the
@@ -1726,6 +1811,25 @@ proc sessionAction*(d: DashboardDeps, payload: JsonNode): JsonNode =
   ## browser-agent lock pattern as a seam); without one, `new` still
   ## mints a dated thread and `switch` loads its history read-only.
   let action = jsonStr(payload.jget("action"))
+  if action == "list":
+    let dbL = connectDb(d.home)
+    let conv = conversationList(dbL)
+    let cur = dashboardSession(dbL, toUnix(getTime()) * 1000,
+      sessionIdleMinutes(d.env))
+    dbL.close()
+    return %*{"ok": true, "conversations": conv, "current": cur}
+  if action == "state":
+    let dbS = connectDb(d.home)
+    let conv = conversationList(dbS)
+    let cur = dashboardSession(dbS, toUnix(getTime()) * 1000,
+      sessionIdleMinutes(d.env))
+    dbS.close()
+    let info = settingsInfo(d)
+    return %*{"ok": true, "sessions": conv, "current_session": cur,
+      "settings": {"provider": info["provider"],
+        "model": info["model"], "small_model": info["small_model"],
+        "pinned": info["pinned"],
+        "disabled_providers": info["disabled_providers"]}}
   if action == "history":
     let sid = jsonStr(payload.jget("id"))
     let sidOr = if sid.len > 0: sid else: "default"
