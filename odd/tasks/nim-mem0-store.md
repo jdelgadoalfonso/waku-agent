@@ -202,3 +202,13 @@ agente dijera "no hay facts coincidentes" con los facts en la base.
   que no cuesta nada porque lo único que un cliente de mem0 arrastra entre
   llamadas (el `event_id` pendiente) es de `settle`, y `settle` lo pide el
   memory arena, que sí tiene su store de larga vida.
+
+- **L13** (cierre, T1-T4): suite completa **1212 OK, 0 FAILED, 59 suites, cero
+  warnings**. T4 dejó de decir que mem0 no está portado y añadió la sección
+  "Facts can live in mem0 instead of sqlite" al README, con los dos env vars, el
+  default de `MEM0_USER_ID` y las dos salvedades que vienen de la API (v3 no
+  garantiza que `add` guarde; `settle` sí gained una señal real). Evidencia de
+  lo que NO se verificó: nada de esta unidad tocó la red — no hay una llamada a
+  `api.mem0.ai` en ningún test, por diseño (escribiría facts de prueba en la
+  cuenta real de alguien), y el conformance contra el servicio de verdad queda
+  detrás de `WAKU_TEST_MEM0=1` como en Python.

@@ -96,5 +96,7 @@
 - Exporter OTLP a mano (spans, sin SDK): T1 `otelproto.nim` 2ccb4f9, T2 `otel.nim` 6110e75, T3 cableado a5a51bc, T4 docs. Spec y Log en `odd/tasks/nim-otel-exporter.md`. Decisiones del usuario: OTLP/HTTP + **protobuf** a mano (el spec hace `http/protobuf` el default y JSON es opcional en collectors), endpoint `host:port` igual que Python, espejo 1:1 de los spans de `tracing.py`.
 - Next: entrega (push + PRs en cadena por fase) y judge evals (siguen Python-only por diseño).
 
+- Backend de memoria hosted **mem0** (store semántico): T1 `factstore.nim` 7264d0c, T2 `mem0.nim` 3c9d630, T3 cableado 12247b9, T3b dashboard de23749. Spec y Log en `odd/tasks/nim-mem0-store.md`. Decisiones del usuario: REST a mano con cero dependencias, `Fact.id` a string, y la API v3 como la habla el SDK pineado (que eliminó `infer`).
+
 ## Next
 - Entrega: push de `feature/nim-phase0-skeleton` + PRs en cadena por fase. `docs/proposals/nim-port.md` ya cumplió su rol (fases 0-9 commiteadas).

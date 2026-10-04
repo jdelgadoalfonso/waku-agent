@@ -75,6 +75,33 @@ dashboard assets need anyway. From the repo root, `make nim-build` and
 `make nim-test` are those same two commands (they `cd nim` first, because the
 suite's pins read the checkout relative to the working directory).
 
+## Facts can live in mem0 instead of sqlite
+
+Nothing to do by default: facts go to `state.db`, keyword search and all. Name
+a hosted backend and the same seven operations go over REST instead — the
+retrieval gate, the consolidation and `manage_memory` all read and write
+whichever store answered, and the dashboard's memory page shows the same ones.
+
+    export WAKU_SEMANTIC_STORE=mem0
+    export MEM0_API_KEY=m0-...        # required; without it, sqlite + a line
+    export MEM0_USER_ID=waku          # optional; BLANK falls back to this
+
+No SDK and no new dependency: `src/mem0.nim` speaks the API by hand over the
+same HTTP helper the MCP bridge and the OTLP exporter use.
+
+Two honest caveats, both from the API rather than from this port. The v3
+pipeline that the pinned SDK uses has no `infer` flag, so `add` means "queued
+for extraction", not "stored and findable" — a sentence mem0 decides is not
+worth remembering will not come back on `search`. What *is* better is
+`settle()`: `add` returns an `event_id` the client polls, so "is it searchable
+yet" is a question with an answer instead of a row count watched until it
+stops moving.
+
+Episodic memory stays on sqlite — that is what Python's selector does too. And
+a fact's id is now an opaque string (`"1"` locally, a UUID on a hosted store),
+which the dashboard's JSON already carried as a token the JS posts back
+verbatim.
+
 ## Traces are JSONL; spans need a collector you name
 
 Every turn already writes two files under `WAKU_HOME`: `traces/<date>.jsonl`
@@ -137,6 +164,16 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
 - `src/memory.nim` ports the semantic/episodic stores: the `_fts_query`
   parity gate (32 ground-truth vectors from the live Python function) plus
   the `Fact`/`Episode` CRUD with identical SQL, limits and output formats.
+- `src/factstore.nim` is the `FactStore` contract every semantic backend has
+  to honour, as a record of required function fields, plus the sqlite adapter
+  over the procs above. Seven methods; ids are opaque strings; a miss returns
+  empty and never raises; `settle()` means searchable rather than written.
+- `src/mem0.nim` is the hosted backend by hand — no SDK, no dependency, over
+  `http.nim`'s one helper — against the API generation the pinned `mem0ai`
+  SDK speaks (v3 for add/search/get_all, v1 for update/delete). It is opt-in:
+  `WAKU_SEMANTIC_STORE=mem0` plus `MEM0_API_KEY`, with `MEM0_USER_ID` scoping
+  the person (default `waku`, and a BLANK value falls back to the default —
+  the Connections form writes optional fields even when you leave them empty).
 - `src/wire.nim` bridges the loop's Anthropic-shape messages to OpenAI
   chat.completions (request build, response shaping, thought_signature
   echo, max_tokens retry rule).
@@ -296,8 +333,10 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
 
 ## What is not ported yet
 
-The hosted memory backends (supabase/mem0/zep/langmem/notion — no switch
-in `Settings`, sqlite answers honestly) and the evals. The
+The other hosted memory backends (supabase/zep/langmem, and notion for
+episodes) — mem0 landed first, and a value the selector does not recognise
+falls back to sqlite with a line on stderr rather than refusing. And the
+evals. The
 phase list with its
 gates lives in
 [docs/nim-port-design.md](../docs/nim-port-design.md).
