@@ -1,13 +1,17 @@
-## Turn ids and metered side calls (spec 011 group A, units T1).
+## Turn ids and metered side calls (spec 011 group A, units T1), and the
+## OTLP exporter wiring (spec: odd/tasks/nim-otel-exporter.md).
 ##
 ## Offline only: temp homes, no model calls — the tracer writes files,
-## never sockets.
+## never sockets. The span pins inject a capturing `send`, so no test in
+## this file opens a connection to anything.
 
 import std/json
 import std/os
 import std/strutils
 import std/unittest
 
+import ../src/otel
+import ../src/otelproto
 import ../src/trace
 
 proc freshHome(name: string): string =
@@ -21,6 +25,8 @@ proc readLines(path: string): seq[JsonNode] =
   for line in readFile(path).strip().splitLines():
     if line.strip().len > 0:
       result.add(parseJson(line))
+
+proc attrs(s: Span): seq[(string, string)] = s.attributes
 
 suite "turn ids":
   test "mintTurnId is t_ plus 16 hex":
@@ -90,4 +96,90 @@ suite "metered ledger rows":
     t.endTurn("yo", 1)
     assert readLines(t.path).len == 2
     assert not fileExists(home / "usage.jsonl")
+    removeDir(home)
+
+suite "the tracer wired to a collector":
+  test "one POST per turn, carrying the root and every event in order":
+    # The wire contract, seen from the tracer: `turn` opens the root,
+    # every traced event appends a child, and `endTurn` sends the lot
+    # once. Nothing else flushes, so a long turn is still one request.
+    let home = freshHome("waku-trace-wired")
+    var t = newTracer(home, "openrouter", "m", "localhost:6006")
+    var sent: seq[Span] = @[]
+    var calls = 0
+    t.otel.send = proc(url, body: string): ExportResult =
+      inc calls
+      assert url == "http://localhost:6006/v1/traces"
+      sent = t.otel.spans
+      (ok: true, detail: "")
+    t.turn("hola")
+    t.event("llm", %*{"usage": %*{"in": 10, "out": 2}})
+    t.event("tool", %*{"tool": "search", "query": "waku"})
+    t.event("text", %*{"delta": "hola"})
+    assert calls == 0, "nothing leaves before the turn closes"
+    t.endTurn("buenas", 1)
+    assert calls == 1
+    assert sent.len == 3, "the root plus two events; `text` is not a span"
+    assert sent[0].name == "agent_run"
+    assert sent[1].name == "llm"
+    assert sent[2].name == "tool.search"
+    assert sent[1].parentSpanId == sent[0].spanId
+    assert sent[2].parentSpanId == sent[0].spanId
+    assert sent[1].traceId == sent[0].traceId
+    assert sent[0].startNano != 0 and sent[0].endNano != 0
+    assert sent[1].startNano == sent[1].endNano, "children are zero-duration"
+    assert ("openinference.span.kind", "AGENT") in sent[0].attrs
+    assert ("waku.user_message", "hola") in sent[0].attrs
+    removeDir(home)
+
+  test "a span carries the stamped payload, never the record's own fields":
+    # Python builds the span from the reassigned `event` (provider and
+    # model merged in) rather than from the `_write` record, so a
+    # collector shows which brain answered. `type` and `ts` exist only on
+    # the JSONL line and must not show up as telemetry.
+    let home = freshHome("waku-trace-stamped")
+    var t = newTracer(home, "openrouter", "sonnet-x", "localhost:6006")
+    var sent: seq[Span] = @[]
+    t.otel.send = proc(url, body: string): ExportResult =
+      sent = t.otel.spans
+      (ok: true, detail: "")
+    t.turn("hola")
+    t.event("llm", %*{"usage": %*{"in": 10, "out": 2}})
+    t.endTurn("buenas", 1)
+    let child = sent[1]
+    assert ("waku.provider", "\"openrouter\"") in child.attrs
+    assert ("waku.model", "\"sonnet-x\"") in child.attrs
+    assert ("waku.usage", "{\"in\": 10, \"out\": 2}") in child.attrs
+    assert ("openinference.span.kind", "LLM") in child.attrs
+    for (key, _) in child.attrs:
+      assert key != "waku.type", "the record's type is not telemetry"
+      assert key != "waku.ts", "the record's ts is not telemetry"
+    removeDir(home)
+
+  test "no endpoint means no exporter and byte-identical JSONL":
+    # The opt-in guarantee: the default port writes exactly what it
+    # wrote before the exporter existed. The three pins in `turn ids`
+    # above, all built with three arguments, are that evidence too.
+    let home = freshHome("waku-trace-noendpoint")
+    var t = newTracer(home, "openrouter", "m")
+    assert t.otel.isNil
+    t.turn("hola")
+    t.event("llm", %*{"usage": %*{"in": 1, "out": 1}})
+    t.endTurn("buenas", 1)
+    assert readLines(t.path).len == 3
+    removeDir(home)
+
+  test "an endpoint the validator refuses does not stop the trace":
+    # `newTracer` runs while the agent starts, so a typo in the env var
+    # must cost one stderr line and a working JSONL trace, never an
+    # exception that takes the whole binary down before the first turn.
+    let home = freshHome("waku-trace-badendpoint")
+    var t = newTracer(home, "openrouter", "m", "localhost:6006/v1/traces")
+    assert t.otel.isNil, "a refused endpoint builds no exporter"
+    t.turn("hola")
+    t.endTurn("buenas", 1)
+    let lines = readLines(t.path)
+    assert lines.len == 2
+    assert lines[0]["type"].getStr() == "turn_start"
+    assert lines[1]["type"].getStr() == "turn_end"
     removeDir(home)

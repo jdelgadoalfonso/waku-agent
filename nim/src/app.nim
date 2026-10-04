@@ -101,7 +101,8 @@ proc newWaku*(settings: Settings, client: LlmClient, db: DbConn = nil,
   result.client = client
   result.tools = tools
   result.session = newSession(settings, db = db)
-  result.tracer = newTracer(settings.home, settings.provider, settings.model)
+  result.tracer = newTracer(settings.home, settings.provider, settings.model,
+                           settings.otelEndpoint)
   new(result.reportCell)
   result.reportCell[] = ""
   result.graphTurn = graphTurn

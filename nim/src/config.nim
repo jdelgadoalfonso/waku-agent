@@ -74,6 +74,13 @@ type
       ## `WAKU_CONSOLIDATE_EVERY` (default 6): exchanges between memory
       ## consolidations; the dashboard shows it and doubles it as the
       ## trigger threshold.
+    otelEndpoint*: string
+      ## `OTEL_EXPORTER_OTLP_ENDPOINT`: an OTLP collector as `host:port`
+      ## (Python's `Settings.otel_endpoint`). Empty means JSONL traces
+      ## only, which is the default: the exporter is opt-in and costs
+      ## nothing until it is named. The port POSTs to
+      ## `http://host:port/v1/traces`, so a Phoenix collector is 6006,
+      ## not the 4317 the gRPC default in Python's SDK would use.
 
 proc defaultSettings*(): Settings =
   ## Settings before any env var is read (the Python dataclass defaults).
@@ -83,7 +90,7 @@ proc defaultSettings*(): Settings =
            maxTokens: defaultMaxTokens, historyTurns: defaultHistoryTurns,
            graphWorkflows: false, consolidateEvery: 6, retrievalTopK: 4,
            experimental: false, appleTools: false, ghTool: false,
-           ghRepo: "")
+           ghRepo: "", otelEndpoint: "")
 
 proc envInt(name: string, default: int): int =
   ## `int(os.getenv(name, default))` with a fallback: a non-numeric value
@@ -115,6 +122,7 @@ proc loadFromEnv*(s: var Settings) =
   s.ghRepo = getEnv("WAKU_GH_REPO")
   s.graphWorkflows = getEnv("WAKU_GRAPH_WORKFLOWS") in ["1", "true", "yes"]
   s.consolidateEvery = envInt("WAKU_CONSOLIDATE_EVERY", 6)
+  s.otelEndpoint = getEnv("OTEL_EXPORTER_OTLP_ENDPOINT")
 
 proc loadSettings*(): Settings =
   ## Port of `waku/config.py` `load_settings`: read the env vars once

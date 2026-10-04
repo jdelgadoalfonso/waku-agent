@@ -7,15 +7,19 @@ import std/unittest
 import ../src/config
 import ../src/waku
 
-const wakuEnvNames = ["WAKU_PROVIDER", "WAKU_API_KEY", "WAKU_MODEL", "WAKU_HOME"]
+const wakuEnvNames = ["WAKU_PROVIDER", "WAKU_API_KEY", "WAKU_MODEL", "WAKU_HOME",
+  # Not a `WAKU_*` var, but it lands in Settings the same way and the
+  # snapshot has to cover it or a developer's real collector endpoint
+  # would leak into the "unset" pin below.
+  "OTEL_EXPORTER_OTLP_ENDPOINT"]
 
-proc saveEnv(): array[4, (string, bool, string)] =
+proc saveEnv(): array[5, (string, bool, string)] =
   ## Snapshot the covered vars so tests restore, never clobber, the
   ## developer's exported environment.
   for i, name in wakuEnvNames:
     result[i] = (name, existsEnv(name), getEnv(name))
 
-proc restoreEnv(saved: array[4, (string, bool, string)]) =
+proc restoreEnv(saved: array[5, (string, bool, string)]) =
   for (name, wasSet, value) in saved:
     if wasSet:
       putEnv(name, value)
@@ -33,6 +37,21 @@ suite "phase 0 config":
     assert s.apiKey == ""
     assert s.model == ""
     assert s.home == ".waku"
+    assert s.otelEndpoint == "", "no collector unless one is named"
+    restoreEnv(saved)
+
+  test "OTEL_EXPORTER_OTLP_ENDPOINT names the collector, as in config.py":
+    # Python: `field(default_factory=lambda: os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""))`.
+    # The port POSTs OTLP/HTTP rather than gRPC, so the VALUE is the same
+    # `host:port` but the collector is Phoenix's 6006, not the 4317 the
+    # gRPC exporter would dial — `otel.nim` owns that half.
+    let saved = saveEnv()
+    for name in wakuEnvNames:
+      delEnv(name)
+    putEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "localhost:6006")
+    var s = defaultSettings()
+    s.loadFromEnv()
+    assert s.otelEndpoint == "localhost:6006"
     restoreEnv(saved)
 
   test "loadFromEnv respects every WAKU_* override":

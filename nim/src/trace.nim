@@ -1,6 +1,5 @@
-## Trace — port of `waku/ops/tracing.py` minus OpenTelemetry.
-##
-## Two outputs from the same events (same contract as Python):
+## Trace — port of `waku/ops/tracing.py`: JSONL, the spend ledger, and OTLP
+## spans. Three outputs from the same events (same contract as Python):
 ##
 ## 1. JSONL, always on: every turn appends lines to
 ##    `<home>/traces/<date>.jsonl` (`turn_start`, the loop's events,
@@ -9,14 +8,23 @@
 ## 2. The spend ledger `<home>/usage.jsonl`: one line per LLM call
 ##    (`{provider, model, kind, in, out}`) rendered with `jsonDumps`
 ##    (`ensure_ascii=True`), like Python's plain `json.dumps`.
+## 3. OTLP spans, when `OTEL_EXPORTER_OTLP_ENDPOINT` names a collector:
+##    the same events as a span tree any OTel backend can render. There is
+##    no Nim OTel SDK and binding opentelemetry-cpp would break the
+##    zero-dependency rule, so `otel.nim` is a hand-rolled exporter on
+##    stdlib `httpclient` — one POST per turn, no SDK, no dependency. See
+##    `odd/tasks/nim-otel-exporter.md`.
+##
+## The order inside each method is Python's and is part of the contract:
+## the JSONL row is written FIRST and the span second (`event`), and the
+## turn flushes after `turn_id` resets (`endTurn`), which is where
+## Python's `force_flush` sits.
 ##
 ## The observer doubles as a loop Observer: `tracerEvent` goes anywhere an
 ## Observer goes. `text` (streaming token deltas) is for the live UI, never
-## the trace. OTel span export stays future work: no Nim SDK exists and
-## binding opentelemetry-cpp would break the zero-dependency rule, so when
-## it lands it will be a minimal hand-rolled OTLP/HTTP exporter — the rows
-## already carry everything a span needs (turn_id, kind, model, ts).
-## The JSONL contract is the whole surface dashboards read. The legacy-GBK guard (old Windows releases) is skipped too:
+## the trace, and never a span (Python returns from `event` before it
+## reaches the SDK either).
+## The legacy-GBK guard (old Windows releases) is skipped too:
 ## Linux-first port, documented.
 ##
 ## Timestamps match `datetime.now(UTC).isoformat(timespec="milliseconds")`
@@ -31,6 +39,7 @@ import std/times
 
 import ./jsondump
 import ./loop
+import ./otel
 import ./wire
 
 export loop
@@ -42,6 +51,10 @@ type
     model*: string
     path*: string  ## today's trace file (fixed at construction, like Python)
     turnId*: string  ## current turn, "" outside one (reset by `endTurn`)
+    otel*: SpanExporter
+      ## The OTLP exporter, or nil when no endpoint is configured. Every
+      ## call below is nil-safe, so an unconfigured port pays one branch
+      ## per event and writes byte-identical JSONL.
 
 proc mintTurnId*(): string =
   ## `t_<16 hex>` like Python's `"t_" + secrets.token_hex(8)`: one id
@@ -54,9 +67,16 @@ proc utcStamp*(): string =
   ## `datetime.now(UTC).isoformat(timespec="milliseconds")`.
   format(now().utc, "yyyy-MM-dd'T'HH:mm:ss'.'fff'+00:00'")
 
-proc newTracer*(home, provider, model: string): Tracer =
+proc newTracer*(home, provider, model: string,
+               otelEndpoint = ""): Tracer =
+  ## `otelEndpoint` is `Settings.otelEndpoint` (`OTEL_EXPORTER_OTLP_ENDPOINT`).
+  ## It defaults to empty so every caller that does not want spans builds
+  ## no exporter and the JSONL contract is untouched; an invalid endpoint is
+  ## one stderr line from `newSpanExporter`, never an exception, because
+  ## this runs while the agent is starting.
   Tracer(home: home, provider: provider, model: model,
-         path: home / "traces" / format(now(), "yyyy-MM-dd") & ".jsonl")
+         path: home / "traces" / format(now(), "yyyy-MM-dd") & ".jsonl",
+         otel: newSpanExporter(otelEndpoint))
 
 proc writeLine(t: Tracer, line: string) =
   createDir(parentDir(t.path))
@@ -117,6 +137,11 @@ proc event*(t: Tracer, kind: string, ev: JsonNode) =
       for key, value in pairs(ev):
         outp[key] = copy(value)
   t.writeRecord(kind, outp)
+  # Python builds the span from the STAMPED event too (`event` is
+  # reassigned before both `_write` and `start_as_current_span`), and from
+  # the event rather than the record, so the span carries provider/model
+  # and never `type`/`ts`. `outp` is exactly that payload.
+  t.otel.event(kind, outp)
 
 proc turn*(t: Tracer, userMessage: string) =
   ## One run opens with a `turn_start` marker (the root span in Python),
@@ -124,6 +149,8 @@ proc turn*(t: Tracer, userMessage: string) =
   t.turnId = mintTurnId()
   t.writeRecord("turn_start",
     %*{"turn_id": t.turnId, "user_message": userMessage})
+  # After the row, like Python: `_write` runs before `start_as_current_span`.
+  t.otel.turn(userMessage)
 
 proc endTurn*(t: Tracer, reply: string, iterations: int) =
   ## ... and closes with `turn_end` (flushed per turn, so the trace
@@ -131,6 +158,10 @@ proc endTurn*(t: Tracer, reply: string, iterations: int) =
   t.writeRecord("turn_end", %*{"turn_id": t.turnId, "reply": reply,
     "iterations": iterations})
   t.turnId = ""
+  # Last, which is where Python's `end_turn` puts `force_flush(2000)`: the
+  ## spans leave the process with the turn, and a collector that is down
+  ## costs one stderr line rather than this turn.
+  discard t.otel.endTurn()
 
 proc tracerEvent*(t: Tracer): Observer =
   ## `tracer.event` as a closured Observer for `compose` and the loop.
