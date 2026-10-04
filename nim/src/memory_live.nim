@@ -127,14 +127,13 @@ proc skillWords(text: string): seq[string] =
   if cur.len >= 3:
     result.add(cur)
 
-proc matchingSkills*(home: string, bundled: seq[string],
-    message: string, maxSkills = 2): string =
-  ## Port of `Memory.matching_skills`: `### name\\nbody` per skill whose
-  ## name+description share 2+ keywords with the message (best first).
-  ## `listDistribSkills` reads disk on every call, so an added skill is
-  ## live next turn — Python's rescan-on-change, without the cache.
+proc scoredSkills*(home: string, bundled: seq[string],
+    message: string): seq[(int, string, string)] =
+  ## (overlap, name, body), best first: the shared scorer behind
+  ## `matchingSkills` and the research detector, so both read the same
+  ## match and cannot drift from each other.
   let msgWords = skillWords(message)
-  var scored: seq[(int, string, string)] = @[]
+  result = @[]
   for info in listDistribSkills(home, bundled):
     var text = ""
     try:
@@ -160,9 +159,24 @@ proc matchingSkills*(home: string, bundled: seq[string],
             break
       if bars == 2:
         body = lines[k .. ^1].join("\n").strip()
-      scored.add((overlap, info.name, body))
-  scored.sort(proc(a, b: (int, string, string)): int = cmp(b[0], a[0]))
+      result.add((overlap, info.name, body))
+  result.sort(proc(a, b: (int, string, string)): int = cmp(b[0], a[0]))
+
+proc matchingSkillNames*(home: string, bundled: seq[string],
+    message: string): seq[string] =
+  ## Every matched skill name, best first, uncapped: the research detector
+  ## asks whether the skill fired at all, not whether it made the top two.
+  for (_, name, _) in scoredSkills(home, bundled, message):
+    result.add(name)
+
+proc matchingSkills*(home: string, bundled: seq[string],
+    message: string, maxSkills = 2): string =
+  ## Port of `Memory.matching_skills`: `### name\\nbody` per skill whose
+  ## name+description share 2+ keywords with the message (best first).
+  ## `listDistribSkills` reads disk on every call, so an added skill is
+  ## live next turn — Python's rescan-on-change, without the cache.
   var chunks: seq[string] = @[]
+  let scored = scoredSkills(home, bundled, message)
   for i in 0 ..< min(maxSkills, scored.len):
     chunks.add("### " & scored[i][1] & "\n" & scored[i][2])
   return chunks.join("\n\n")
@@ -259,6 +273,9 @@ proc wireMemory*(w: var Waku, settings: Settings, db: DbConn,
   w.session.skillsFor =
     proc(userMessage: string, notify: Observer): string {.closure.} =
       matchingSkills(home, bundled, userMessage)
+  w.session.researchNames =
+    proc(message: string): seq[string] {.closure.} =
+      matchingSkillNames(home, bundled, message)
   w.afterTurn =
     proc(notify: Observer) {.closure.} =
       let fresh = consolidateIfDue(db, client, smallModel, everyN, notify)

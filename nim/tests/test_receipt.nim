@@ -149,6 +149,13 @@ suite "counts and dollars":
     assert r["memory"]["searches"][0]["trace_id"].getStr == "trc-41"
     assert r["memory"]["searches"][1]["trace_id"].kind == JNull
 
+  test "the local memory search counts as a search too":
+    let r = buildReceipt(@[
+      tool("engram_mem_search", searchOutput(5))], "openrouter")
+    assert r["tools"].len == 0
+    assert r["memory"]["searches"] == %*[%*{"tool": "memory_search",
+      "found": 5, "trace_id": nil}]
+
   test "a tool status the caller already knows is not re-guessed":
     let r = buildReceipt(@[tool("search_web", "Three results.", "error")],
                          "anthropic")

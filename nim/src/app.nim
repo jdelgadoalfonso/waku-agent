@@ -49,6 +49,7 @@ import std/times
 
 import db_connector/db_sqlite
 
+import ./brain
 import ./config
 import ./jsondump
 import ./loop
@@ -129,7 +130,7 @@ proc runFullTurn*(w: var Waku, userMessage: string, notify: Observer,
   ## The classic turn: assemble working memory, run THE loop. The graph's
   ## `full_agent` node (4d) calls THIS, so loop-as-a-node can never drift
   ## from loop-as-default.
-  let system = w.session.buildSystem(userMessage, notify)
+  var system = w.session.buildSystem(userMessage, notify)
   # A bounded window: only the last N turns (2 rows each) enter the
   # prompt, so context/cost/latency stay flat no matter how long the
   # thread runs. `history_turns = 0` takes the whole thread — Python's
@@ -142,8 +143,28 @@ proc runFullTurn*(w: var Waku, userMessage: string, notify: Observer,
   for t in tail:
     messages.add(%*{"role": t.role, "content": t.content})
   messages.add(%*{"role": "user", "content": userMessage})
-  runLoop(w.client, w.settings.model, system, messages, w.tools,
+  # Spec 009 A: research starts from what the company brain already
+  # knows. The searches run here, before the model's first call, and
+  # are shown as tool calls; a failed search is skipped, never fatal.
+  # `brainBackendFor` reads the already-connected registry, so without
+  # a memory server (or without the skill) this whole block is a no-op.
+  var knownCalls: seq[JsonNode] = @[]
+  var knownUsed: seq[JsonNode] = @[]
+  let backend = brainBackendFor(w.tools)
+  if brainConnected(backend) and not w.session.researchNames.isNil and
+      isResearch(w.session.researchNames(userMessage)):
+    let known = readFirst(userMessage, backend)
+    knownCalls = known.calls
+    knownUsed = known.used
+    for call in known.calls:
+      notify("tool", call)
+    if known.context.len > 0:
+      system = system & "\n" & known.context
+  var res = runLoop(w.client, w.settings.model, system, messages, w.tools,
           w.settings.maxIterations, w.settings.maxTokens, notify, stream)
+  res.readFirst = knownCalls
+  res.used = knownUsed
+  return res
 
 proc respond*(w: var Waku, userMessage: string, observer: Observer = nil,
               source = "cli", stream = false): LoopResult =
@@ -195,6 +216,9 @@ proc respond*(w: var Waku, userMessage: string, observer: Observer = nil,
   for c in res.toolCalls:
     metaTools.add(%*{"tool": c.jget("tool").getStr(),
                      "status": statusOf(c.jget("output").getStr())})
+  var metaUsed = newJArray()
+  for u in res.used:
+    metaUsed.add(copy(u))
   let meta = %*{
     "gate": captured.jget("gate"),
     "graph": (if captured.hasKey("graph_route"):
@@ -207,6 +231,7 @@ proc respond*(w: var Waku, userMessage: string, observer: Observer = nil,
     "iterations": res.iterations,
     "latency_ms": int((getMonoTime() - t0).inMilliseconds),
     "tools": metaTools,
+    "used": metaUsed,
     # which brain answered — a reopened thread (or a mid-thread model
     # switch) shows it per card. A quick graph turn ran the small model;
     # say so honestly.

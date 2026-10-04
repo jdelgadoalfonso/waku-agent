@@ -84,6 +84,7 @@ type
     db*: DbConn          ## nil until memory is wired (Python: memory=None)
     retrieve*: RetrieveFn
     skillsFor*: RetrieveFn
+    researchNames*: proc(message: string): seq[string] {.closure.} = nil
     sessionId*: string
     history*: seq[Turn]
 

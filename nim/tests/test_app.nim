@@ -14,6 +14,7 @@ import db_connector/db_sqlite
 import ../src/app
 import ../src/db
 import ../src/jsondump
+import ../src/memory_live
 import ../src/receipt
 import ../src/trace
 
@@ -418,5 +419,52 @@ suite "spec 011 turn receipt":
     for e in traceLines(home): kinds.add(e["type"].getStr())
     assert kinds[^1] == "turn_end", "the turn still closes"
     assert "receipt" notin kinds, "no receipt line, and the turn survived it"
+    db.close()
+    removeDir(home)
+
+suite "spec 009 brain reads first":
+  test "a research turn searches before the loop and keeps the Used":
+    let home = freshHome("waku-app-brainread")
+    let db = connectDb(home)
+    let skillRoot = home / "bundled"
+    createDir(skillRoot / "research-report")
+    writeFile(skillRoot / "research-report" / "SKILL.md",
+      "---\nname: research-report\ndescription: Research report on " &
+      "companies, competitors, markets, products, pricing and launches.\n" &
+      "---\nBody.")
+    let script = Script(items: @[textResp("here is what I found")])
+    var reg = echoRegistry("x")
+    reg.register(Tool(name: "engram_mem_search", description: "s",
+      inputSchema: %*{"type": "object"},
+      fn: proc(args: JsonNode): string =
+        "Found 1 memories:\n\n[1] #7 (decision) — Pick mem0\n    We picked it."))
+    var w = newWaku(testSettings(home), scriptedClient(script), db, reg)
+    w.session.researchNames = proc(message: string): seq[string] =
+      matchingSkillNames(home, @[skillRoot], message)
+    var kinds: seq[string] = @[]
+    let res = w.respond("compare competitors pricing launches",
+      proc(kind: string, ev: JsonNode) = kinds.add(kind))
+    assert res.reply == "here is what I found"
+    assert "tool" in kinds, "the searches show as tool calls"
+    assert res.readFirst.len == 2
+    assert res.used.len == 1
+    assert res.used[0]["id"].getStr() == "#7"
+    db.close()
+    removeDir(home)
+
+  test "no backend means no read, like Python with no memory":
+    let home = freshHome("waku-app-brainoff")
+    let db = connectDb(home)
+    let script = Script(items: @[textResp("plain answer")])
+    var w = newWaku(testSettings(home), scriptedClient(script), db,
+      echoRegistry("x"))
+    w.session.researchNames = proc(message: string): seq[string] =
+      @["research-report"]
+    var kinds: seq[string] = @[]
+    let res = w.respond("compare competitors pricing launches",
+      proc(kind: string, ev: JsonNode) = kinds.add(kind))
+    assert res.reply == "plain answer"
+    assert "tool" notin kinds
+    assert res.used.len == 0 and res.readFirst.len == 0
     db.close()
     removeDir(home)

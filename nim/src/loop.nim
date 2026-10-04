@@ -35,6 +35,8 @@ type
     toolCalls*: seq[JsonNode]
     iterations*: int
     receipt*: JsonNode = newJNull()
+    readFirst*: seq[JsonNode] = @[]
+    used*: seq[JsonNode] = @[]
       ## The turn's receipt (spec 011 S4), null until `app.respond` builds
       ## one: the pure builder leaves `turn_id`/`model.id` neutral, so only
       ## the turn that owns them can fill them in. The field DEFAULT (not a

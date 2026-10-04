@@ -100,7 +100,9 @@ const
   # imports the MCP transport. The loop renames an MCP tool `<server>_<tool>`
   # in Python too, which is why these strings match its `SEARCH_TOOLS`.
   searchTools = {"waku_memory_memory_search": "memory_search",
-                 "waku_memory_memory_recall": "memory_recall"}.toTable
+                 "waku_memory_memory_recall": "memory_recall",
+                 "engram_mem_search": "memory_search",
+                 "engram_mem_recall": "memory_recall"}.toTable
 
 let
   idRe = re(idPattern)

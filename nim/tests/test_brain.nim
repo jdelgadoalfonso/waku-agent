@@ -1,0 +1,99 @@
+## Research reads first (spec 009 A, unit T1).
+##
+## Offline only: stub backends, no model calls — the read path makes none
+## by itself (searches go through the injected backend).
+
+import std/json
+import std/strutils
+import std/unittest
+
+import ../src/brain
+import ../src/tools
+
+proc stubBackend(failSecond: bool,
+    texts: varargs[string]): BrainBackend =
+  var i = 0
+  var answers: seq[string] = @[]
+  for t in texts:
+    answers.add(t)
+  BrainBackend(search: proc(args: JsonNode): string {.closure.} =
+    if failSecond and i == 1:
+      inc i
+      raise newException(IOError, "down")
+    let text = answers[i]
+    inc i
+    text)
+
+proc engramRegistry(search: proc(args: JsonNode): string
+    {.closure.}): ToolRegistry =
+  var reg: ToolRegistry
+  reg.register(Tool(name: "engram_mem_search", description: "s",
+    inputSchema: %*{"type": "object"}, fn: search))
+  reg
+
+const hits = """Found 2 memories:
+
+[1] #12 (decision) — Pick mem0
+    We picked mem0 for the long tail."""
+
+suite "research subject":
+  test "filler words go, the subject stays":
+    assert subject("research the competitors of mem0") ==
+      "competitors mem0"
+
+  test "nothing left falls back to the message":
+    assert subject("please research") == "please research"
+
+suite "research trigger":
+  test "the skill name is the detector":
+    assert isResearch(@["research-report", "other"])
+    assert not isResearch(@["other"])
+    assert not isResearch(@[])
+
+suite "engram entries":
+  test "rows parse to id, title and capped text":
+    let found = brainEntries(hits)
+    assert found.len == 1
+    assert found[0]["id"].getStr() == "#12"
+    assert found[0]["title"].getStr() == "Pick mem0"
+    assert "long tail" in found[0]["text"].getStr()
+
+  test "rows without an id are skipped":
+    let found = brainEntries("Found 0 memories:\n\nno rows here")
+    assert found.len == 0
+
+suite "read first":
+  test "a disconnected backend reads nothing":
+    let (calls, used, context) = readFirst("research mem0",
+      BrainBackend())
+    assert calls.len == 0 and used.len == 0 and context == ""
+
+  test "two searches shape the Used list and the block":
+    var seen: seq[string] = @[]
+    let backend = stubBackend(false, hits, hits)
+    let (calls, used, context) = readFirst("research mem0", backend)
+    assert calls.len == 2
+    assert calls[0]["tool"].getStr() == brainSearchTool
+    assert calls[0]["args"]["limit"].getInt() == subjectLimit
+    assert calls[1]["args"]["project"].getStr() == companyProject
+    assert used.len == 1, "same hit twice dedupes by id"
+    assert used[0]["id"].getStr() == "#12"
+    assert used[0]["report"].getBool() == false
+    assert context.startsWith(brainHeading)
+    assert "Pick mem0" in context
+    assert seen.len == 0
+
+  test "a failed search is skipped, never fatal":
+    let backend = stubBackend(true, hits, "unused")
+    let (calls, used, context) = readFirst("research mem0", backend)
+    assert calls.len == 1
+    assert used.len == 1
+    assert brainHeading in context
+
+suite "backend lookup":
+  test "the registry search tool connects, absence disconnects":
+    let backend = brainBackendFor(engramRegistry(
+      proc(args: JsonNode): string {.closure.} = "none"))
+    assert brainConnected(backend)
+    var empty: ToolRegistry
+    assert not brainConnected(brainBackendFor(empty))
