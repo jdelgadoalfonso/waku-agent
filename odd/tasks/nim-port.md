@@ -88,6 +88,8 @@
 - Phase 9b meta-evals landed (test_repo_gates: boundary, duplicados, diseño, fila CI): suite 868 OK.
 - Phase 9c black-box landed (test_blackbox contra el binario + paso CI tras el build): suite 883 OK.
 - Live TLS landed como switch (`-d:wakuTls`, default sin TLS, regla 3 intacta): suite 900 OK + 17 flagged.
+- Brecha de paridad del dashboard cerrada (connect + slash-commands + memoria viva + build_registry + judgment arenas + collect() completo): 1c54533, suite 1043 OK, cero warnings.
+- MCP stdio: sin lectura tras notificaciones (bloqueo contra `engram mcp` en vivo): d66e40c, test_mcp 82 OK.
 - Next: entrega (push + PRs en cadena por fase) y judge evals (siguen Python-only por diseño).
 
 ## Next
