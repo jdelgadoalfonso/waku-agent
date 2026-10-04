@@ -19,7 +19,9 @@ import ../src/dashboard
 import ../src/db
 import ../src/loop
 import ../src/integrations
+import ../src/factstore
 import ../src/memory
+import factstore_fakes
 import ../src/pricing
 import ../src/providers
 import ../src/receipt
@@ -543,7 +545,11 @@ suite "phase 8a /api/data status":
       "/api/data")[2])
     assert node["facts"].len == 1
     assert node["facts"][0]["subject"].getStr() == "Priya"
-    assert node["facts"][0]["id"].kind == JInt
+    # The id is the contract's opaque string, not sqlite's counter as a
+    # number: a hosted store's UUID has to render here and survive the round
+    # trip that memory.js performs. The value is still sqlite's 1.
+    assert node["facts"][0]["id"].kind == JString
+    assert node["facts"][0]["id"].getStr() == "1"
     assert node["episodes"].len == 1
     assert node["episodes"][0]["summary"].getStr() == "a quiet week"
     assert node["calendar"].len == 1
@@ -1051,9 +1057,17 @@ suite "phase 8b POST /api/memory":
     let root = freshDir("waku-dash-membad")
     createDir(root / "static")
     var d = testDeps(root, root / "static")
+    # A fact id is opaque, so a non-numeric one is a MISS ("no such row"),
+    # not a malformed request: answering "bad id" here is what makes a
+    # hosted store unusable from this page. An EPISODE id is sqlite's
+    # counter and still has to be a number.
     let bad = handlePost(d, "/api/memory",
       """{"action": "delete_fact", "id": "nope"}""")[2]
-    assert parseJson(bad)["error"].getStr() == "bad id"
+    assert parseJson(bad)["ok"].getBool() == false
+    assert "error" notin parseJson(bad)
+    let badEpisode = handlePost(d, "/api/memory",
+      """{"action": "delete_episode", "id": "nope"}""")[2]
+    assert parseJson(badEpisode)["error"].getStr() == "bad id"
     let unk = handlePost(d, "/api/memory",
       """{"action": "levitate"}""")[2]
     assert "unknown action" in parseJson(unk)["error"].getStr()
@@ -1877,4 +1891,56 @@ suite "phase 8d memory-arena wiring":
     let (_, badFrames) = collectFrames(d, "/api/memory-arena/stream",
       "{oops")
     assert "invalid JSON" in badFrames[0]
+    removeDir(root)
+
+
+suite "the memory page goes through the fact store":
+  test "an injected store is what the page lists, not the local db":
+    # The point of T3b: the memory page and a turn must agree about where the
+    # facts live. A page load against a home whose sqlite is EMPTY, with a
+    # store that has rows, proves the route reads the store.
+    let root = freshDir("waku-dash-storepage")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    d.facts = mem0FakeStore()
+    d.facts.add("Priya", "prefers mornings", "user")
+    let node = parseJson(handleGet(d, "/api/data")[2])
+    assert node["facts"].len == 2, "the fake's own seeded row plus ours"
+    var sawPriya = false
+    for fact in node["facts"]:
+      if fact["subject"].getStr() == "priya":
+        sawPriya = true
+        assert fact["id"].getStr().startsWith("mem-"),
+          "a hosted id is a string, not a number"
+    assert sawPriya, "the page did not read the store"
+    removeDir(root)
+
+  test "an opaque id survives the round trip through the page":
+    # What memory.js does: render `fact-<id>`, post that id back. A UUID has
+    # to make the whole trip, or a hosted store's facts can never be edited
+    # by hand.
+    let root = freshDir("waku-dash-storeid")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    d.facts = mem0FakeStore()
+    let rows = d.facts.list(50)
+    let hosted = rows[0].id
+    let (_, _, body) = handlePost(d, "/api/memory",
+      $(%*{"action": "update_fact", "id": hosted,
+           "content": "seeded and edited"}))
+    assert parseJson(body)["ok"].getBool(), "the page refused the id it rendered"
+    assert d.facts.search("edited", 4).len == 1
+    removeDir(root)
+
+  test "sqlite is still the answer when nothing is injected":
+    let root = freshDir("waku-dash-storedefault")
+    createDir(root / "static")
+    let d = testDeps(root, root / "static")
+    let db = connectDb(root)
+    db.exec(sql("INSERT INTO facts (subject, content, source) VALUES " &
+      "('Alex', 'likes sailing', 'user')"))
+    db.close()
+    let node = parseJson(handleGet(d, "/api/data")[2])
+    assert node["facts"].len == 1
+    assert node["facts"][0]["subject"].getStr() == "Alex"
     removeDir(root)

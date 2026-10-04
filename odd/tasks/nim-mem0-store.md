@@ -184,3 +184,21 @@ agente dijera "no hay facts coincidentes" con los facts en la base.
   dashboard en la misma unidad; se partió porque los pines de `manageMemory` y
   del selector ya exigían toda la superficie de `src/`, y agregar el dashboard
   encima habría dejado una unidad sin verificar de forma útil.
+- **L11** (T3b, bug de Python que el port NO reproduce): el handler
+  `/api/memory` de Python parsea el id con `int(payload.get("id", 0))` ANTES de
+  las ramas, así que un id de store hospedado (un UUID) responde `{"error":
+  "bad id"}` y los facts de mem0 **no se pueden editar a mano** desde el
+  dashboard. El port separa los dos ids: el del fact es opaco y un id no
+  numérico es un miss (`{"ok": false}`), el del episodio sigue siendo el
+  contador de sqlite y un id malo ahí sí es `bad id`. El id ahora viaja como
+  string en el JSON de `/api/data`, que es el cambio de forma documentado en L3
+  y el que `memory.js` ya toleraba (concatena el id y lo devuelve verbatim).
+- **L12** (T3b, seam): `DashboardDeps.facts` es inyectable y nil significa
+  "preguntá al env", igual que el agente. Un `FactStore` es un objeto plano, no
+  un ref, así que "está inyectado" se reconoce por una de sus funciones (`list
+  != nil`), que es el mismo test que usa el conformance suite para cazar un
+  backend al que le falta un método. La página abre su store por request porque
+  abre una conexión por llamada; para mem0 eso es un cliente nuevo por request,
+  que no cuesta nada porque lo único que un cliente de mem0 arrastra entre
+  llamadas (el `event_id` pendiente) es de `settle`, y `settle` lo pide el
+  memory arena, que sí tiene su store de larga vida.

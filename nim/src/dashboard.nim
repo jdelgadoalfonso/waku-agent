@@ -262,6 +262,12 @@ type
     revealOpen*: RevealOpenFn
     store*: HealthStore
       ## Connection health, lazily created per home when nil.
+    facts*: FactStore
+      ## Where the memory page reads and writes facts. Nil means "ask the
+      ## env", exactly like the agent does — one selector, so a page load
+      ## and a turn can never disagree about where the facts live. Tests
+      ## inject the stateful fake (`tests/factstore_fakes.nim`) rather than
+      ## standing up a hosted service.
     probes*: Table[string, ProbeFn]
       ## Injected connection tests (5d2 pattern); missing means untested.
     providerProbe*: ProbeFn
@@ -856,7 +862,31 @@ proc sessionIdleMinutes*(env: Table[string, string]): int =
       discard
   60
 
-proc stateRows*(home: string): JsonNode =
+proc factsFor(d: DashboardDeps, db: DbConn): StoreChoice =
+  ## The store this page load reads and writes, and which backend it is.
+  ##
+  ## Built per request because the dashboard opens one connection per call
+  ## (like Python's per-`collect()` connect) and the sqlite adapter closes
+  ## over that connection. A hosted store is therefore a fresh client per
+  ## request, which costs nothing here: the dashboard only lists, updates
+  ## and deletes, and the one thing a mem0 client carries between calls —
+  ## the pending `event_id` — belongs to `settle`, which the memory arena
+  ## asks of its own long-lived store.
+  # `FactStore` is a plain object, so there is no `isNil`: a filled record
+  # is recognised by one of its functions, which is the same test the
+  # conformance suite uses to catch a backend that forgot a method.
+  if d.facts.list != nil:
+    return (store: d.facts, name: "injected")
+  var s = defaultSettings()
+  s.home = d.home
+  s.provider = d.provider
+  s.model = d.model
+  s.smallModel = d.smallModel
+  s.semanticStore = envOrDefault("WAKU_SEMANTIC_STORE", "sqlite")
+  s.mem0UserId = envOrDefault("MEM0_USER_ID", "waku")
+  factStoreFor(s, db)
+
+proc stateRows*(home: string, facts: FactStore): JsonNode =
   ## Everything in Python `collect()` that reads state.db and the home
   ## files: facts, sqlite episodes, calendar, outbox, SOUL, chat counters
   ## and rows, sessions, db introspection. One open connection per call
@@ -867,12 +897,15 @@ proc stateRows*(home: string): JsonNode =
     ## arrive empty, like Python's `None` renders in these read-only rows.
     if i < row.len: row[i] else: ""
   let db = connectDb(home)
-  var facts = newJArray()
-  for row in db.getAllRows(sql("SELECT id, subject, content, source, " &
-      "created_at FROM facts ORDER BY id DESC")):
-    facts.add(%*{"id": parseInt(rowStr(row, 0)), "subject": rowStr(row, 1),
-                 "content": rowStr(row, 2), "source": rowStr(row, 3),
-                 "created_at": rowStr(row, 4)})
+  # Through the contract, so the memory page shows the same facts a turn
+  # would retrieve — which is the whole point of having a store. The id is
+  # the opaque string the contract defines, so a hosted store's UUID renders
+  # here and round-trips through the JS that posts it back.
+  var listed = newJArray()
+  for fact in facts.list(200):
+    listed.add(%*{"id": fact.id, "subject": fact.subject,
+                  "content": fact.content, "source": fact.source,
+                  "created_at": fact.createdAt})
   # Episodes stay sqlite-only: the port has no Notion store, so the
   # backend switch Python reads has no seam here — honestly sqlite.
   var episodes = newJArray()
@@ -992,7 +1025,7 @@ proc stateRows*(home: string): JsonNode =
       inc n
   let soulPath = home / "SOUL.md"
   let soul = if fileExists(soulPath): readFile(soulPath) else: ""
-  result = %*{"facts": facts, "episodes": episodes,
+  result = %*{"facts": listed, "episodes": episodes,
     "episodes_source": "sqlite", "episodes_error": "",
     "calendar": calendar, "outbox": outbox, "soul": soul,
     "chat_pending": chatPending, "chat_log": chatRev,
@@ -1247,7 +1280,10 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
     ["1", "true", "yes"]
   let (turns, stats) = turnSection(d.home, d.provider, d.model,
     d.providers)
-  let state = stateRows(d.home)
+  let pageDb = connectDb(d.home)
+  let pageStore = factsFor(d, pageDb).store
+  let state = stateRows(d.home, pageStore)
+  pageDb.close()
   let db = connectDb(d.home)
   let idleMin = sessionIdleMinutes(d.env)
   # The consolidation cadence, env-read like `loadSettings` (the deps
@@ -1682,29 +1718,28 @@ proc memoryAction*(d: DashboardDeps, payload: JsonNode): JsonNode =
   if action == "delete_episode" and
       d.env.getOrDefault("WAKU_EPISODIC_STORE", "") == "notion":
     return %*{"error": "notion episodes are not supported in the Nim port"}
+  # The id is opaque for a FACT (sqlite's counter locally, a UUID on a hosted
+  # store) and numeric for an EPISODE, which stays sqlite. Parsing it once
+  # for both is what makes a hosted store unusable from this page: Python
+  # does exactly that and answers "bad id" for a UUID, so the round trip
+  # that `memory.js` performs (post the id back verbatim) cannot work there.
+  let factId = rawId(payload)
   var rid: int64 = 0
-  try:
-    let idNode = payload.jget("id")
-    if idNode.kind == JNull:
-      rid = 0
-    elif idNode.kind == JInt:
-      rid = idNode.getBiggestInt()
-    elif idNode.kind == JString:
-      rid = parseBiggestInt(idNode.getStr())
-    else:
+  if action == "delete_episode":
+    try:
+      rid = parseBiggestInt(factId)
+    except ValueError:
       return %*{"error": "bad id"}
-  except ValueError:
-    return %*{"error": "bad id"}
   let db = connectDb(d.home)
   try:
+    let facts = factsFor(d, db).store
     if action == "update_fact":
-      let subject = jsonStr(payload.jget("subject"))
-      let content = jsonStr(payload.jget("content"))
-      let ok = if subject.len > 0: db.updateFact(rid, content, subject)
-               else: db.updateFactContent(rid, content)
-      return %*{"ok": ok}
+      # An empty subject means "leave it alone" (Python's `subject or
+      # None`); the store's adapter is where each backend absorbs it.
+      return %*{"ok": facts.update(factId, jsonStr(payload.jget("content")),
+                                   jsonStr(payload.jget("subject")))}
     if action == "delete_fact":
-      return %*{"ok": db.deleteFact(rid)}
+      return %*{"ok": facts.delete(factId)}
     if action == "delete_episode":
       return %*{"ok": db.deleteEpisode(rid)}
     return %*{"error": "unknown action " & action}

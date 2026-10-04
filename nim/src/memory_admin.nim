@@ -65,7 +65,7 @@ let
   slugRe = re(slugPattern)
   skillFrontRe = re(skillFrontPattern)
 
-proc rawId(args: JsonNode): string =
+proc rawId*(args: JsonNode): string =
   ## The row id as it came in, whatever JSON type it arrived as: a number
   ## from sqlite's dashboard, a string from a hosted store's. Coercing both
   ## to text here is what lets one call site serve every backend — the same
