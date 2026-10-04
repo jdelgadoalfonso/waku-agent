@@ -64,6 +64,11 @@ has the bug.
 - Research brain/reports (blocked on hosted Waku Memory in Nim).
 - New model calls anywhere: metering wraps calls that already happen.
 - Changing what any tool does, or any prompt text.
+- OTel span export (trace rows already carry everything a span needs:
+  turn_id, kind, model, latency via ts). When it lands it will be a
+  minimal hand-rolled OTLP/HTTP exporter on stdlib `httpclient` — there
+  is no Nim OTel SDK and binding opentelemetry-cpp would break the
+  zero-default-dependency rule for a protocol that is plain JSON POSTs.
 
 ## 5. Verification
 

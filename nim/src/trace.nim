@@ -12,9 +12,11 @@
 ##
 ## The observer doubles as a loop Observer: `tracerEvent` goes anywhere an
 ## Observer goes. `text` (streaming token deltas) is for the live UI, never
-## the trace. OTel spans stay Python-only (needs an SDK the port refuses
-## as a dependency); the JSONL contract is the whole surface dashboards
-## read. The legacy-GBK guard (old Windows releases) is skipped too:
+## the trace. OTel span export stays future work: no Nim SDK exists and
+## binding opentelemetry-cpp would break the zero-dependency rule, so when
+## it lands it will be a minimal hand-rolled OTLP/HTTP exporter — the rows
+## already carry everything a span needs (turn_id, kind, model, ts).
+## The JSONL contract is the whole surface dashboards read. The legacy-GBK guard (old Windows releases) is skipped too:
 ## Linux-first port, documented.
 ##
 ## Timestamps match `datetime.now(UTC).isoformat(timespec="milliseconds")`
