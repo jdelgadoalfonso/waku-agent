@@ -159,10 +159,11 @@ suite "phase 4e dispatch":
 
   test "known-but-later commands are honest stubs with exit 0":
     # 7d2 moved telegram/discord/whatsapp/voice out of this pin and into
-    # the suite below; `dashboard` (validate-only) and `connect` are what
-    # the phase-4e stub still answers for.
+    # the suite below, and `connect` grew its real sign-in dispatch (usage
+    # with exit 1, like Python); `dashboard` (validate-only) is what the
+    # phase-4e stub still answers for.
     assert runCommand(@["dashboard"]) == 0
-    assert runCommand(@["connect"]) == 0
+    assert runCommand(@["connect"]) == 1
 
   test "chat without keys exits 1 before touching disk or net":
     let saved = scrubEnv()

@@ -15,9 +15,10 @@
 ## - The triage graph itself is 4d. `graphTurn` is its seam: nil means the
 ##   flag path is off; a set seam answers `(answered, result)` and any
 ##   exception still fails open to the plain loop, exactly like Python.
-## - `maybe_consolidate` / `export_markdown` are the memory phase's. The
-##   `afterTurn` hook is their seam (nil = skip); persistence itself
-##   (`add_exchange` → chat_log) happens every turn, like Python.
+## - `maybe_consolidate` / `export_markdown` live in memory_live.nim.
+##   The `afterTurn` hook is their seam (nil = skip; `wireMemory` sets
+##   it); persistence itself (`add_exchange` → chat_log) happens every
+##   turn, like Python.
 ##
 ## What 4c DOES fix canonically (verifier note 8 from 4b): the turn `meta`
 ## renders with `jsonDumps` (`json.dumps`-shaped, `{"iterations": 1}` with
@@ -59,7 +60,7 @@ type
     ## plain loop, so this path can only ever ADD speed, never lose a reply.
 
   AfterTurn* = proc(notify: Observer) {.closure.}
-    ## Consolidation + MEMORY.md sync (memory phase plugs it in).
+    ## Consolidation + MEMORY.md sync (`wireMemory` sets it).
 
   Waku* = object
     settings*: Settings

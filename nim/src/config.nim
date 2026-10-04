@@ -50,9 +50,30 @@ type
     historyTurns*: int
       ## `WAKU_HISTORY_TURNS` (default 12): working memory is a sliding
       ## window of the last N turns; older turns live in state.db.
+    retrievalTopK*: int
+      ## `WAKU_RETRIEVAL_TOP_K` (default 4): facts per gated retrieval.
+    experimental*: bool
+      ## `WAKU_EXPERIMENTAL`: register `delegate_task` (pi sub-agent)
+      ## plus the coming-soon stubs. Trust this flag alone (never OR
+      ## the env at registry time): the arena passes per-race values.
+    appleTools*: bool
+      ## `WAKU_APPLE_TOOLS` (macOS): Calendar/Mail/Reminders/Notes
+      ## readers via osascript. First use triggers the system
+      ## Automation prompts.
+    ghTool*: bool
+      ## `WAKU_GH_TOOL`: read-only GitHub via the `gh` CLI's own auth.
+      ## Off by default on purpose: every registered tool ships in
+      ## every prompt, and PR reading is maintainer capability.
+    ghRepo*: string
+      ## `WAKU_GH_REPO`: owner/name when a call omits it (running
+      ## outside a checkout, where `gh` infers no remote).
     graphWorkflows*: bool
       ## `WAKU_GRAPH_WORKFLOWS`: route messages through the triage graph
       ## first (fail-open to the plain loop, so never worse).
+    consolidateEvery*: int
+      ## `WAKU_CONSOLIDATE_EVERY` (default 6): exchanges between memory
+      ## consolidations; the dashboard shows it and doubles it as the
+      ## trigger threshold.
 
 proc defaultSettings*(): Settings =
   ## Settings before any env var is read (the Python dataclass defaults).
@@ -60,7 +81,9 @@ proc defaultSettings*(): Settings =
            smallModel: "", baseUrl: "",
            maxIterations: defaultMaxIterations,
            maxTokens: defaultMaxTokens, historyTurns: defaultHistoryTurns,
-           graphWorkflows: false)
+           graphWorkflows: false, consolidateEvery: 6, retrievalTopK: 4,
+           experimental: false, appleTools: false, ghTool: false,
+           ghRepo: "")
 
 proc envInt(name: string, default: int): int =
   ## `int(os.getenv(name, default))` with a fallback: a non-numeric value
@@ -85,7 +108,13 @@ proc loadFromEnv*(s: var Settings) =
   s.maxIterations = envInt("WAKU_MAX_ITERATIONS", defaultMaxIterations)
   s.maxTokens = envInt("WAKU_MAX_TOKENS", defaultMaxTokens)
   s.historyTurns = envInt("WAKU_HISTORY_TURNS", defaultHistoryTurns)
+  s.retrievalTopK = envInt("WAKU_RETRIEVAL_TOP_K", 4)
+  s.experimental = getEnv("WAKU_EXPERIMENTAL") in ["1", "true", "yes"]
+  s.appleTools = getEnv("WAKU_APPLE_TOOLS") in ["1", "true", "yes"]
+  s.ghTool = getEnv("WAKU_GH_TOOL") in ["1", "true", "yes"]
+  s.ghRepo = getEnv("WAKU_GH_REPO")
   s.graphWorkflows = getEnv("WAKU_GRAPH_WORKFLOWS") in ["1", "true", "yes"]
+  s.consolidateEvery = envInt("WAKU_CONSOLIDATE_EVERY", 6)
 
 proc loadSettings*(): Settings =
   ## Port of `waku/config.py` `load_settings`: read the env vars once

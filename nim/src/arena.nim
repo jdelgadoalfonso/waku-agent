@@ -64,10 +64,12 @@ type
     ## reply, the opaque `judge_model` spec from the payload, and the tools
     ## as stored (a `[names]` array). Returns the grade object, or `JNull`
     ## when the referee abstains (Python's `None` — the card stays ungraded).
-  RaceFn* = proc(message: string, specs: seq[string],
+  RaceFn* = proc(message: string, specs: seq[string], coding: bool,
                  emit: SseEmit): JsonNode {.closure.}
     ## One model race (`arena.compare_stream`'s harness loop): streams live
     ## frames through `emit` and returns the collected per-model results.
+    ## `coding` registers `delegate_task` (the pi sub-agent) in every
+    ## column, like Python's `coding` parameter — the frontend sends it.
     ## The pipeline persists, grades and closes the stream around it.
 
 proc fieldOf(node: JsonNode, key: string): JsonNode =
@@ -434,7 +436,9 @@ proc compareStreamRun*(home: string, payload: JsonNode,
     return
   var collected: JsonNode
   try:
-    collected = race(message, specs, emit)
+    let coding = fieldOf(payload, "coding").kind == JBool and
+      fieldOf(payload, "coding").getBool()
+    collected = race(message, specs, coding, emit)
   except CatchableError as exc:
     emit("done", %*{"error": exc.msg})
     return

@@ -62,7 +62,7 @@ proc rawSkillUrl*(url: string): string =
     return url.strip(leading = false, trailing = true, chars = {'/'}) & "/raw"
   return url
 
-proc frontmatterOf(text: string): string =
+proc frontmatterOf*(text: string): string =
   ## The frontmatter lines between the two `---` markers, without a
   ## regex here (see the header note).
   if not text.startsWith("---\n"):
@@ -72,7 +72,7 @@ proc frontmatterOf(text: string): string =
     return ""
   return text[4 ..< close]
 
-proc frontmatterValue(front, key: string): string =
+proc frontmatterValue*(front, key: string): string =
   ## One frontmatter field, whitespace and quotes stripped (Python's
   ## `k.strip(): v.strip().strip("'\"")` parsing).
   for line in front.splitLines():

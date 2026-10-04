@@ -15,7 +15,11 @@ deferred hardening), 9a (packaging), 9b (repo-gate meta-evals) and 9c
 (black-box cross-check)), live TLS behind the `-d:wakuTls` switch (one
 `SslContext` for every live client, and a real `wss://gateway.discord.gg`
 dial in a build that asks for it) and phase 8 (ops + dashboard: the server
-loop, the routes, the model arena and the memory/judgment arena). Not landed
+loop, the routes, the model arena, the memory/judgment arena and the `graph`
+block in `/api/data` — flag, engine-drawn topologies, runs and quick/full
+stats from the trace events — plus `turns`/`stats` and the rest of the
+`collect()` blob the tabs read (state.db rows, db introspection, skills,
+tools, settings, providers, eval report, inline trace sections). Not landed
 yet: OTel spans.
 
 ## Build and test
@@ -125,7 +129,26 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
   `newTlsAsyncHttpClient`): every live client in `src/` is built there, so
   a build with `-d:wakuTls` cannot leave a context-less one behind.
 - `src/tools.nim` ports the tool registry (`Tool`, `register`, `to_api`,
-  `schemas`, `execute` with errors-as-text) plus JSON arg helpers.
+  `schemas`, `execute` with errors-as-text) plus JSON arg helpers and the
+  shared subprocess runner with an explicit deadline.
+- `src/registry.nim` ports `build_registry` in the same order (calendar,
+  notes, messages, search, memory trio, experimental/apple/github opt-ins,
+  connected MCP tools) — every side effect injected, like everywhere else.
+- `src/search.nim` (`search_web`: Tavily when keyed, DuckDuckGo scrape
+  otherwise), `src/github.nim` (`github_read` over the `gh` CLI allowlist),
+  `src/experimental.nim` (`delegate_task` over a `pi` subprocess with JSON
+  event parsing, workspace folders, manifests and autorun, plus the three
+  coming-soon stubs) and `src/apple.nim` (the four osascript readers /
+  writers, macOS-gated, with their TTL caches).
+- `src/judgment_cases.nim` ports `ops/judgment_cases.py`: all five suites
+  (25 invented cases, fifteen questions each), the label-free picker, and
+  the grading rules with Python's banker's rounding.
+- `src/scoring.nim` (`check_case`/`case_for_message`), `src/judge.nim`
+  (the 0-10 referee with ground-truth tools and retry) and
+  `src/arena_live.nim` (live model/memory/judgment race runners over
+  scripted-or-`clientFor` brains, sequential by design). The dashboard
+  wires them plus the provider/integration probes and the graph stream;
+  races need API keys, everything else is offline-testable.
 - `src/calendar.nim` ports the local calendar paths: `create_event` (guard,
   +1h default, idempotence, SQLite + ICS) and the windowed local list.
 - `src/notes.nim`, `src/messages.nim`, `src/memory_admin.nim` port the local
@@ -149,6 +172,17 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
 - `src/gather.nim` ports the gather workflow + ops binders (calendar,
   memory with its own connection, toolless synthesis, outbox draft) and
   `runGather`. GitHub/web stay honestly unavailable until phase 5.
+- `src/memory_live.nim` ports the live layer (`retrieval_gate.py`,
+  consolidation, `MEMORY.md` mirror, skill keyword match): the gate judge
+  with fail-open, gated facts+episodes retrieval, distill-every-N and the
+  `wireMemory` that fills the session/app seams for every built agent.
+  Hosted stores stay Python-only (no switch in `Settings`).
+- `src/commands.nim` ports `ops/commands.py` (the `/gather` + `/triage`
+  table with `parse`/`describe`/honest-unknown, no dynamic imports) and
+  `src/connect.nim` ports `connect.py` plus both sign-ins (`google` over
+  loopback OAuth, `waku-memory` over the MCP bridge — every browser and
+  socket step injected, so tests never open either). The dashboard chat
+  answers the table without building an agent first.
 - `src/brief.nim` ports `ops/brief.py` (`runBrief` → outbox txt).
 - `src/client.nim` ports `get_client` (row lookup, key scoping, default
   models, endpoint resolution, helpful startup errors).
@@ -230,11 +264,8 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
 
 ## What is not ported yet
 
-Full tool wiring (`build_registry` — the
-registry takes injected tools until the remaining tools land), the memory
-layer (gated retrieval, consolidation, MEMORY.md sync), the `connect`
-flows, the dashboard gateway supervisor (7d2-3, so `waku dashboard` still
-reports each gateway instead of running it), OTel spans, and the evals. The
+The hosted memory backends (supabase/mem0/zep/langmem/notion — no switch
+in `Settings`, sqlite answers honestly), OTel spans, and the evals. The
 phase list with its
 gates lives in
 [docs/nim-port-design.md](../docs/nim-port-design.md).

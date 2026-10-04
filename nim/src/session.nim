@@ -12,8 +12,9 @@
 ##   chat-log half is the `db` handle (`logChat`/`sessionHistory` in
 ##   memory.nim), the retrieval half rides as two nil-able `RetrieveFn`
 ##   seams. A nil `db` means memory is not wired (same as Python's
-##   `memory=None`); nil seams mean the retrieval layer (a later phase)
-##   hasn't arrived yet.
+##   `memory=None`); `wireMemory` (memory_live.nim) fills the seams for
+##   every agent the builders create, while tests keep building unwired
+##   agents straight from `newSession`.
 ## - The clock line keeps Python's words but drops the `%Z` zone name:
 ##   `std/times` exposes the UTC offset portably, not the abbreviation, so
 ##   the line reads `(... (UTC+0200))` instead of `(CEST, UTC+0200)`. The

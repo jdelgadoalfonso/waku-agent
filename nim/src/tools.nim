@@ -11,8 +11,28 @@
 ## progress events); the loop's observer is wired in phase 3, not here.
 
 import std/json
+import std/monotimes
+import std/os
+import std/osproc
+import std/streams
+import std/strtabs
+import std/times
 
 type
+  ProcResult* = object
+    ## One finished (or killed) subprocess: `timedOut` means the
+    ## deadline fired first (exit code is then meaningless) — the
+    ## explicit shape Python's `TimeoutExpired` branch carries.
+    timedOut*: bool
+    code*: int
+    stdout*: string
+    stderr*: string
+
+  ProcRunner* = proc(argv: seq[string], workdir: string,
+      timeoutSec: int): ProcResult {.closure.}
+    ## Run and capture. Tests inject recordings; tools pass
+    ## `runProcess` (below) for the live path.
+
   ToolFn* = proc(args: JsonNode): string {.closure.}
 
   Tool* = object
@@ -54,6 +74,47 @@ proc execute*(reg: ToolRegistry, name: string, args: JsonNode): string =
       except CatchableError as exc:
         return "Error running " & name & ": " & exc.msg
   return "Error: unknown tool '" & name & "'"
+
+proc runProcess*(argv: seq[string], workdir = "", timeoutSec = 20,
+    env: StringTableRef = nil): ProcResult =
+  ## One subprocess, captured, with an explicit deadline: stdin starts
+  ## closed (readers see EOF, like `DEVNULL`), a live deadline kills at
+  ## `timeoutSec` (`timedOut`), anything else returns its exit code. A
+  ## missing binary is `code: 127` with the OS reason — callers map it
+  ## to their install hint. `env: nil` inherits the process environment.
+  if argv.len == 0:
+    return ProcResult(timedOut: false, code: 127, stdout: "",
+      stderr: "no command")
+  var p: Process
+  try:
+    p = startProcess(argv[0], workingDir = workdir, args = argv[1 .. ^1],
+      env = env, options = {poUsePath})
+  except OSError as exc:
+    return ProcResult(timedOut: false, code: 127, stdout: "",
+      stderr: exc.msg)
+  try:
+    p.inputStream.close()
+  except OSError, IOError:
+    discard
+  let deadline = getMonoTime() + initDuration(seconds = timeoutSec)
+  while p.running and getMonoTime() < deadline:
+    sleep(50)
+  if p.running:
+    try:
+      p.kill()
+    except OSError:
+      discard
+    result = ProcResult(timedOut: true, code: 124, stdout: "",
+      stderr: "")
+  else:
+    result = ProcResult(timedOut: false, code: p.waitForExit(),
+      stdout: "", stderr: "")
+  try:
+    result.stdout = readAll(p.outputStream)
+    result.stderr = readAll(p.errorStream)
+  except OSError, IOError:
+    discard
+  p.close()
 
 proc hasTool*(reg: ToolRegistry, name: string): bool =
   ## True when `name` is registered (convenience; Python uses `in` on dict).

@@ -157,17 +157,27 @@ unidad que lo necesite); cambiarlo rompería `test_cli.nim`.
   frontend (hoy `staticDir` en disco), server multihilo (single-thread
   documentado desde 8b), runners vivos (harness de compare/memoria,
   jueces Jev/LLM, lecturas y wipes hosted — todos seams nil con error
-  honesto), y el port de `judgment_cases` (las 44 cases etiquetadas tras
-  el `JsonNode` inyectado). Frontend intacto en toda la fase.
+  honesto), y el port de `judgment_cases` (las 25 cases etiquetadas tras
+  el `JsonNode` inyectado — 5 suites × 5 cases, verificado contra Python). Frontend intacto en toda la fase.
 
 ## Decisiones
 - Static-en-disco por ahora: `staticDir` apunta al checkout
   (`waku/ops/static/`). El embed en compilación es decisión de CIERRE de
   fase (binario único sin Python): anotada como pendiente, no implementada.
-- `/api/data` es subset de estado (identidad + spend + health + puntero de
-  trace). El `collect()` completo (turnos, introspección db, skills,
-  topologías, eval report) se reparte en 8b–8d; el contrato pinea PATHS,
-  no claves de payload.
+- `/api/data` era subset de estado (identidad + spend + health + puntero de
+  trace). Desde entonces aterrizaron el bloque `graph` (flag + topologías
+  del motor + runs + quick/full desde el trace), `turns` + `stats`
+  (agrupación turn_start/turn_end con latencia y costo repreciado) y un
+  test de contrato frontend (`D.`/`d.` leídos del JS deben estar servidos
+  o en `knownGaps`): el contrato ahora pinea PATHS **y** claves de payload.
+  Del `collect()` completo ya aterrizaron también: forma `total_*` de
+  `usage`, facts/episodios/calendar/skills, introspección db, eval
+  report/history, sesiones/chat_log/soul/outbox, `wake_scans`/`trace_tail`,
+  `tools` y `consolidate_every` (más `current_session` con resume del thread
+  fresco, `settings` cableado y `providers` (filas completas sin filtrar
+  secretos, con health almacenado y hook de gateway cuando existen).
+  La lista `knownGaps` del test de contrato queda vacía: todo lo que
+  el SPA lee de `/api/data` está servido.
 - Cuerpos JSON con `$` stdlib (compacto), no `jsonDumps` espaciado: el
   navegador parsea, la paridad byte a byte solo aplica a archivos que el
   dashboard LEE (usage.jsonl, meta de chat).

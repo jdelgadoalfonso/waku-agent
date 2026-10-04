@@ -146,7 +146,7 @@ proc jsonStr(node: JsonNode, key: string): string =
   let v = node[key]
   if v.kind == JString: v.getStr() else: ""
 
-proc round4(x: float): float =
+proc round4*(x: float): float =
   round(x * 10000.0) / 10000.0
 
 proc usageSummary*(home: string,

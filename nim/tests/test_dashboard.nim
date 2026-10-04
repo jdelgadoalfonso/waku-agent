@@ -7,6 +7,7 @@ import std/json
 import std/os
 import std/strutils
 import std/tables
+import std/times
 import std/unittest
 
 import db_connector/db_sqlite
@@ -24,6 +25,37 @@ proc freshDir(name: string): string =
   if dirExists(result):
     removeDir(result)
   createDir(result)
+
+proc payloadKeys*(src: string): seq[string] =
+  ## Every `D.<key>` / `d.<key>` read in one frontend file: `D` is the
+  ## global `/api/data` blob and the views receive it as `d`, so both
+  ## spellings are payload reads. DOM members on unrelated `d` locals
+  ## (`querySelector`, `innerHTML`, …) are denied by name — a new one
+  ## shows up as a missing payload key, and the fix is extending that
+  ## list, never inventing an endpoint key for it.
+  const domDeny = ["addEventListener", "appendChild", "body",
+    "checked", "classList", "className", "click", "close", "createElement",
+    "currentTarget", "dataset", "disabled", "files", "focus",
+    "getAttribute", "getElementById", "innerHTML", "preventDefault",
+    "querySelector", "querySelectorAll", "remove", "reset", "setAttribute",
+    "show", "showModal", "stopPropagation", "style", "submit", "target",
+    "textContent", "value"]
+  const ident = {'a' .. 'z', 'A' .. 'Z', '0' .. '9', '_', '$'}
+  var i = 0
+  while i < src.len - 2:
+    if (src[i] == 'D' or src[i] == 'd') and src[i + 1] == '.' and
+        (i == 0 or src[i - 1] notin ident):
+      var j = i + 2
+      var key = ""
+      while j < src.len and src[j] in ident:
+        key.add(src[j])
+        inc j
+      if key.len > 0 and key[0] in {'a' .. 'z'} and key notin domDeny and
+          key notin result:
+        result.add(key)
+      i = j
+    else:
+      inc i
 
 proc testDeps(home, staticDir: string): DashboardDeps =
   DashboardDeps(home: home, staticDir: staticDir, provider: "anthropic",
@@ -241,7 +273,7 @@ suite "phase 8a /api/data status":
     assert node["home"].getStr().len > 0
     assert node["generated_at"].getStr() == "2026-10-01T00:00:00+00:00"
     assert node["usage"]["calls"].getInt() == 1
-    assert node["usage"]["cost"].getFloat() == 18.0
+    assert node["usage"]["total_cost"].getFloat() == 18.0
     assert node["connections"].kind == JArray
     assert node["trace"]["file"].getStr() == "none"
     removeDir(root)
@@ -257,6 +289,394 @@ suite "phase 8a /api/data status":
     assert node["trace"]["file"].getStr() == "2026-10-01.jsonl"
     assert node["trace"]["lines"].getInt() == 1
     removeDir(root)
+
+  test "graph block ships engine topologies, disabled by default":
+    let root = freshDir("waku-dash-datagraph")
+    createDir(root / "static")
+    let node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    let g = node["graph"]
+    assert g["enabled"].getBool() == false
+    assert g["workflows"].len == 2
+    assert g["workflows"][0]["name"].getStr() == "triage"
+    assert g["workflows"][1]["name"].getStr() == "gather"
+    for wf in g["workflows"]:
+      assert wf["nodes"].len > 0
+      assert wf["edges"].len > 0
+    assert g["runs"].len == 0
+    assert g["stats"]["quick"].getInt() == 0
+    assert g["stats"]["full"].getInt() == 0
+    removeDir(root)
+
+  test "graph flag follows WAKU_GRAPH_WORKFLOWS":
+    let root = freshDir("waku-dash-datagraphon")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    d.env["WAKU_GRAPH_WORKFLOWS"] = "1"
+    let node = parseJson(handleGet(d, "/api/data")[2])
+    assert node["graph"]["enabled"].getBool() == true
+    removeDir(root)
+
+  test "turns default to an empty array, stats to zeros":
+    # The Loop tab reads `d.turns.length` with no fallback: `undefined`
+    # here is the TypeError that blanks the page, so the empty home must
+    # still serve the shape.
+    let root = freshDir("waku-dash-dataturnsempty")
+    createDir(root / "static")
+    let node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    assert node["turns"].kind == JArray
+    assert node["turns"].len == 0
+    let s = node["stats"]
+    for key in ["turns", "tool_calls", "tool_errors", "gate_skips",
+        "gate_retrieves", "tokens_in", "tokens_out", "cost",
+        "latency_avg", "latency_p95", "trace_files"]:
+      assert s.hasKey(key), key
+    assert s["turns"].getInt() == 0
+    assert s["trace_files"].getInt() == 0
+    removeDir(root)
+
+  test "turns group trace events with latency and repriced cost":
+    let root = freshDir("waku-dash-dataturns")
+    createDir(root / "static")
+    createDir(root / "traces")
+    writeFile(root / "traces" / "2026-10-01.jsonl",
+      "{\"type\": \"turn_start\", \"user_message\": \"hi\", " &
+      "\"ts\": \"2026-10-01T00:00:01+00:00\"}\n" &
+      "{\"type\": \"gate\", \"decision\": \"skip\", \"reason\": \"greeting\", " &
+      "\"ts\": \"2026-10-01T00:00:01+00:00\"}\n" &
+      "{\"type\": \"route\", \"workflow\": \"triage\", " &
+      "\"target\": \"quick_reply\"," &
+      "\"ts\": \"2026-10-01T00:00:02+00:00\"}\n" &
+      "{\"type\": \"triage\", \"route\": \"quick\", \"reason\": \"just thanks\", " &
+      "\"ts\": \"2026-10-01T00:00:02+00:00\"}\n" &
+      "{\"type\": \"llm\", \"usage\": {\"in\": 100, \"out\": 50}, " &
+      "\"ts\": \"2026-10-01T00:00:04+00:00\"}\n" &
+      "{\"type\": \"tool\", \"tool\": \"save_note\", " &
+      "\"args\": {}, \"output\": \"boom failed hard. rest\", " &
+      "\"ts\": \"2026-10-01T00:00:05+00:00\"}\n" &
+      "{\"type\": \"graph_end\", \"workflow\": \"triage\", \"ms\": 9, " &
+      "\"ts\": \"2026-10-01T00:00:06+00:00\"}\n" &
+      "{\"type\": \"turn_end\", \"reply\": \"hey\", \"iterations\": 2, " &
+      "\"ts\": \"2026-10-01T00:00:07+00:00\"}\n")
+    let node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    assert node["turns"].len == 1
+    let t = node["turns"][0]
+    assert t["user_message"].getStr() == "hi"
+    assert t["reply"].getStr() == "hey"
+    assert t["iterations"].getInt() == 2
+    assert t["gate"]["decision"].getStr() == "skip"
+    assert t["graph"]["route"].getStr() == "quick"
+    assert t["graph"]["reason"].getStr() == "just thanks"
+    assert t["latency_ms"].getInt() == 3000
+    # 100 in @ $3/M + 50 out @ $15/M on the default estimate.
+    assert abs(t["cost"].getFloat() - 0.00105) < 1e-9
+    assert t["tools"].len == 1
+    assert t["tools"][0]["status"].getStr() == "error"
+    assert t["tools"][0]["summary"].getStr() == "boom failed hard"
+    let s = node["stats"]
+    assert s["turns"].getInt() == 1
+    assert s["tool_calls"].getInt() == 1
+    assert s["tool_errors"].getInt() == 1
+    assert s["gate_skips"].getInt() == 1
+    assert s["gate_retrieves"].getInt() == 0
+    assert s["tokens_in"].getInt() == 100
+    assert s["tokens_out"].getInt() == 50
+    assert s["latency_avg"].getInt() == 3000
+    assert s["latency_p95"].getInt() == 3000
+    assert s["trace_files"].getInt() == 1
+    removeDir(root)
+
+  test "an unfinished turn names the hang, a bad stamp blanks latency":
+    let root = freshDir("waku-dash-datunfinished")
+    createDir(root / "static")
+    createDir(root / "traces")
+    writeFile(root / "traces" / "2026-10-01.jsonl",
+      "{\"type\": \"turn_start\", \"user_message\": \"stuck\", " &
+      "\"ts\": \"not-a-time\"}\n")
+    let node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    assert node["turns"].len == 1
+    let t = node["turns"][0]
+    assert t["unfinished"].getBool() == true
+    assert "NEVER FINISHED" in t["reply"].getStr()
+    assert t["latency_ms"].kind == JNull
+    removeDir(root)
+
+  test "usage keeps Python's total_* shape":
+    let root = freshDir("waku-dash-datausage")
+    createDir(root / "static")
+    writeFile(root / "usage.jsonl",
+      "{\"ts\": \"2026-10-01T00:00:00+00:00\", \"provider\": \"nope\", " &
+      "\"model\": \"m\", \"in\": 1000000, \"out\": 1000000}\n")
+    let node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    assert node["usage"]["calls"].getInt() == 1
+    assert node["usage"]["total_in"].getInt() == 1000000
+    assert node["usage"]["total_out"].getInt() == 1000000
+    assert node["usage"]["total_cost"].getFloat() == 18.0
+    removeDir(root)
+
+  test "state rows read an empty home as empty arrays":
+    let root = freshDir("waku-dash-datastateempty")
+    createDir(root / "static")
+    let node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    assert node["facts"].len == 0
+    assert node["episodes"].len == 0
+    assert node["episodes_source"].getStr() == "sqlite"
+    assert node["episodes_error"].getStr() == ""
+    assert node["calendar"].len == 0
+    assert node["outbox"].len == 0
+    assert node["soul"].getStr() == ""
+    assert node["chat_pending"].getInt() == 0
+    assert node["chat_log"].len == 0
+    assert node["sessions"].len == 0
+    assert node["current_session"].getStr().startsWith("dashboard-")
+    assert node["consolidate_every"].getInt() == 6
+    # Bundled repo skills load with no home skill present — like production.
+    assert node["skills"].kind == JArray
+    assert node["eval_report"].kind == JNull
+    assert node["eval_history"].len == 0
+    assert node["wake_scans"].len == 0
+    assert node["trace_tail"].len == 0
+    assert node["trace_errors"].len == 0
+    assert node["trace_file"].kind == JNull
+    assert node["settings"]["provider"].getStr() == "anthropic"
+    let tools = node["tools"]
+    assert tools["apple_on"].getBool() == false
+    assert tools["planned"].len == 0
+    assert tools["mcp"]["configured"].getBool() == false
+    assert tools["mcp"]["live"].getBool() == false
+    var names: seq[string] = @[]
+    for t in tools["catalog"]:
+      names.add(t["name"].getStr())
+    for want in ["create_event", "list_events", "save_note",
+        "send_message", "manage_memory", "update_soul", "create_skill"]:
+      assert want in names, want
+    removeDir(root)
+
+  test "state rows serve seeded facts, episodes, calendar and chat":
+    let root = freshDir("waku-dash-datastateseed")
+    createDir(root / "static")
+    createDir(root / "outbox")
+    let db = connectDb(root)
+    db.exec(sql("INSERT INTO facts (subject, content, source) VALUES " &
+      "('Priya', 'morning meetings', 'user')"))
+    db.exec(sql("INSERT INTO episodes (happened_at, summary) VALUES " &
+      "('2026-09-01', 'a quiet week')"))
+    db.exec(sql("INSERT INTO calendar_events (title, start) VALUES " &
+      "('swim', '2026-10-04T17:00:00')"))
+    db.close()
+    writeFile(root / "SOUL.md", "be kind")
+    writeFile(root / "outbox" / "digest.txt", "x".repeat(500))
+    writeFile(root / "eval_report.json", "{\"ok\": true}")
+    writeFile(root / "eval_runs.jsonl",
+      "{\"n\": 1}\nbad\n{\"n\": 2}\n")
+    let node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    assert node["facts"].len == 1
+    assert node["facts"][0]["subject"].getStr() == "Priya"
+    assert node["facts"][0]["id"].kind == JInt
+    assert node["episodes"].len == 1
+    assert node["episodes"][0]["summary"].getStr() == "a quiet week"
+    assert node["calendar"].len == 1
+    assert node["calendar"][0]["title"].getStr() == "swim"
+    assert node["soul"].getStr() == "be kind"
+    assert node["outbox"].len == 1
+    assert node["outbox"][0]["name"].getStr() == "digest.txt"
+    assert node["outbox"][0]["text"].getStr().len == 400
+    assert node["eval_report"]["ok"].getBool() == true
+    assert node["eval_history"].len == 2
+    assert node["eval_history"][0]["n"].getInt() == 2
+    let tables = node["db"]["tables"]
+    assert tables.len == 4
+    assert tables[0]["name"].getStr() == "calendar_events"
+    var cols: seq[string] = @[]
+    for c in tables[1]["columns"]:
+      cols.add(c.getStr())
+    assert "subject" in cols
+    assert tables[1]["count"].getInt() == 1
+    assert tables[1]["sample"][0]["id"].kind == JInt
+    assert node["db"]["all_tables"].len >= 4
+    removeDir(root)
+
+  test "sessions group chat rows and resume the fresh dashboard thread":
+    let root = freshDir("waku-dash-datasessions")
+    createDir(root / "static")
+    let db = connectDb(root)
+    # Fresh stamps (wall clock): the dashboard thread must resume.
+    let now = format(getTime().utc, "yyyy-MM-dd HH:mm:ss")
+    db.exec(sql("INSERT INTO chat_log (role, content, session_id, source, " &
+      "created_at) VALUES ('user', 'hello', 'dashboard-keep', 'dashboard', '" &
+      now & "')"))
+    db.exec(sql("INSERT INTO chat_log (role, content, session_id, source, " &
+      "created_at) VALUES ('assistant', 'hi', 'dashboard-keep', " &
+      "'dashboard', '" & now & "')"))
+    db.exec(sql("INSERT INTO chat_log (role, content, session_id, source, " &
+      "created_at) VALUES ('user', 'other', 's-2', 'cli', " &
+      "'2026-09-01 00:00:01')"))
+    db.exec(sql("INSERT INTO chat_log (role, content, session_id, source, " &
+      "created_at) VALUES ('assistant', 'yo', 's-2', 'cli', " &
+      "'2026-09-01 00:00:02')"))
+    db.close()
+    let node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    assert node["chat_log"].len == 4
+    assert node["chat_log"][0]["role"].getStr() == "user"
+    assert node["chat_pending"].getInt() == 4
+    assert node["sessions"].len == 2
+    assert node["sessions"][0]["id"].getStr() == "dashboard-keep"
+    assert node["sessions"][0]["messages"].getInt() == 2
+    var sources: seq[string] = @[]
+    for s in node["sessions"][0]["sources"]:
+      sources.add(s.getStr())
+    assert "dashboard" in sources
+    assert node["current_session"].getStr() == "dashboard-keep"
+    removeDir(root)
+
+  test "trace sections read wake scans, tail and file name":
+    let root = freshDir("waku-dash-datatraces")
+    createDir(root / "static")
+    createDir(root / "traces")
+    writeFile(root / "traces" / "2026-10-01.jsonl",
+      "{\"type\": \"wake_scan\", \"heard\": \"waku\", " &
+      "\"ts\": \"2026-10-01T00:00:00+00:00\"}\n" &
+      "{\"type\": \"turn_start\", \"user_message\": \"hi\", " &
+      "\"ts\": \"2026-10-01T00:00:01+00:00\"}\n")
+    let node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    assert node["wake_scans"].len == 1
+    assert node["wake_scans"][0]["heard"].getStr() == "waku"
+    assert node["trace_tail"].len == 2
+    assert node["trace_tail"][0]["detail"].getStr() == "hi"
+    assert node["trace_file"].getStr() == "2026-10-01.jsonl"
+    removeDir(root)
+
+  test "skills list home SKILL.md rows the tab edits":
+    let root = freshDir("waku-dash-dataskills")
+    createDir(root / "static")
+    createDir(root / "skills" / "demo")
+    writeFile(root / "skills" / "demo" / "SKILL.md",
+      "---\nname: demo\ndescription: does things\n---\n\nDo it.\n")
+    let node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    var sk = newJNull()
+    for row in node["skills"]:
+      if row["name"].getStr() == "demo":
+        sk = row
+    assert sk.kind == JObject
+    assert sk["description"].getStr() == "does things"
+    assert sk["body"].getStr() == "Do it."
+    assert sk["editable"].getBool() == true
+    assert sk["rel"].getStr() == "skills" / "demo" / "SKILL.md"
+    removeDir(root)
+
+  test "providers serve card rows without leaking secrets":
+    let root = freshDir("waku-dash-dataproviders")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    d.providers = @[Provider(name: "anthropic", kind: "anthropic",
+      keyEnv: "ANTHROPIC_API_KEY"),
+      Provider(name: "openai", kind: "openai", keyEnv: "OPENAI_API_KEY")]
+    d.env["ANTHROPIC_API_KEY"] = "sk-test-9999"
+    let body = handleGet(d, "/api/data")[2]
+    # The full key must never reach the browser; only the last four.
+    assert "sk-test-9999" notin body
+    let node = parseJson(body)
+    assert node["providers"].len == 2
+    let anthropic = node["providers"][0]
+    assert anthropic["key"].getStr() == "anthropic"
+    assert anthropic["group"].getStr() == "AI Providers"
+    assert anthropic["name"].getStr().len > 0
+    assert anthropic["fields"].len == 1
+    assert anthropic["fields"][0]["configured"].getBool() == true
+    assert anthropic["fields"][0]["last4"].getStr() == "9999"
+    assert anthropic["fields"][0]["value"].getStr() == ""
+    assert anthropic["status"]["state"].getStr() == "configured"
+    assert anthropic.hasKey("install_command")
+    assert anthropic.hasKey("setup_url")
+    let openai = node["providers"][1]
+    assert openai["fields"][0]["configured"].getBool() == false
+    assert openai["status"]["state"].getStr() == "not_configured"
+    removeDir(root)
+
+  test "graph runs and stats read the trace events":
+    let root = freshDir("waku-dash-datagraphruns")
+    createDir(root / "static")
+    createDir(root / "traces")
+    writeFile(root / "traces" / "2026-10-01.jsonl",
+      "{\"type\": \"route\", \"workflow\": \"triage\", " &
+      "\"target\": \"quick_reply\", \"ts\": \"2026-10-01T00:00:01+00:00\"}\n" &
+      "{\"type\": \"graph_end\", \"workflow\": \"triage\", \"ms\": 12, " &
+      "\"steps\": 3, \"path\": [\"classify\", \"quick_reply\"], " &
+      "\"error\": null, \"ts\": \"2026-10-01T00:00:02+00:00\"}\n" &
+      "not json\n")
+    let node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    let g = node["graph"]
+    assert g["stats"]["quick"].getInt() == 1
+    assert g["stats"]["full"].getInt() == 0
+    assert g["runs"].len == 1
+    assert g["runs"][0]["workflow"].getStr() == "triage"
+    assert g["runs"][0]["ms"].getInt() == 12
+    assert g["runs"][0]["at"].getStr() == "2026-10-01T00:00:02+00:00"
+    assert g["runs"][0]["steps"].getInt() == 3
+    assert g["runs"][0]["path"].len == 2
+    removeDir(root)
+
+suite "phase 8a /api/data frontend contract":
+  test "every payload key the SPA reads is served or a named gap":
+    # `refresh()` sets `D = /api/data`, so each `D.<key>` (and the `d.<key>`
+    # reads inside the views that receive it) is a key this endpoint owes
+    # the page. A missing key degrades silently in the browser (a fallback
+    # object, a forever-empty tab), never red in CI — this test fails
+    # closed instead. `knownGaps` is the rest of Python's `collect()` blob,
+    # owned by the still-unlanded 8x units; porting one means deleting its
+    # line here, which the companion test below enforces.
+    let jsDir = normalizedPath(currentSourcePath().parentDir / ".." / ".." /
+      "waku" / "ops" / "static" / "js")
+    if not dirExists(jsDir):
+      skip()
+    # No gaps left: every key the SPA reads is served. Keep the list
+    # (empty) so the next frontend read outside the payload fails here
+    # instead of degrading silently in the browser.
+    const knownGaps: seq[string] = @[]
+    var read: seq[string] = @[]
+    for kind, path in walkDir(jsDir):
+      if kind != pcFile or not path.endsWith(".js"):
+        continue
+      for key in payloadKeys(readFile(path)):
+        if key notin read:
+          read.add(key)
+    assert read.len > 0, "no D./d. reads found — the extractor is broken"
+    let root = freshDir("waku-dash-contract")
+    createDir(root / "static")
+    let node = statusPayload(testDeps(root, root / "static"))
+    var missing: seq[string] = @[]
+    for key in read:
+      if not node.hasKey(key) and key notin knownGaps:
+        missing.add(key)
+    removeDir(root)
+    assert missing.len == 0,
+      "frontend reads unserved /api/data keys: " & missing.join(", ") &
+      " — serve them or name them in knownGaps"
+
+  test "named gaps disappear as their units land":
+    # Fail-closed the other way: a gap that IS served now must leave the
+    # list, so the list can only shrink toward the empty contract.
+    let root = freshDir("waku-dash-contractgaps")
+    createDir(root / "static")
+    let node = statusPayload(testDeps(root, root / "static"))
+    removeDir(root)
+    for gap in ["graph", "turns", "stats", "settings", "db",
+        "sessions", "outbox", "facts", "eval_report", "episodes",
+        "current_session", "chat_log", "calendar", "chat_pending",
+        "consolidate_every", "episodes_error", "episodes_source",
+        "eval_history", "skills", "soul", "tools", "trace_errors",
+        "trace_file", "trace_tail", "wake_scans", "providers"]:
+      assert node.hasKey(gap), gap & " is served — remove it from knownGaps"
 
 suite "phase 8a route surface":
   test "every 8a route is a real Python GET route (contract stays green)":
@@ -1038,7 +1458,7 @@ suite "phase 8c compare wiring":
     createDir(root / "static")
     var d = testDeps(root, root / "static")
     d.nowIso = "2026-10-01T00:00:00+00:00"
-    d.raceFn = proc(message: string, specs: seq[string],
+    d.raceFn = proc(message: string, specs: seq[string], coding: bool,
                      emit: SseEmit): JsonNode =
       var outp = newJArray()
       outp.add(%*{"spec": "a:m", "provider": "a", "model": "m",
@@ -1063,7 +1483,7 @@ suite "phase 8c compare wiring":
     createDir(root / "static")
     var d = testDeps(root, root / "static")
     var raced = false
-    d.raceFn = proc(message: string, specs: seq[string],
+    d.raceFn = proc(message: string, specs: seq[string], coding: bool,
                      emit: SseEmit): JsonNode =
       raced = true
       newJArray()

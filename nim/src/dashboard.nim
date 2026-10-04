@@ -54,7 +54,9 @@
 import std/algorithm
 import std/httpclient
 import std/json
+import std/math
 import std/nativesockets
+import std/sequtils
 import std/net
 import std/os
 import std/osproc
@@ -66,22 +68,38 @@ import std/times
 import db_connector/db_sqlite
 
 import ./app
+import ./apple
 import ./arena
+import ./arena_live
+import ./calendar
 import ./catalog
 import ./cli
 import ./client
+import ./commands
+import ./connect
 import ./config
 import ./db
 import ./discord
+import ./experimental
+import ./gather
 import ./gateway
+import ./github
 import ./http
 import ./integrations
+import ./mcp
 import ./memory
+import ./memory_admin
+import ./judgment_cases
 import ./memory_arena
+import ./memory_live
 import ./pricing
 import ./providers
+import ./registry
+import ./search
 import ./session
+import ./skills except FetchFn
 import ./telegram
+import ./tools
 import ./triage
 import ./whatsapp
 import ./wire
@@ -424,6 +442,292 @@ proc tracePath*(home, today: string): string =
   let day = if today.len > 0: today else: format(now(), "yyyy-MM-dd")
   home / "traces" / day & ".jsonl"
 
+proc readTraceEvents*(home: string): (seq[JsonNode], seq[string]) =
+  ## Every trace event in every `<home>/traces/*.jsonl`, oldest file
+  ## first; bad lines are skipped, like every other reader here. Returns
+  ## the events plus the sorted file paths (Python's `trace_files`).
+  var events: seq[JsonNode] = @[]
+  var files: seq[string] = @[]
+  let dir = home / "traces"
+  if dirExists(dir):
+    for kind, path in walkDir(dir):
+      if kind == pcFile and path.endsWith(".jsonl"):
+        files.add(path)
+  files = sorted(files)
+  for path in files:
+    var text = ""
+    try:
+      text = readFile(path)
+    except IOError:
+      continue
+    for line in text.splitLines():
+      if line.strip().len == 0:
+        continue
+      var ev: JsonNode
+      try:
+        ev = parseJson(line)
+      except JsonParsingError:
+        continue
+      if ev.kind != JObject:
+        continue
+      events.add(ev)
+  result = (events, files)
+
+proc parseTsMs*(raw: string): (bool, int64) =
+  ## `"2026-10-01T12:00:01.123+00:00"` → unix millis. The tracer always
+  ## writes `+00:00`, but any numeric `Z`/`±HH:MM` offset is honored, and
+  ## the `T` may be a space (SQLite `datetime('now')` stamps) — Python's
+  ## `fromisoformat` reads both. Anything else fails closed to
+  ## `(false, 0)` — Python's `fromisoformat` → `None` path — so one bad
+  ## stamp blanks a latency, never the page.
+  let s = raw.strip()
+  if s.len < 19 or (s[10] != 'T' and s[10] != ' ') or s[4] != '-' or
+      s[7] != '-' or s[13] != ':' or s[16] != ':':
+    return (false, 0)
+  var nums: array[6, int]
+  try:
+    nums = [parseInt(s[0 .. 3]), parseInt(s[5 .. 6]), parseInt(s[8 .. 9]),
+            parseInt(s[11 .. 12]), parseInt(s[14 .. 15]),
+            parseInt(s[17 .. 18])]
+  except ValueError:
+    return (false, 0)
+  if nums[1] notin 1 .. 12 or nums[2] notin 1 .. 31 or
+      nums[3] notin 0 .. 23 or nums[4] notin 0 .. 59 or
+      nums[5] notin 0 .. 60:
+    return (false, 0)
+  var rest = if s.len > 19: s[19 .. ^1] else: ""
+  var millis = 0
+  if rest.startsWith("."):
+    var k = 1
+    var digits = ""
+    while k < rest.len and rest[k] in {'0' .. '9'}:
+      if digits.len < 3:
+        digits.add(rest[k])
+      inc k
+    if digits.len == 0:
+      return (false, 0)
+    while digits.len < 3:
+      digits.add('0')
+    try:
+      millis = parseInt(digits)
+    except ValueError:
+      return (false, 0)
+    rest = if k < rest.len: rest[k .. ^1] else: ""
+  var offsetMin = 0
+  if rest == "" or rest == "Z":
+    discard
+  elif (rest[0] == '+' or rest[0] == '-') and rest.len == 6 and
+      rest[3] == ':':
+    try:
+      offsetMin = parseInt(rest[1 .. 2]) * 60 + parseInt(rest[4 .. 5])
+      if rest[0] == '-':
+        offsetMin = -offsetMin
+    except ValueError:
+      return (false, 0)
+  else:
+    return (false, 0)
+  try:
+    let dt = dateTime(nums[0], Month(nums[1]), MonthdayRange(nums[2]),
+                      HourRange(nums[3]), MinuteRange(nums[4]),
+                      SecondRange(nums[5]), zone = utc())
+    return (true, toUnix(toTime(dt)) * 1000 + millis.int64 -
+      offsetMin.int64 * 60000)
+  except CatchableError:
+    return (false, 0)
+
+proc safeInt(n: JsonNode): int =
+  ## Ledger numbers default to 0 when missing or mistyped, like Python's
+  ## `dict.get(key, 0)` (the traces are append-only and hand-editable).
+  case n.kind
+  of JInt: int(n.getBiggestInt())
+  of JFloat: int(n.getFloat())
+  else: 0
+
+proc turnSection*(home, provider, model: string,
+                  providers: seq[Provider]): (JsonNode, JsonNode) =
+  ## `(turns, stats)` from the trace events — port of the turns-grouping
+  ## + stats block in Python `collect()`: events between `turn_start` and
+  ## `turn_end` become one turn (gate, llm calls, tools, graph route,
+  ## reply); each turn pays its latency (first-to-last stamp) and its
+  ## repriced cost, and `stats` aggregates the FULL list while `turns`
+  ## serves at most the newest 50. Always arrays — the Loop tab reads
+  ## `d.turns.length` with no fallback, so `undefined` here is the
+  ## `TypeError` that blanks the page.
+  ##
+  ## Two deliberate divergences: tool rows read `statusOf` (the port's
+  ## ok/error classifier — the `warn` middle state has no seam in
+  ## `app.statusOf`, so warn-ish outputs read ok), and pricing never
+  ## touches the network (Python warms the catalog cache; `priceFor`
+  ## reads it as-is, offline).
+  let (events, files) = readTraceEvents(home)
+  let fileCount = files.len
+  var turns: seq[JsonNode] = @[]
+  var current = newJNull()
+  for ev in events:
+    let typ = ev.jget("type").getStr()
+    if typ == "turn_start":
+      current = %*{"user_message": ev.jget("user_message").getStr(),
+                   "ts": ev.jget("ts").getStr(), "gate": newJNull(),
+                   "llm_calls": newJArray(), "tools": newJArray(),
+                   "reply": newJNull()}
+    elif current.kind != JObject:
+      continue
+    elif typ == "gate":
+      current["gate"] = copy(ev)
+    elif typ == "route":
+      let target = ev.jget("target").getStr()
+      var g = current.jget("graph")
+      if g.kind != JObject:
+        g = %*{"workflow": "", "route": "", "reason": ""}
+      g["workflow"] = %ev.jget("workflow").getStr()
+      g["route"] = %(if target == "quick_reply": "quick" else: "full")
+      current["graph"] = g
+    elif typ == "triage":
+      var g = current.jget("graph")
+      if g.kind != JObject:
+        g = %*{"workflow": "", "route": "", "reason": ""}
+      g["reason"] = %ev.jget("reason").getStr()
+      current["graph"] = g
+    elif typ == "llm":
+      current["llm_calls"].add(copy(ev))
+    elif typ == "tool":
+      current["tools"].add(copy(ev))
+    elif typ == "consolidation":
+      current["consolidation"] = copy(ev)
+    elif typ == "turn_end":
+      current["reply"] = ev.jget("reply")
+      current["iterations"] = ev.jget("iterations")
+      turns.add(current)
+      current = newJNull()
+  if current.kind == JObject:
+    # A turn that never ended = the smoking gun for hangs.
+    current["reply"] = %"TURN NEVER FINISHED — check for a hang after this point"
+    current["unfinished"] = %true
+    turns.add(current)
+  let (pin, pout) = priceFor(provider, model, providers)
+  var latencies: seq[int] = @[]
+  var toolCalls = 0
+  var toolErrors = 0
+  var skips = 0
+  var retrieves = 0
+  var tin = 0
+  var tout = 0
+  var totalCost = 0.0
+  for t in turns:
+    var ti = 0
+    var to = 0
+    for c in t.jget("llm_calls"):
+      ti += safeInt(c.jget("usage").jget("in"))
+      to += safeInt(c.jget("usage").jget("out"))
+    tin += ti
+    tout += to
+    # Priced from this turn's own calls, like Python — never a total.
+    t["cost"] = %(float(ti) / 1000000.0 * pin +
+      float(to) / 1000000.0 * pout)
+    totalCost += t["cost"].getFloat()
+    let (okStart, startMs) = parseTsMs(t.jget("ts").getStr())
+    var endMs: int64 = 0
+    var hasEnd = false
+    let calls = t.jget("llm_calls")
+    if calls.kind == JArray and calls.len > 0:
+      let (ok, ms) = parseTsMs(calls[calls.len - 1].jget("ts").getStr())
+      if ok:
+        endMs = ms
+        hasEnd = true
+    if okStart and hasEnd:
+      let lat = int(endMs - startMs)
+      t["latency_ms"] = %lat
+      latencies.add(lat)
+    else:
+      t["latency_ms"] = newJNull()
+    for x in t.jget("tools"):
+      let output = x.jget("output").getStr()
+      x["status"] = %statusOf(output)
+      var summary = output.split(". ")[0]
+      if summary.len > 120:
+        summary = summary[0 ..< 120]
+      x["summary"] = %summary
+      inc toolCalls
+      if x["status"].getStr() == "error":
+        inc toolErrors
+    let dec = t.jget("gate").jget("decision").getStr()
+    if dec == "skip":
+      inc skips
+    elif dec == "retrieve":
+      inc retrieves
+  latencies = sorted(latencies)
+  var latSum = 0
+  for l in latencies:
+    latSum += l
+  let stats = %*{"turns": turns.len, "tool_calls": toolCalls,
+    "tool_errors": toolErrors, "gate_skips": skips,
+    "gate_retrieves": retrieves, "tokens_in": tin, "tokens_out": tout,
+    "cost": round(totalCost * 10000.0) / 10000.0,
+    "latency_avg": (if latencies.len > 0: latSum div latencies.len else: 0),
+    "latency_p95": (if latencies.len > 0:
+      latencies[min(latencies.len - 1, int(float(latencies.len) * 0.95))]
+      else: 0),
+    "trace_files": fileCount}
+  var served = newJArray()
+  var n = 0
+  for i in countdown(turns.len - 1, 0):
+    if n >= 50:
+      break
+    served.add(turns[i])
+    inc n
+  result = (served, stats)
+
+proc graphSection*(home: string, enabled: bool): JsonNode =
+  ## Port of the `"graph"` block in Python `collect()`: topologies
+  ## straight from the engine (never hand-drawn, so the picture cannot
+  ## drift) plus the quick/full split and the last runs from the trace
+  ## events. A page load never builds an agent — this only reads the
+  ## trace files, skipping bad lines like every other reader here.
+  ##
+  ## `enabled` gates TRIAGE ONLY, the per-message front door: `waku
+  ## gather` is a routine run by hand and ignores the flag, like Python.
+  var routes: seq[string] = @[]
+  var ends: seq[JsonNode] = @[]
+  let (events, _) = readTraceEvents(home)
+  for ev in events:
+    let typ = ev.jget("type").getStr()
+    if typ == "route":
+      routes.add(ev.jget("target").getStr())
+    elif typ == "graph_end":
+      ends.add(ev)
+  var quick = 0
+  var full = 0
+  for t in routes:
+    if t == "quick_reply":
+      inc quick
+    elif t == "full_agent":
+      inc full
+  var runs = newJArray()
+  # The last few completed runs, newest first: Overview needs this
+  # because triage runs itself on every message while gather runs when
+  # asked, so "which chart is relevant" is a question only the trace
+  # can answer.
+  let start = if ends.len > 8: ends.len - 8 else: 0
+  for i in countdown(ends.len - 1, start):
+    if i < 0:
+      break
+    let e = ends[i]
+    var path = e.jget("path")
+    if path.kind != JArray:
+      path = newJArray()
+    let ms = e.jget("ms")
+    let steps = e.jget("steps")
+    runs.add(%*{"workflow": e.jget("workflow").getStr(),
+                 "ms": (if ms.kind == JInt: ms else: newJNull()),
+                 "at": e.jget("ts").getStr(),
+                 "steps": (if steps.kind == JInt: steps else: newJNull()),
+                 "path": path,
+                 "error": e.jget("error")})
+  result = %*{"enabled": enabled,
+               "workflows": [triageTopology(), gatherTopology()],
+               "runs": runs,
+               "stats": {"quick": quick, "full": full}}
+
 proc parseCursor*(raw: string): (bool, int) =
   ## Port of the `cursor` query parse: an optional `-`, then digits only.
   ## Anything else is "no cursor", like Python's `... else None`. (Python
@@ -479,11 +783,397 @@ proc catalogSettingsOf*(d: DashboardDeps): CatalogSettings =
   CatalogSettings(home: d.home, provider: d.provider, model: d.model,
     smallModel: d.smallModel, baseUrl: d.baseUrl, apiKey: d.apiKey)
 
+proc settingsInfo*(d: DashboardDeps): JsonNode =
+  ## Port of `settings_api.settings_info`, as the subset this port owns:
+  ## provider/model resolution, key presence (last-4 never leaves the
+  ## machine — only the set flag), the curated pin shortlist with each
+  ## provider's default first, disabled providers, and the two toggles.
+  ## Display-only extras (typesafe key, pi presence, provider labels)
+  ## stay out: only what the Settings page reads is served.
+  let (model, smallModel) = modelsFor(d.provider, d.model, d.smallModel,
+    d.providers)
+  var pinned = newJArray()
+  var seen: seq[string] = @[]
+  for spec in pinnedSpecs(d.home, d.providers):
+    let idx = spec.find(':')
+    if idx < 0 or idx + 1 >= spec.len:
+      continue
+    let p = spec[0 ..< idx]
+    let first = p notin seen
+    if first:
+      seen.add(p)
+    pinned.add(%*{"provider": p, "model": spec[idx + 1 .. ^1],
+                   "default": first})
+  var disabled = newJArray()
+  for part in d.env.getOrDefault("WAKU_DISABLED_PROVIDERS", "").split(','):
+    if part.strip().len > 0:
+      disabled.add(%part.strip())
+  %*{
+    "provider": d.provider,
+    "model": model,
+    "small_model": smallModel,
+    "base_url": d.baseUrl,
+    "custom_key_set": d.apiKey.len > 0,
+    "disabled_providers": disabled,
+    "pinned": pinned,
+    "experimental": d.env.getOrDefault("WAKU_EXPERIMENTAL", "") in
+      ["1", "true", "yes"],
+    "graph_workflows": d.env.getOrDefault("WAKU_GRAPH_WORKFLOWS", "") in
+      ["1", "true", "yes"],
+  }
+
+proc stateRows*(home: string): JsonNode =
+  ## Everything in Python `collect()` that reads state.db and the home
+  ## files: facts, sqlite episodes, calendar, outbox, SOUL, chat counters
+  ## and rows, sessions, db introspection. One open connection per call
+  ## (like Python's per-`collect()` connect); a page load never builds
+  ## an agent.
+  proc rowStr(row: Row, i: int): string =
+    ## `db_connector` hands every column back as text; nullable columns
+    ## arrive empty, like Python's `None` renders in these read-only rows.
+    if i < row.len: row[i] else: ""
+  let db = connectDb(home)
+  var facts = newJArray()
+  for row in db.getAllRows(sql("SELECT id, subject, content, source, " &
+      "created_at FROM facts ORDER BY id DESC")):
+    facts.add(%*{"id": parseInt(rowStr(row, 0)), "subject": rowStr(row, 1),
+                 "content": rowStr(row, 2), "source": rowStr(row, 3),
+                 "created_at": rowStr(row, 4)})
+  # Episodes stay sqlite-only: the port has no Notion store, so the
+  # backend switch Python reads has no seam here — honestly sqlite.
+  var episodes = newJArray()
+  for row in db.getAllRows(sql("SELECT id, happened_at, summary FROM " &
+      "episodes ORDER BY happened_at DESC")):
+    episodes.add(%*{"id": parseInt(rowStr(row, 0)),
+                     "happened_at": rowStr(row, 1),
+                     "summary": rowStr(row, 2)})
+  var calendar = newJArray()
+  for row in db.getAllRows(sql("SELECT title, start, \"end\", attendees, " &
+      "created_at FROM calendar_events ORDER BY start")):
+    calendar.add(%*{"title": rowStr(row, 0), "start": rowStr(row, 1),
+                     "end": rowStr(row, 2), "attendees": rowStr(row, 3),
+                     "created_at": rowStr(row, 4)})
+  let chatPending = parseInt(db.getRow(sql("SELECT COUNT(*) FROM chat_log " &
+    "WHERE consolidated=0"))[0])
+  var chatLog = newJArray()
+  for row in db.getAllRows(sql("SELECT role, content, consolidated, " &
+      "source, session_id, created_at FROM chat_log " &
+      "ORDER BY id DESC LIMIT 80")):
+    chatLog.add(%*{"role": rowStr(row, 0), "content": rowStr(row, 1),
+                    "consolidated": parseInt(rowStr(row, 2)),
+                    "source": rowStr(row, 3), "session_id": rowStr(row, 4),
+                    "created_at": rowStr(row, 5)})
+  var chatRev = newJArray()
+  for i in countdown(chatLog.len - 1, 0):
+    chatRev.add(chatLog[i])
+  var sessions = newJArray()
+  for g in db.getAllRows(sql("SELECT session_id, COUNT(*) AS messages, " &
+      "MAX(created_at) AS last_at FROM chat_log GROUP BY session_id " &
+      "ORDER BY last_at DESC")):
+    let sid = rowStr(g, 0)
+    let first = db.getRow(sql("SELECT content FROM chat_log WHERE " &
+      "session_id=? AND role='user' ORDER BY id LIMIT 1"), sid)
+    let last = db.getRow(sql("SELECT role, content FROM chat_log WHERE " &
+      "session_id=? ORDER BY id DESC LIMIT 1"), sid)
+    var sources = newJArray()
+    for r in db.getAllRows(sql("SELECT DISTINCT source FROM chat_log " &
+        "WHERE session_id=?"), sid):
+      sources.add(%rowStr(r, 0))
+    let lastRole = if last.len > 0: last[0] else: ""
+    let lastContent = if last.len > 1: last[1] else: ""
+    let preview = (if lastRole == "user": "you: " else: "waku: ") &
+      lastContent[0 ..< min(80, lastContent.len)]
+    let firstContent = if first.len > 0: first[0] else: ""
+    sessions.add(%*{"id": sid,
+      "title": (if firstContent.len > 0:
+        firstContent[0 ..< min(60, firstContent.len)] else: "(empty)"),
+      "last": preview, "sources": sources,
+      "messages": parseInt(rowStr(g, 1)), "last_at": rowStr(g, 2)})
+  var tables = newJArray()
+  for name in ["calendar_events", "facts", "episodes", "chat_log"]:
+    var cols: seq[string] = @[]
+    var types = newJObject()
+    for col in db.getAllRows(sql("PRAGMA table_info(" & name & ")")):
+      cols.add(col[1])
+      types[col[1]] = %col[2]
+    let count = parseInt(db.getRow(sql("SELECT COUNT(*) FROM " & name))[0])
+    var sample = newJArray()
+    for row in db.getAllRows(sql("SELECT * FROM " & name &
+        " ORDER BY rowid DESC LIMIT 200")):
+      var obj = newJObject()
+      for i, c in cols:
+        let v = rowStr(row, i)
+        let t = types[c].getStr().toUpperAscii()
+        if t.contains("INT"):
+          try:
+            obj[c] = %parseInt(v)
+          except ValueError:
+            obj[c] = %v
+        elif t in ["REAL", "FLOAT", "DOUBLE", "NUMERIC"]:
+          try:
+            obj[c] = %parseFloat(v)
+          except ValueError:
+            obj[c] = %v
+        else:
+          obj[c] = %v
+      sample.add(obj)
+    tables.add(%*{"name": name, "columns": cols, "types": types,
+                   "count": count, "sample": sample})
+  var allTables: seq[string] = @[]
+  for row in db.getAllRows(sql("SELECT name FROM sqlite_master WHERE " &
+      "type='table' ORDER BY name")):
+    allTables.add(row[0])
+  var fts = newJArray()
+  for t in allTables:
+    if t.endsWith("_fts"):
+      fts.add(%t)
+  var allJ = newJArray()
+  for t in allTables:
+    allJ.add(%t)
+  let dbPath = absolutePath(home / "state.db")
+  var dbSize = 0
+  try:
+    dbSize = int(getFileSize(dbPath))
+  except OSError:
+    discard
+  db.close()
+  var outbox = newJArray()
+  let outDir = home / "outbox"
+  if dirExists(outDir):
+    var names: seq[string] = @[]
+    for kind, path in walkDir(outDir):
+      if kind == pcFile and path.endsWith(".txt"):
+        names.add(path)
+    var n = 0
+    for path in sorted(names, proc(a, b: string): int = cmp(b, a)):
+      if n >= 20:
+        break
+      var text = ""
+      try:
+        text = readFile(path)
+      except IOError:
+        continue
+      outbox.add(%*{"name": lastPathPart(path),
+                     "text": text[0 ..< min(400, text.len)]})
+      inc n
+  let soulPath = home / "SOUL.md"
+  let soul = if fileExists(soulPath): readFile(soulPath) else: ""
+  result = %*{"facts": facts, "episodes": episodes,
+    "episodes_source": "sqlite", "episodes_error": "",
+    "calendar": calendar, "outbox": outbox, "soul": soul,
+    "chat_pending": chatPending, "chat_log": chatRev,
+    "sessions": sessions,
+    "db": {"path": dbPath, "size": dbSize, "tables": tables,
+              "fts": fts, "all_tables": allJ}}
+
+proc dashboardSession*(db: DbConn, nowMs: int64,
+                        idleMinutes = 60): string =
+  ## Port of `resume_or_new_session`: the most recent `source='dashboard'`
+  ## thread still fresh (within the idle window) else a new dated one —
+  ## without this every restart orphaned the visible chat under an old id.
+  ## Match by source, never by id prefix: "+ New chat" mints `s-...` ids.
+  let row = db.getRow(sql("SELECT session_id, MAX(created_at) AS last_at " &
+    "FROM chat_log WHERE source='dashboard' GROUP BY session_id " &
+    "ORDER BY last_at DESC LIMIT 1"))
+  if row.len == 2 and row[0].len > 0:
+    let (ok, stamp) = parseTsMs(row[1])
+    if ok and nowMs - stamp <= idleMinutes.int64 * 60000:
+      return row[0]
+  return "dashboard-" & format(fromUnix(nowMs div 1000).utc,
+    "yyyyMMdd-HHmmss")
+
+proc skillRows*(home: string, bundled: seq[string]): JsonNode =
+  ## Port of the `skills` list in Python `collect()`: every loaded skill
+  ## with the fields the Skills tab edits (name, description, body, path,
+  ## home-relative-or-absolute `rel`, `editable` under `<home>/skills`).
+  result = newJArray()
+  let homeAbs = absolutePath(home)
+  let skillsAbs = homeAbs / "skills" & DirSep
+  for info in listDistribSkills(home, bundled):
+    var text = ""
+    try:
+      text = readFile(info.path)
+    except IOError:
+      continue
+    let front = frontmatterOf(text)
+    let lines = text.splitLines()
+    var body = ""
+    var bars = 0
+    var k = 0
+    for i, line in lines:
+      if line.strip() == "---":
+        inc bars
+        if bars == 2:
+          k = i + 1
+          break
+    if bars == 2:
+      body = lines[k .. ^1].join("\n").strip()
+    let p = absolutePath(info.path)
+    let rel = if p.startsWith(homeAbs & DirSep): p[homeAbs.len + 1 .. ^1]
+              else: p
+    result.add(%*{"name": info.name,
+      "description": frontmatterValue(front, "description"),
+      "body": body, "path": info.path, "rel": rel,
+      "editable": p.startsWith(skillsAbs)})
+
+proc toolCatalog*(db: DbConn, home: string): JsonNode =
+  ## Port of `tools_info`: the display-only capability catalog — the same
+  ## local tools minus anything that would spawn a subprocess or need the
+  ## network on a 5-second poll (no MCP servers, no web search: the port
+  ## has no search tool yet, so the catalog lists what it can actually
+  ## run). No Apple tools and nothing planned, honestly empty.
+  const flagship = ["create_event", "list_events", "save_note",
+    "send_message"]
+  const selfmgmt = ["manage_memory", "update_soul", "create_skill"]
+  var mcpNames: seq[string] = @[]
+  let mcpPath = home / "mcp.json"
+  if fileExists(mcpPath):
+    try:
+      let doc = parseJson(readFile(mcpPath))
+      for s in doc.jget("servers"):
+        let n = s.jget("name").getStr()
+        mcpNames.add(if n.len > 0: n else: "?")
+    except JsonParsingError, IOError:
+      discard
+  var tools: seq[Tool] = @[makeCreateEventTool(db, home),
+    makeListEventsTool(db), makeSaveNoteTool(db),
+    makeSendMessageTool(home), makeUpdateSoulTool(home),
+    makeManageMemoryTool(db), makeCreateSkillTool(home)]
+  var items: seq[JsonNode] = @[]
+  for t in tools:
+    var source = "other"
+    if t.name in flagship:
+      source = "flagship"
+    elif t.name in selfmgmt:
+      source = "self-management"
+    elif mcpNames.anyIt(t.name.startsWith(it & "_")):
+      source = "mcp"
+    items.add(%*{"name": t.name, "description": t.description,
+                  "source": source})
+  items.sort(proc(x, y: JsonNode): int =
+    let a = x["source"].getStr() & "\x00" & x["name"].getStr()
+    let b = y["source"].getStr() & "\x00" & y["name"].getStr()
+    cmp(a, b))
+  var catalog = newJArray()
+  for item in items:
+    catalog.add(item)
+  var servers = newJArray()
+  for n in mcpNames:
+    servers.add(%n)
+  result = %*{"catalog": catalog,
+    "mcp": {"configured": fileExists(mcpPath), "servers": servers,
+               "live": false},
+    "apple_on": false, "planned": newJArray()}
+
+proc evalSection*(home: string): (JsonNode, JsonNode) =
+  ## `(eval_report, eval_history)`: the report file verbatim (null when
+  ## absent) plus the last 20 eval runs, newest first, bad lines skipped.
+  var report = newJNull()
+  let reportPath = home / "eval_report.json"
+  if fileExists(reportPath):
+    try:
+      report = parseJson(readFile(reportPath))
+    except JsonParsingError, IOError:
+      discard
+  var runs: seq[JsonNode] = @[]
+  let histPath = home / "eval_runs.jsonl"
+  if fileExists(histPath):
+    var text = ""
+    try:
+      text = readFile(histPath)
+    except IOError:
+      text = ""
+    for line in text.splitLines():
+      if line.strip().len == 0:
+        continue
+      try:
+        runs.add(parseJson(line))
+      except JsonParsingError:
+        continue
+  var history = newJArray()
+  for i in countdown(runs.len - 1, max(0, runs.len - 20)):
+    history.add(runs[i])
+  result = (report, history)
+
+proc providersSection*(d: DashboardDeps): JsonNode =
+  ## Port of `"providers": [asdict(view) for view in list_providers()]`
+  ## — the full card rows the Models page and the first-run gate read
+  ## (`key`/`name` plus `fields[].configured` for the setup gate,
+  ## `last4` for the key form). Secrets never leave as values, only the
+  ## configured flag and the last four, like Python. Stored health and
+  ## the gateway hook feed the status when present, exactly where
+  ## Python reads its health store and gateway provider.
+  var health: HealthFn = nil
+  if not d.store.isNil:
+    let store = d.store
+    health = proc(key: string): IntegrationStatus =
+      let (found, status) = storedHealth(store, key)
+      if found:
+        status
+      else:
+        IntegrationStatus(state: configured,
+          message: "configured — not tested yet")
+  result = newJArray()
+  for view in listProviders(d.providers, d.env, health = health,
+      gatewayStatus = d.gatewayStatus):
+    var fields = newJArray()
+    for f in view.fields:
+      var opts = newJArray()
+      for o in f.options:
+        opts.add(%o)
+      var labels = newJArray()
+      for o in f.optionLabels:
+        labels.add(%o)
+      fields.add(%*{"name": f.name, "label": f.label,
+                     "kind": $f.kind, "required": f.required,
+                     "secret": f.secret, "configured": f.configured,
+                     "last4": f.last4, "options": opts,
+                     "value": f.value, "help": f.help,
+                     "option_labels": labels})
+    result.add(%*{"key": view.key, "group": view.group,
+                   "name": view.name, "what": view.what,
+                   "status": {"state": $view.status.state,
+                     "message": view.status.message,
+                     "checked_at": (if view.status.checkedAt.len > 0:
+                       %view.status.checkedAt else: newJNull())},
+                   "fields": fields,
+                   "install_command": view.installCommand,
+                   "setup_url": view.setupUrl})
+
+proc traceSection*(home: string): JsonNode =
+  ## `(wake_scans, trace_tail, trace_file)`: the Ops tab's inline trace —
+  ## last raw lines plus the heard-everything scans. `trace_errors` stays
+  ## empty: the port has no encoding-error tracking on trace reads (a bad
+  ## line is skipped, never diagnosed), so claiming errors would invent
+  ## them.
+  let (events, files) = readTraceEvents(home)
+  var scans = newJArray()
+  for ev in events:
+    if ev.jget("type").getStr() == "wake_scan":
+      scans.add(copy(ev))
+  var tail = newJArray()
+  for i in countdown(events.len - 1, max(0, events.len - 18)):
+    let ev = events[i]
+    var detail = ""
+    for key in ["user_message", "decision", "tool", "reply"]:
+      let v = ev.jget(key).getStr()
+      if v.len > 0:
+        detail = v
+        break
+    tail.add(%*{"type": ev.jget("type").getStr(),
+                 "ts": ev.jget("ts").getStr(), "detail": detail})
+  result = %*{"wake_scans": scans, "trace_tail": tail,
+    "trace_errors": newJArray(),
+    "trace_file": (if files.len > 0: %lastPathPart(files[^1])
+                     else: newJNull())}
+
 proc statusPayload*(d: DashboardDeps): JsonNode =
-  ## The 8a `/api/data` STATUS SUBSET: identity + spend + health + the
-  ## trace pointer. The full `collect()` blob (turns, db introspection,
-  ## skills, graph topologies, eval report) lands across the remaining
-  ## 8x units; see the module docstring.
+  ## The `/api/data` blob: everything the page shows, like Python
+  ## `collect()` — identity, spend (Python's `total_*` shape), health,
+  ## trace pointer, the `graph` block, `turns` + `stats`, the state.db
+  ## rows and db introspection, skills, tools, settings, eval report and
+  ## the inline trace sections. See the module docstring for what is
+  ## still honestly unwired elsewhere.
   let usage = usageSummary(d.home, d.providers)
   var byDay = newJArray()
   for row in usage.byDay:
@@ -511,16 +1201,77 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
   let stamp = if d.nowIso.len > 0: d.nowIso
               else: format(now().utc,
                 "yyyy-MM-dd'T'HH:mm:ss'+00:00'")
+  # The per-message graph door: env-read, like `loadSettings`, so a page
+  # load shows the flag the next turn will actually run under.
+  let graphOn = d.env.getOrDefault("WAKU_GRAPH_WORKFLOWS", "") in
+    ["1", "true", "yes"]
+  let (turns, stats) = turnSection(d.home, d.provider, d.model,
+    d.providers)
+  let state = stateRows(d.home)
+  let db = connectDb(d.home)
+  let idleMin = block:
+    let raw = d.env.getOrDefault("WAKU_SESSION_IDLE_MINUTES", "").strip()
+    var minutes = 60
+    if raw.len > 0:
+      try:
+        minutes = parseInt(raw)
+      except ValueError:
+        discard
+    minutes
+  # The consolidation cadence, env-read like `loadSettings` (the deps
+  # carry no Settings object, only the injected env table — which also
+  # makes it pinnable in tests). Default 6, like Python.
+  let consolidateEvery = block:
+    let raw = d.env.getOrDefault("WAKU_CONSOLIDATE_EVERY", "").strip()
+    var every = 6
+    if raw.len > 0:
+      try:
+        every = parseInt(raw)
+      except ValueError:
+        discard
+    every
+  let nowMs = toUnix(getTime()) * 1000
+  let currentSession = dashboardSession(db, nowMs, idleMin)
+  let tools = toolCatalog(db, d.home)
+  db.close()
+  let (evalReport, evalHistory) = evalSection(d.home)
+  let traces = traceSection(d.home)
   result = %*{
     "generated_at": stamp,
     "home": absolutePath(d.home),
     "provider": d.provider,
     "model": d.model,
-    "usage": {"calls": usage.calls, "in": usage.totalIn,
-              "out": usage.totalOut, "cost": usage.totalCost,
+    "usage": {"calls": usage.calls, "total_in": usage.totalIn,
+              "total_out": usage.totalOut, "total_cost": usage.totalCost,
               "by_day": byDay, "by_provider": byProvider},
     "connections": conns,
     "trace": traceInfo,
+    "graph": graphSection(d.home, graphOn),
+    "turns": turns,
+    "stats": stats,
+    "facts": state["facts"],
+    "episodes": state["episodes"],
+    "episodes_source": state["episodes_source"],
+    "episodes_error": state["episodes_error"],
+    "calendar": state["calendar"],
+    "outbox": state["outbox"],
+    "soul": state["soul"],
+    "chat_pending": state["chat_pending"],
+    "chat_log": state["chat_log"],
+    "sessions": state["sessions"],
+    "current_session": currentSession,
+    "consolidate_every": consolidateEvery,
+    "db": state["db"],
+    "skills": skillRows(d.home, bundledSkillDirs()),
+    "tools": tools,
+    "settings": settingsInfo(d),
+    "eval_report": evalReport,
+    "eval_history": evalHistory,
+    "wake_scans": traces["wake_scans"],
+    "trace_tail": traces["trace_tail"],
+    "trace_errors": traces["trace_errors"],
+    "trace_file": traces["trace_file"],
+    "providers": providersSection(d),
   }
 
 # `/api/reveal`: open a path under WAKU_HOME in the user's editor.
@@ -736,46 +1487,6 @@ proc jsonBool*(node: JsonNode): bool =
     node.getStr().strip() in ["1", "true", "yes"]
   else:
     false
-
-proc settingsInfo*(d: DashboardDeps): JsonNode =
-  ## Port of `settings_api.settings_info`, as the subset this port owns:
-  ## provider/model resolution, key presence (last-4 never leaves the
-  ## machine — only the set flag), the curated pin shortlist with each
-  ## provider's default first, disabled providers, and the two toggles.
-  ## Display-only extras (typesafe key, pi presence, provider labels)
-  ## stay out: the contract pins PATHS, not payload keys (same argument
-  ## as the 8a `/api/data` subset).
-  let (model, smallModel) = modelsFor(d.provider, d.model, d.smallModel,
-    d.providers)
-  var pinned = newJArray()
-  var seen: seq[string] = @[]
-  for spec in pinnedSpecs(d.home, d.providers):
-    let idx = spec.find(':')
-    if idx < 0 or idx + 1 >= spec.len:
-      continue
-    let p = spec[0 ..< idx]
-    let first = p notin seen
-    if first:
-      seen.add(p)
-    pinned.add(%*{"provider": p, "model": spec[idx + 1 .. ^1],
-                   "default": first})
-  var disabled = newJArray()
-  for part in d.env.getOrDefault("WAKU_DISABLED_PROVIDERS", "").split(','):
-    if part.strip().len > 0:
-      disabled.add(%part.strip())
-  %*{
-    "provider": d.provider,
-    "model": model,
-    "small_model": smallModel,
-    "base_url": d.baseUrl,
-    "custom_key_set": d.apiKey.len > 0,
-    "disabled_providers": disabled,
-    "pinned": pinned,
-    "experimental": d.env.getOrDefault("WAKU_EXPERIMENTAL", "") in
-      ["1", "true", "yes"],
-    "graph_workflows": d.env.getOrDefault("WAKU_GRAPH_WORKFLOWS", "") in
-      ["1", "true", "yes"],
-  }
 
 proc writeDotenvKey*(path, name, value: string) =
   ## Minimal dotenv set: rewrite the `NAME=` line in place, append when
@@ -1590,6 +2301,14 @@ proc ensureWaku*(box: WakuBox) =
     box.settings = s
     let db = connectDb(s.home)
     box.waku = newWaku(s, client, db)
+    var liveEnv = initTable[string, string]()
+    for k, v in envPairs():
+      liveEnv[k] = v
+    box.waku.tools = buildRegistry(db, s.home, s, liveSearchFetch,
+      liveGhRun, livePiSeams(s.home, s.provider, s.model),
+      liveAppleSeams(), mcpRegistryTools(s.home, liveEnv,
+        getTime().toUnix(), liveStdioFactory(), liveHttpPostFn()))
+    wireMemory(box.waku, s, db, client, bundledSkillDirs())
     if s.graphWorkflows:
       box.waku.graphTurn = triageGraphTurn(client, s.smallModel, s.home,
         proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
@@ -1636,10 +2355,274 @@ proc donePayload*(box: WakuBox, res: LoopResult, gate, cons, route,
      "model": (if quick: box.waku.settings.smallModel
                  else: box.waku.settings.model)}
 
+type
+  SlashConnectFn* = proc(arg, home: string): string {.closure.}
+    ## `/connect <name>` without a turn: tests stub the reply, the
+    ## binary signs in for real (nil below builds the live seams).
+  SlashWorkflowFn* = proc(arg: string, emit: SseEmit): JsonNode {.closure.}
+    ## One named workflow run: the state `composeWorkflowDone` renders.
+    ## Nil runs the live wiring over `box`.
+
+proc liveSlashConnect*(arg: string, box: WakuBox): string =
+  ## `/connect` inside the chat: the dashboard runs on your machine, so
+  ## the browser flow happens in-process — no shell, no terminal. Same
+  ## live adapters `runConnectCmd` wires for the CLI.
+  if arg.len == 0:
+    return connectUsage()
+  var env = initTable[string, string]()
+  for k, v in envPairs():
+    env[k] = v
+  let nowUnix = getTime().toUnix()
+  let google = GoogleSeams(openBrowser: openBrowserLive,
+    waitLoopback: waitGoogleCallbackLive, exchange: exchangeGoogleLive,
+    nowUnix: nowUnix)
+  let livePost: HttpPostFn =
+    proc(url, body, sessionId, bearer: string): HttpResult {.closure.} =
+      liveHttpPost(url, body, sessionId, bearer)
+  let liveFactory: StdioFactory =
+    proc(spec: McpServerSpec): ExchangeFn {.closure.} =
+      startStdioExchange(spec.command, spec.args, spec.env)
+  let flow = oauthFlowWith(liveHttpPost, liveHttpGet, openBrowserLive,
+    waitCallbackLive, liveRandInt)
+  let signIn: MemorySignInFn =
+    proc(home, name: string): tuple[ok: bool, msg: string,
+        identity: string] {.closure.} =
+      let (ok, msg) = mcpLogin(home, name, env, livePost, liveFactory,
+        nowUnix, oauthFlow = flow)
+      (ok, msg,
+        if ok: mcpIdentity(authFilePath(home, name), nowUnix) else: "")
+  return connectIntegration(arg, box.settings.home, google, signIn)
+
+proc runSlashCommand*(message: string, box: WakuBox, emit: SseEmit,
+    connect: SlashConnectFn = nil, gather: SlashWorkflowFn = nil,
+    triage: SlashWorkflowFn = nil): bool =
+  ## A leading `/command` from the chat box, answered without a turn.
+  ## False when the message is not a command — the caller runs its turn.
+  ## Runners are injected so tests never build an agent or a browser;
+  ## nil runs the live wiring over `box`.
+  let (isCmd, name, arg) = parseCommand(message)
+  if not isCmd:
+    return false
+  proc doneOk(reply: string): JsonNode =
+    %*{"reply": reply, "tools": newJArray(), "iterations": 0,
+        "latency_ms": 0, "gate": newJNull()}
+  if name == "connect":
+    let reply =
+      if connect != nil: connect(arg, box.settings.home)
+      else: liveSlashConnect(arg, box)
+    emit("done", doneOk(reply))
+    return true
+  if name in ["graphs", "help", "?"]:
+    emit("done", doneOk(describeCommands()))
+    return true
+  let t0 = now()
+  let ms = proc(): int = int((now() - t0).inMilliseconds)
+  proc fail(reply: string) =
+    emit("done", %*{"reply": reply, "tools": newJArray(),
+                       "iterations": 0, "gate": newJNull()})
+  if name == "gather":
+    var state: JsonNode
+    try:
+      if gather != nil:
+        state = gather(arg, emit)
+      else:
+        box.ensureWaku()
+        if box.buildError.len > 0:
+          emit("done", %*{"error": box.buildError})
+          return true
+        state = runGather(box.waku,
+          proc(kind: string, ev: JsonNode) {.closure.} = emit(kind, ev))
+      if arg.len > 0:
+        state["ignored_argument"] = %arg
+    except CatchableError as exc:
+      fail("`/gather` failed: " & errorText(exc))
+      return true
+    emit("done", composeWorkflowDone(state, "gather", ms()))
+    return true
+  if name == "triage":
+    if arg.len == 0:
+      emit("done", doneOk(triageUsage))
+      return true
+    var state: JsonNode
+    try:
+      if triage != nil:
+        state = triage(arg, emit)
+      else:
+        box.ensureWaku()
+        if box.buildError.len > 0:
+          emit("done", %*{"error": box.buildError})
+          return true
+        let turn = triageGraphTurn(box.waku.client,
+          box.waku.settings.smallModel, box.waku.settings.home,
+          proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
+            box.waku.runFullTurn(st.jget("message").getStr(), n, strm))
+        let (answered, res) = turn(arg,
+          proc(kind: string, ev: JsonNode) {.closure.} = emit(kind, ev),
+          true)
+        state = %*{"digest": res.reply, "answered": answered}
+    except CatchableError as exc:
+      fail("`/triage` failed: " & errorText(exc))
+      return true
+    emit("done", composeWorkflowDone(state, "triage", ms()))
+    return true
+  emit("done", doneOk(unknownCommandReply(name)))
+  return true
+
+proc liveProviderProbe*(providers: seq[Provider], home: string,
+    fetch: catalog.FetchFn): ProbeFn =
+  ## Port of `_provider_probe`: list this provider's models with no
+  ## cache — a Save validates the candidate key/endpoint, never a
+  ## cached result. A listed error raises, like Python's `ValueError`.
+  result = proc(values: Table[string, string]) {.closure.} =
+    var name = ""
+    for p in providers:
+      if p.keyEnv.len > 0 and values.hasKey(p.keyEnv):
+        name = p.name
+        break
+    if name.len == 0:
+      return
+    let listed = listModels(CatalogSettings(home: home, provider: name,
+      model: "", smallModel: "", baseUrl: "", apiKey: ""), providers,
+      fetch, onlyProvider = name, useCache = false)
+    if listed.jget("error").getStr().len > 0:
+      raise newException(ValueError, listed.jget("error").getStr())
+
+proc closeQuietly(sock: Socket) =
+  ## Close without ever raising, so a `finally` that calls it cannot
+  ## swallow whatever was unwinding (the `test_tls` finally-shape gate
+  ## scans for `except` inside `finally` blocks and fails on it).
+  try:
+    sock.close()
+  except OSError:
+    discard
+
+proc liveProbes*(): Table[string, ProbeFn] =
+  ## The portable connection probes: Tavily (one search call), OTLP
+  ## (one TCP dial), and the two Apple automation checks. Notion needs
+  ## its SDK and Google Calendar needs its API client — both stay
+  ## honestly unprobed, like the dashboard says.
+  result["tavily"] =
+    proc(values: Table[string, string]) {.closure.} =
+      let key = values.getOrDefault("TAVILY_API_KEY", "")
+      let body = $(%*{"api_key": key, "query": "health check",
+                       "max_results": 1})
+      let (ok, text) = liveSearchFetch(tavilyUrl, "POST", body, "")
+      if not ok:
+        raise newException(ValueError,
+          "Tavily unreachable (network or TLS): " & text)
+      try:
+        discard parseJson(text)
+      except JsonParsingError as exc:
+        raise newException(ValueError, "Tavily answered badly: " &
+          exc.msg)
+  result["otel"] =
+    proc(values: Table[string, string]) {.closure.} =
+      var endpoint = values.getOrDefault("OTEL_EXPORTER_OTLP_ENDPOINT",
+        "").strip()
+      if "://" in endpoint:
+        endpoint = endpoint.split("://", 1)[1]
+      for bad in ["/", "?", "#", "@"]:
+        if bad in endpoint:
+          raise newException(ValueError,
+            "OTLP endpoint must be host:port (for example localhost:4317)")
+      let parts = endpoint.split(':')
+      if parts.len != 2:
+        raise newException(ValueError,
+          "OTLP endpoint must be host:port (for example localhost:4317)")
+      var port = 0
+      try:
+        port = parseInt(parts[1])
+      except ValueError:
+        raise newException(ValueError,
+          "OTLP endpoint must be a valid host:port")
+      if parts[0].len == 0 or port <= 0 or port > 65535:
+        raise newException(ValueError,
+          "OTLP endpoint must be host:port (for example localhost:4317)")
+      var sock = newSocket()
+      try:
+        sock.connect(parts[0], Port(port), timeout = 3000)
+      except OSError as exc:
+        closeQuietly(sock)
+        raise newException(ValueError,
+          "OTLP collector refused: " & exc.msg)
+      finally:
+        closeQuietly(sock)
+  result["apple_calendar"] =
+    proc(values: Table[string, string]) {.closure.} =
+      if hostOS != "macosx":
+        raise newException(ValueError, "Apple Calendar probe is macOS-only.")
+      let script = "tell application \"Calendar\"\n" &
+        "  repeat with cal in calendars\n" &
+        "    try\n" &
+        "      if writable of cal then return name of cal\n" &
+        "    end try\n" &
+        "  repeat\nend tell\nreturn \"\""
+      let res = runProcess(@["osascript", "-e", script],
+        timeoutSec = 15)
+      if res.timedOut:
+        raise newException(ValueError,
+          "Apple Calendar probe timed out after 15s; Calendar.app may " &
+          "be slow or waiting for Automation permission.")
+      if res.code != 0:
+        let detail = res.stderr.strip()
+        raise newException(ValueError, "Apple Calendar probe failed: " &
+          (if detail.len > 0: detail[0 ..< min(200, detail.len)]
+           else: "failed"))
+      if res.stdout.strip().len == 0:
+        raise newException(ValueError,
+          "Apple Calendar has no writable calendars.")
+  result["apple_tools"] =
+    proc(values: Table[string, string]) {.closure.} =
+      if hostOS != "macosx":
+        raise newException(ValueError, "Apple Tools probe is macOS-only.")
+      var failures: seq[string] = @[]
+      for app in probeApps:
+        let res = runProcess(@["osascript", "-e",
+          "tell application \"" & app & "\" to return version"],
+          timeoutSec = 8)
+        if res.timedOut or res.code != 0:
+          let detail = if res.timedOut: "timed out"
+                       else: res.stderr.strip()
+          failures.add(app & ": " & detail)
+      if failures.len > 0:
+        raise newException(ValueError, "Apple Tools probe failed: " &
+          failures.join("; "))
+
+proc liveGraphStream*(box: WakuBox, payload: JsonNode,
+    emit: SseEmit) =
+  ## Port of `graph_stream`: run the named workflow, streaming the
+  ## engine's own events (never node output, so a digest cannot leak
+  ## into a frame), then done. Unknown names answer honestly, like the
+  ## pinned-but-later routes.
+  let name = jsonStr(payload.jget("workflow")).strip()
+  if name != "gather" and name != "triage":
+    emit("done", %*{"error": "unknown workflow '" & name & "'"})
+    return
+  box.ensureWaku()
+  if box.buildError.len > 0:
+    emit("done", %*{"error": box.buildError})
+    return
+  proc forward(kind: string, ev: JsonNode) {.closure.} = emit(kind, ev)
+  try:
+    if name == "gather":
+      let state = runGather(box.waku, forward)
+      emit("done", %*{"workflow": name,
+        "digest": state.jget("digest").getStr()[0 ..< min(4000,
+          state.jget("digest").getStr().len)],
+        "draft_path": state.jget("draft_path").getStr(),
+        "errors": state.jget("errors")})
+    else:
+      emit("done", %*{"workflow": name, "digest": triageUsage,
+        "draft_path": "", "errors": newJObject()})
+  except CatchableError as exc:
+    emit("done", %*{"error": errorText(exc)})
+
 proc liveChatStreamFn*(box: WakuBox): ChatStreamFn =
   ## `chat_stream` against the live agent: gate/tool/text events as they
   ## happen (the browser lights the diagram from these), then done.
   result = proc(message: string, emit: SseEmit) {.closure.} =
+    if runSlashCommand(message, box, emit):
+      return
     box.ensureWaku()
     if box.buildError.len > 0:
       emit("done", %*{"error": box.buildError})
@@ -1668,12 +2651,12 @@ proc liveChatStreamFn*(box: WakuBox): ChatStreamFn =
 
 proc liveChatFn*(box: WakuBox): ChatFn =
   ## `chat` against the live agent: drive the streaming turn, keep done.
-  ## A leading `/command` runs as a plain turn here (the slash-command
-  ## table arrives with the commands port — documented, not silent).
+  ## A leading `/command` is answered by the slash table inside the
+  ## stream (node events pass through, only `done` is kept).
   result = proc(message: string): JsonNode {.closure.} =
-    box.ensureWaku()
-    if box.buildError.len > 0:
-      return %*{"error": box.buildError}
+    # No eager `ensureWaku` here: the stream answers `/command` without
+    # an agent, and builds it (or its error) only when a turn needs one
+    # — the one-implementation rule from Python's shared accumulator.
     var final: JsonNode = newJObject()
     proc collect(kind: string, ev: JsonNode) =
       if kind == "done":
@@ -1748,13 +2731,17 @@ proc memoryExampleFor*(staticDir: string): string =
     "memory_arena.json")
   if fileExists(cand): cand else: ""
 
+proc liveGraphStreamFn*(box: WakuBox): GraphStreamFn =
+  ## The `GraphStreamFn` seam over `liveGraphStream`.
+  result = proc(payload: JsonNode, emit: SseEmit) {.closure.} =
+    liveGraphStream(box, payload, emit)
+
 proc buildDashboardDeps*(providers: seq[Provider], settings: Settings,
                          dotenvPath: string): DashboardDeps =
   ## Live deps for the server: process env as the table, live catalog
-  ## fetch, and the lazy agent box behind the chat/session seams. No
-  ## network, no disk writes, no agent build here — first chat pays.
-  ## Probes stay unwired (no live client for them yet — see the phase
-  ## task file); connection saves validate + persist without probing.
+  ## fetch, the lazy agent box behind the chat/session/graph seams, and
+  ## the live connection probes. No network, no disk writes, no agent
+  ## build here — first chat (or race, or probe) pays.
   var env = initTable[string, string]()
   for k, v in envPairs():
     env[k] = v
@@ -1767,13 +2754,17 @@ proc buildDashboardDeps*(providers: seq[Provider], settings: Settings,
     apiKey: settings.apiKey, providers: providers, env: env,
     fetch: liveCatalogFetch, today: "", nowIso: "",
     dotenvPath: dotenvPath, hostOs: "", chatFn: liveChatFn(box),
-    chatStreamFn: liveChatStreamFn(box), graphStreamFn: nil, voiceFn: nil,
+    chatStreamFn: liveChatStreamFn(box),
+    graphStreamFn: liveGraphStreamFn(box), voiceFn: nil,
     sessionFn: liveSessionFn(box), revealProbe: nil, revealOpen: nil,
     raceFn: nil, judgeFn: nil, memoryRunFn: nil, judgmentRaceFn: nil,
-    hostedListFn: nil, hostedWipeFn: nil, judgmentSuites: newJArray(),
+    hostedListFn: nil, hostedWipeFn: nil,
+    judgmentSuites: suiteList(allSuites()),
     memoryExample: memoryExampleFor(staticDir), store: nil,
-    probes: initTable[string, ProbeFn](),
-    providerProbe: nil, rebuild: nil, gatewayReload: nil,
+    probes: liveProbes(),
+    providerProbe: liveProviderProbe(providers, settings.home,
+      liveCatalogFetch),
+    rebuild: nil, gatewayReload: nil,
     gatewayStatus: nil)
 
 # ---------------------------------------------------------------------------
@@ -2633,6 +3624,21 @@ proc serveDashboardCmd*(providers: seq[Provider], settings: Settings,
       liveGatewayHooks(providers, settings, dotenvPath, envLive))
     srv.deps.gatewayStatus = rig.gatewayStatusFn()
     srv.deps.gatewayReload = rig.reloadHook()
+    var arenaEnv = initTable[string, string]()
+    for k, v in envPairs():
+      arenaEnv[k] = v
+    let adeps = ArenaDeps(home: settings.home, providers: providers,
+      dotenvPath: dotenvPath, apiKey: getEnv("WAKU_API_KEY"),
+      fetch: liveSearchFetch, gh: liveGhRun,
+      apple: liveAppleSeams(),
+      makeExchange: liveStdioFactory(), httpPost: liveHttpPostFn(),
+      env: arenaEnv, buildClient: nil,
+      jevPost: liveJevPost, jevKey: getEnv("TYPESAFE_API_KEY"),
+      nowUnix: getTime().toUnix())
+    srv.deps.raceFn = makeLiveRace(adeps)
+    srv.deps.judgeFn = makeLiveJudge(adeps)
+    srv.deps.memoryRunFn = makeLiveMemoryRun(adeps)
+    srv.deps.judgmentRaceFn = makeLiveJudgmentRace(adeps)
     return runDashboardCmd(srv, rig.reconcileHook(), rig.shutdownHook(),
       rig.serveFn())
   except CatchableError as exc:

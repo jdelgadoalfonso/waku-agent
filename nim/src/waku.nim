@@ -24,19 +24,26 @@ import std/syncio
 import std/tables
 import std/times
 
+import ./apple
 import ./brief
 import ./cli
 import ./client
 import ./config
+import ./connect
 import ./dashboard
 import ./db
 import ./discord
+import ./experimental
 import ./gather
 import ./gateway
+import ./github
 import ./http
 import ./integrations
 import ./mcp
+import ./memory_live
 import ./providers
+import ./registry
+import ./search
 import ./skills
 import ./telegram
 import ./triage
@@ -180,6 +187,12 @@ proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
                          dotenvPath)
   let db = connectDb(settings.home)
   var w = newWaku(settings, client, db)
+  w.tools = buildRegistry(db, settings.home, settings, liveSearchFetch,
+    liveGhRun, livePiSeams(settings.home, settings.provider,
+      settings.model),
+    liveAppleSeams(), mcpRegistryTools(settings.home, processEnv(),
+      getTime().toUnix(), liveStdioFactory(), liveHttpPostFn()))
+  wireMemory(w, settings, db, client, bundledSkillDirs())
   if settings.graphWorkflows:
     w.graphTurn = triageGraphTurn(client, settings.smallModel,
       settings.home,
@@ -296,6 +309,42 @@ proc runDashboard(dotenvStart: string, serve: bool): int =
     let dp = if dotenvPath.len > 0: dotenvPath else: ".env"
     return serveDashboardCmd(rows, loadSettings(), dp)
   return checkDashboardCmd(rows, loadSettings(), dotenvPath)
+
+proc runConnectCmd*(dotenvStart: string, argv: seq[string]): int =
+  ## Port of `connect.cli_main`: `connect` names the two doors, an
+  ## unknown name says what is available (exit 1), a known one runs its
+  ## sign-in over the live adapters and prints its reply (exit 0 — even
+  ## a refusal sentence, like Python). `home` comes from settings
+  ## (`WAKU_HOME`), like every command here.
+  discard loadDotenv(dotenvStart)
+  let home = loadSettings().home
+  let env = processEnv()
+  let nowUnix = getTime().toUnix()
+  let google = GoogleSeams(
+    openBrowser: openBrowserLive,
+    waitLoopback: waitGoogleCallbackLive,
+    exchange: exchangeGoogleLive,
+    nowUnix: nowUnix)
+  let livePost: HttpPostFn =
+    proc(url, body, sessionId, bearer: string): HttpResult {.closure.} =
+      liveHttpPost(url, body, sessionId, bearer)
+  let liveFactory: StdioFactory =
+    proc(spec: McpServerSpec): ExchangeFn {.closure.} =
+      startStdioExchange(spec.command, spec.args, spec.env)
+  let flow = oauthFlowWith(liveHttpPost, liveHttpGet, openBrowserLive,
+    waitCallbackLive, liveRandInt)
+  let signIn: MemorySignInFn =
+    proc(home, name: string): tuple[ok: bool, msg: string,
+        identity: string] {.closure.} =
+      let (ok, msg) = mcpLogin(home, name, env, livePost, liveFactory,
+        nowUnix, oauthFlow = flow)
+      let identity =
+        if ok: mcpIdentity(authFilePath(home, name), nowUnix)
+        else: ""
+      (ok, msg, identity)
+  let (msg, code) = cliConnect(argv, home, google, signIn)
+  echo msg
+  return code
 
 proc runMcpCmd*(argv: seq[string]): int =
   ## Port of `cli_main` in `mcp_cli.py`: `mcp` lists, `mcp login` forgets
@@ -518,6 +567,9 @@ proc runCommand*(args: seq[string], dotenvStart = "",
     return 1
   if args[0] == "mcp":  # phase 6b: real list/login/logout (oauth login names 6c)
     return runMcpCmd(if args.len > 1: args[1 .. ^1] else: @[])
+  if args[0] == "connect":
+    return runConnectCmd(dotenvStart,
+      if args.len > 1: args[1 .. ^1] else: @[])
   if args[0] == "telegram":  # phase 7d2: the live long-poll
     return runTelegramCmd(dotenvStart)
   if args[0] == "discord":  # phase 7d2: the gateway loop (dial in discordServe)

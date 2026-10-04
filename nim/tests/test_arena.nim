@@ -264,7 +264,8 @@ suite "phase 8c compareStreamRun pipeline":
     let root = freshDir("waku-arena-stempty")
     var frames: seq[string] = @[]
     let race: RaceFn =
-      proc(message: string, specs: seq[string], emit: SseEmit): JsonNode =
+      proc(message: string, specs: seq[string], coding: bool,
+        emit: SseEmit): JsonNode =
         newJArray()
     compareStreamRun(root, %*{"message": "  ", "models": ["a:m"]}, @[],
       race, nil, "", "ts-now",
@@ -290,7 +291,8 @@ suite "phase 8c compareStreamRun pipeline":
     let root = freshDir("waku-arena-stub")
     var kinds: seq[string] = @[]
     let race: RaceFn =
-      proc(message: string, specs: seq[string], emit: SseEmit): JsonNode =
+      proc(message: string, specs: seq[string], coding: bool,
+        emit: SseEmit): JsonNode =
         assert message == "hi"
         assert specs == @["a:m"]
         emit("start", %*{"spec": "a:m"})
@@ -311,7 +313,8 @@ suite "phase 8c compareStreamRun pipeline":
     let root = freshDir("waku-arena-stjudge")
     var kinds: seq[string] = @[]
     let race: RaceFn =
-      proc(message: string, specs: seq[string], emit: SseEmit): JsonNode =
+      proc(message: string, specs: seq[string], coding: bool,
+        emit: SseEmit): JsonNode =
         result = newJArray()
         result.add(fullResult("a:m"))
     let judge: JudgeFn =
@@ -334,7 +337,8 @@ suite "phase 8c compareStreamRun pipeline":
     let root = freshDir("waku-arena-stjudgenil")
     var last = ""
     let race: RaceFn =
-      proc(message: string, specs: seq[string], emit: SseEmit): JsonNode =
+      proc(message: string, specs: seq[string], coding: bool,
+        emit: SseEmit): JsonNode =
         result = newJArray()
         result.add(fullResult("a:m"))
     compareStreamRun(root,
@@ -349,7 +353,8 @@ suite "phase 8c compareStreamRun pipeline":
     let root = freshDir("waku-arena-stboom")
     var last = ""
     let race: RaceFn =
-      proc(message: string, specs: seq[string], emit: SseEmit): JsonNode =
+      proc(message: string, specs: seq[string], coding: bool,
+        emit: SseEmit): JsonNode =
         raise newException(CatchableError, "race boom")
     compareStreamRun(root, %*{"message": "hi", "models": ["a:m"]}, @[],
       race, nil, "", "ts-now",
