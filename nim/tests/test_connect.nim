@@ -33,7 +33,7 @@ suite "connect dispatcher":
   test "no args prints usage and exits 1":
     let (msg, code) = cliConnect(@[], freshHome("waku-connect-noargs"),
       googleSeams(newJNull()), memorySignIn(true))
-    assert "google" in msg and "waku-memory" in msg
+    assert "google" in msg and "waku-memory" in msg and "treg" in msg
     assert code == 1
 
   test "unknown names say what is available and exit 1":
@@ -150,3 +150,106 @@ suite "connect waku-memory":
     assert "Added Waku Memory to" in msg
     assert "browser blew up" in msg
     assert memoryDocs in msg
+
+suite "connect treg":
+  test "a fresh home is added, then signed in":
+    let home = freshHome("waku-connect-treg-add")
+    let msg = tregConnect(home,
+      memorySignIn(true, "", "you@treg.to"))
+    assert "Added treg to" in msg
+    assert "Connected to treg as you@treg.to" in msg
+    assert "treg_*" in msg
+    assert "bills your own account" in msg
+    let config = parseJson(readFile(home / "mcp.json"))
+    assert config["servers"].len == 1
+    assert config["servers"][0]["url"].getStr() == tregUrl
+
+  test "the dispatcher routes treg with exit 0":
+    let (msg, code) = cliConnect(@["treg"],
+      freshHome("waku-connect-treg-dispatch"),
+      googleSeams(newJNull()), memorySignIn(true, "", "you@treg.to"))
+    assert code == 0
+    assert "Connected to treg as you@treg.to" in msg
+
+  test "the url identifies the server under any name":
+    let home = freshHome("waku-connect-treg-anyname")
+    writeFile(home / "mcp.json",
+      """{"servers": [{"name": "research", "url": "https://treg.to/mcp", "oauth": true}]}""")
+    createDir(home / "mcp-auth")
+    writeFile(authFilePath(home, "research"),
+      """{"account": "you@treg.to"}""")
+    let msg = tregConnect(home, memorySignIn(false, "must not run"))
+    assert "already connected" in msg
+    assert "waku mcp login research" in msg
+
+  test "a conflicting name is left alone":
+    let home = freshHome("waku-connect-treg-conflict")
+    writeFile(home / "mcp.json",
+      """{"servers": [{"name": "treg", "url": "https://relay.example/mcp"}]}""")
+    let msg = tregConnect(home, memorySignIn(true))
+    assert "already points at https://relay.example/mcp" in msg
+    assert "not " & tregUrl in msg
+    assert "your own treg account" in msg
+
+  test "an api-key entry needs no sign-in":
+    let home = freshHome("waku-connect-treg-key")
+    writeFile(home / "mcp.json",
+      """{"servers": [{"name": "treg", "url": "https://treg.to/mcp/", "auth_env": "TREG_KEY"}]}""")
+    let msg = tregConnect(home, memorySignIn(false, "must not run"))
+    assert "using the key in $TREG_KEY" in msg
+
+  test "a failed sign-in keeps the added line and names the docs":
+    let home = freshHome("waku-connect-treg-fail")
+    let msg = tregConnect(home, memorySignIn(false, "browser blew up"))
+    assert "Added treg to" in msg
+    assert "browser blew up" in msg
+    assert tregDocs in msg
+
+suite "connect treg state":
+  test "an empty home is not added":
+    let (where, detail) = tregState(freshHome("waku-treg-state-empty"))
+    assert where == "not_added"
+    assert detail == ""
+
+  test "broken json names the file":
+    let home = freshHome("waku-treg-state-broken")
+    writeFile(home / "mcp.json", "{nope")
+    let (where, detail) = tregState(home)
+    assert where == "not_added"
+    assert "not valid JSON" in detail
+
+  test "a relay name with its own key is connected":
+    let home = freshHome("waku-treg-state-relay")
+    writeFile(home / "mcp.json",
+      """{"servers": [{"name": "treg", "url": "https://relay.example/mcp", "auth_env": "TREG_KEY"}]}""")
+    let (where, detail) = tregState(home)
+    assert where == "connected"
+    assert detail == "using the key in $TREG_KEY"
+
+  test "a plain entry without oauth is connected":
+    let home = freshHome("waku-treg-state-plain")
+    writeFile(home / "mcp.json",
+      """{"servers": [{"name": "treg", "url": "https://treg.to/mcp/"}]}""")
+    let (where, _) = tregState(home)
+    assert where == "connected"
+
+  test "oauth without a token is not signed in, with one connected":
+    let home = freshHome("waku-treg-state-oauth")
+    writeFile(home / "mcp.json",
+      """{"servers": [{"name": "treg", "url": "https://treg.to/mcp/", "oauth": true}]}""")
+    let (before, _) = tregState(home)
+    assert before == "not_signed_in"
+    createDir(home / "mcp-auth")
+    writeFile(authFilePath(home, "treg"),
+      """{"account": "you@treg.to"}""")
+    let (after, detail) = tregState(home)
+    assert after == "connected"
+    assert detail.startsWith("as ")
+
+  test "the card carries the connections page shape":
+    let card = tregCard(freshHome("waku-treg-card-empty"))
+    assert card["key"].getStr() == "treg"
+    assert card["name"].getStr() == "treg"
+    assert card["group"].getStr() == "Search & Observability"
+    assert "Live data" in card["what"].getStr()
+    assert card["state"].getStr() == "not_added"

@@ -1,9 +1,9 @@
 ## `waku connect <name>` — sign in to an integration that needs your browser.
 ##
-## Port of `waku/connect.py` plus the two connector entries
-## (`google_calendar.connect`, `waku_memory.connect`). Signing in opens a
+## Port of `waku/connect.py` plus the three connector entries
+## (`google_calendar.connect`, `waku_memory.connect`, `treg.connect`). Signing in opens a
 ## browser and waits for a click, so it is the one step a turn must never
-## take on its own: exactly two doors, the CLI here and `/connect` in the
+## take on its own: exactly three doors, the CLI here and `/connect` in the
 ## dashboard chat (the chat door arrives with the slash-command table —
 ## chat turns still run `/connect x` as a plain turn).
 ##
@@ -32,7 +32,7 @@ import ./mcp
 import ./wire
 
 const
-  connectorNames* = ["google", "waku-memory"]
+  connectorNames* = ["google", "waku-memory", "treg"]
     ## What `waku connect` accepts, in registry order.
 
   googleScope* = "https://www.googleapis.com/auth/calendar.events.readonly"
@@ -51,6 +51,16 @@ const
   retiredHosts* = ["d1o2fv4416yi84.cloudfront.net"]
     ## The host Waku Memory answered on before 2026-08-29: it now refuses
     ## clients, so a config copied from the old README is moved, not failed.
+
+  tregName* = "treg"
+  tregUrl* = "https://treg.to/mcp/"
+  tregDocs* = "https://treg.to"
+    ## Live external data for research (search, companies, people, social,
+    ## ads, the web), billed to your own treg account. Named in every
+    ## treg reply like Python's `DOCS`.
+  tregWhat* = "Live data for research: search, companies, people, " &
+    "social, ads and the web."
+    ## Port of Python's `WHAT`, shown on the Connections card.
 
 proc connectUsage*(): string =
   ## What to run. Unknown names land here with exit 1, like Python.
@@ -282,6 +292,122 @@ proc memoryConnect*(home: string, signIn: MemorySignInFn): string =
   return done & "Connected to Waku Memory as " & identity & ". " &
     "Restart Waku to load its tools (waku_memory_*). " & elsewhere
 
+proc tregState*(home: string): tuple[state: string, detail: string] =
+  ## Port of `treg.state`: where treg stands — "connected",
+  ## "not_signed_in" or "not_added" — plus a detail line. Files only,
+  ## so the Connections page can ask on every poll and never opens a
+  ## browser. No `[mcp]` gate: the single binary always carries MCP (the
+  ## same divergence `tregConnect` documents). The server is the one at
+  ## the URL, or the one named treg wherever it points: a hosted
+  ## container's relay entry carries the platform token in `auth_env`,
+  ## and that is connected.
+  let config = home / "mcp.json"
+  var servers = newJArray()
+  if fileExists(config):
+    try:
+      servers = parseJson(readFile(config)).jget("servers")
+    except JsonParsingError:
+      return ("not_added", config & " is not valid JSON")
+  if servers.kind != JArray:
+    return ("not_added", config & " is not valid JSON")
+  var spec = newJNull()
+  for s in servers:
+    if s.kind == JObject and s.jget("url").getStr().strip(
+        chars = {'/'}) == tregUrl.strip(chars = {'/'}):
+      spec = s
+      break
+  if spec.kind != JObject:
+    for s in servers:
+      if s.kind == JObject and s.jget("name").getStr() == tregName:
+        spec = s
+        break
+  if spec.kind != JObject:
+    return ("not_added", "")
+  if spec.jget("auth_env").getStr().len > 0:
+    return ("connected",
+      "using the key in $" & spec.jget("auth_env").getStr())
+  if not spec.jget("oauth").getBool(false):
+    return ("connected", "")
+  let token = authFilePath(home, spec.jget("name").getStr())
+  if not fileExists(token):
+    return ("not_signed_in", "")
+  return ("connected", "as " & mcpIdentity(token, toUnix(getTime())))
+
+proc tregCard*(home: string): JsonNode =
+  ## Port of `treg.card`: treg's card on the Connections page and the
+  ## `mcp_connections` payload key the tab reads from `/api/data`.
+  let (where, detail) = tregState(home)
+  %*{"key": tregName, "name": "treg", "group": "Search & " &
+    "Observability", "what": tregWhat, "state": where,
+    "detail": detail}
+
+proc addTregServer*(home: string): tuple[status: string, spec: JsonNode] =
+  ## Make sure `mcp.json` names treg: "added", "present" (already there,
+  ## under any name — the URL is the identity) or "conflict" (a `treg`
+  ## entry pointing elsewhere on purpose, like a hosted container's relay,
+  ## is left alone). No retired-address move: treg has no retired host.
+  let config = home / "mcp.json"
+  var data = %*{"servers": newJArray()}
+  if fileExists(config):
+    try:
+      data = parseJson(readFile(config))
+    except JsonParsingError:
+      raise newException(ValueError,
+        config & " is not valid JSON — fix it or move it aside, then run again.")
+  if data.kind != JObject:
+    data = %*{"servers": newJArray()}
+  if data.jget("servers").kind != JArray:
+    data["servers"] = newJArray()
+  let servers = data["servers"]
+  for spec in servers:
+    if spec.jget("url").getStr().strip(chars = {'/'}) ==
+        tregUrl.strip(chars = {'/'}):
+      return ("present", spec)
+  for spec in servers:
+    if spec.jget("name").getStr() != tregName:
+      continue
+    return ("conflict", spec)
+  let spec = %*{"name": tregName, "url": tregUrl, "oauth": true}
+  servers.add(spec)
+  createDir(home)
+  writeFile(config, pretty(data, 2) & "\n")
+  return ("added", spec)
+
+proc tregConnect*(home: string, signIn: MemorySignInFn): string =
+  ## Add the server, then sign in — message for message with
+  ## `treg.connect`. Same shape as `memoryConnect` (the `mcp_cli.sign_in`
+  ## step signs both in); only the names, the docs and the billing line
+  ## differ. Reads files only until the sign-in itself, so a dry listing
+  ## never opens a browser.
+  var status = ""
+  var spec = newJNull()
+  try:
+    (status, spec) = addTregServer(home)
+  except ValueError as exc:
+    return exc.msg
+  let config = home / "mcp.json"
+  if status == "conflict":
+    return "'" & tregName & "' in " & config & " already points at " &
+      spec.jget("url").getStr() & ", not " & tregUrl & ". " &
+      "Change it there if you meant your own treg account."
+  let done = if status == "added": "Added treg to " & config & ". "
+    else: ""
+  if spec.jget("auth_env").getStr().len > 0:
+    return done & "treg is set up as '" & spec.jget("name").getStr() &
+      "', using the key in $" & spec.jget("auth_env").getStr() &
+      ". Restart Waku to load its tools."
+  let name = spec.jget("name").getStr()
+  let token = authFilePath(home, name)
+  if fileExists(token) and status == "present":
+    return "treg is already connected as " &
+      mcpIdentity(token, toUnix(getTime())) &
+      ". To switch accounts: waku mcp login " & name & "."
+  let (ok, msg, identity) = signIn(home, name)
+  if not ok:
+    return done & msg.strip() & " Help: " & tregDocs
+  return done & "Connected to treg as " & identity & ". " &
+    "Restart Waku to load its tools (treg_*). treg bills your own account."
+
 proc connectIntegration*(name, home: string, google: GoogleSeams,
     signIn: MemorySignInFn): string =
   ## One connector's reply for a KNOWN name; unknown names stay with
@@ -291,6 +417,8 @@ proc connectIntegration*(name, home: string, google: GoogleSeams,
     return googleConnect(home, google)
   of "waku-memory":
     return memoryConnect(home, signIn)
+  of "treg":
+    return tregConnect(home, signIn)
   else:
     return connectUnknown(name)
 
