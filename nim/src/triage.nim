@@ -54,7 +54,8 @@ type
   FullFn* = proc(state: JsonNode, notify: Observer): LoopResult {.closure.}
 
 proc classifyMessage*(client: LlmClient, smallModel,
-                      message: string): tuple[route, reason: string] =
+                      message: string,
+                      notify: Observer = nil): tuple[route, reason: string] =
   ## `(route, reason)`, failing open to "full": a broken triage must cost
   ## latency, never capability. The `{...}` slice mirrors Python's
   ## `text.index("{")` → `text.rindex("}")`; anything unparseable fails
@@ -63,7 +64,8 @@ proc classifyMessage*(client: LlmClient, smallModel,
     let req = %*{"model": smallModel, "max_tokens": 600,
                  "messages": @[%*{"role": "user", "content":
                    formatTemplate(triagePrompt, %*{"message": message})}]}
-    let text = textOf(client.create(req)["content"])
+    let text = textOf(meteredClient(client, "triage", smallModel,
+      notify).create(req)["content"])
     let a = text.find('{')
     if a < 0:
       return ("full", "no JSON — failing open")
@@ -152,13 +154,15 @@ proc triageTopology*(): JsonNode =
       LoopResult(reply: "", toolCalls: @[], iterations: 0)).describe()
 
 proc quickReply*(client: LlmClient, smallModel: string,
-                 state: JsonNode): string =
+                 state: JsonNode, notify: Observer = nil): string =
   ## One small-model call, no tools: the fast path's whole brain.
+  ## Metered like the gate — the fast path is a side call too.
   let req = %*{"model": smallModel, "max_tokens": 600,
                "messages": @[%*{"role": "user", "content": formatTemplate(
                  quickReplyPrompt, %*{"calendar": state.jget("calendar"),
                                       "message": state.jget("message")})}]}
-  textOf(client.create(req)["content"])
+  textOf(meteredClient(client, "quick", smallModel,
+    notify).create(req)["content"])
 
 proc triageGraphTurn*(client: LlmClient, smallModel, home: string,
     full: proc(state: JsonNode, notify: Observer,
@@ -171,9 +175,10 @@ proc triageGraphTurn*(client: LlmClient, smallModel, home: string,
                 stream: bool): tuple[answered: bool, res: LoopResult] =
     let g = buildTriageGraph(
       classifyFn = proc(m: string): tuple[route, reason: string] =
-        classifyMessage(client, smallModel, m),
+        classifyMessage(client, smallModel, m, notify),
       calendarFn = proc(): string = todaysEvents(home),
-      quickFn = proc(s: JsonNode): string = quickReply(client, smallModel, s),
+      quickFn = proc(s: JsonNode): string =
+        quickReply(client, smallModel, s, notify),
       fullFn = proc(s: JsonNode, n: Observer): LoopResult =
         full(s, n, stream))
     var state = %*{"message": userMessage}

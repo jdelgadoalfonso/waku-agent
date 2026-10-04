@@ -149,3 +149,52 @@ suite "phase 3d error_text":
     silent.statusCode = 500
     assert errorText(silent) == "LlmRefused: "
     assert errorText(newException(ValueError, "kaput")) == "ValueError: kaput"
+
+suite "metered side clients":
+  test "a metered call reports kind, model and usage, returning the reply":
+    let inner = LlmClient(create: proc(req: JsonNode): JsonNode =
+      %*{"stop_reason": "end_turn", "usage": {"in": 7, "out": 3},
+         "content": [{"type": "text", "text": "yes"}]})
+    var seen: seq[JsonNode] = @[]
+    var kinds: seq[string] = @[]
+    let obs: Observer = proc(kind: string, ev: JsonNode) =
+      kinds.add(kind)
+      seen.add(ev)
+    let gated = meteredClient(inner, "gate", "mini", obs)
+    let res = gated.create(%*{"model": "mini"})
+    assert res["content"][0]["text"].getStr() == "yes"
+    assert kinds == @["llm"]
+    assert seen[0]["kind"].getStr() == "gate"
+    assert seen[0]["model"].getStr() == "mini"
+    assert seen[0]["usage"]["in"].getInt() == 7
+    assert seen[0]["usage"]["out"].getInt() == 3
+
+  test "without an observer the client passes through silently":
+    var calls = 0
+    let inner = LlmClient(create: proc(req: JsonNode): JsonNode =
+      inc calls
+      %*{"content": []})
+    let gated = meteredClient(inner, "gate", "mini")
+    discard gated.create(%*{"model": "mini"})
+    assert calls == 1
+
+  test "a raising call reports nothing and raises as before":
+    var kinds: seq[string] = @[]
+    let inner = LlmClient(create: proc(req: JsonNode): JsonNode =
+      raise newException(IOError, "down"))
+    let obs: Observer = proc(kind: string, ev: JsonNode) =
+      kinds.add(kind)
+    let gated = meteredClient(inner, "gate", "mini", obs)
+    expect IOError:
+      discard gated.create(%*{"model": "mini"})
+    assert kinds.len == 0
+
+  test "an unusual shape meters zeros instead of crashing the turn":
+    var kinds: seq[string] = @[]
+    let inner = LlmClient(create: proc(req: JsonNode): JsonNode =
+      %*{"content": [{"type": "text", "text": "x"}]})
+    let obs: Observer = proc(kind: string, ev: JsonNode) =
+      kinds.add(kind)
+    let gated = meteredClient(inner, "consolidation", "mini", obs)
+    discard gated.create(%*{"model": "mini"})
+    assert kinds == @["llm"]

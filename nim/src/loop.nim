@@ -35,6 +35,36 @@ type
     toolCalls*: seq[JsonNode]
     iterations*: int
 
+proc usageNum*(node: JsonNode, key: string): int =
+  ## A ledger number that may be missing: absent or non-integer usage
+  ## reads as 0, like `usageInt` in `trace.nim` — a side call with an
+  ## unusual response shape must never crash the turn it meters.
+  let v = node.jget(key)
+  if v.kind == JInt: int(v.getBiggestInt()) else: 0
+
+proc meteredClient*(client: LlmClient, kind, model: string,
+    notify: Observer = nil): LlmClient =
+  ## Port of `metered()`: the same client, reporting each call as an
+  ## `llm` event with its `kind` (gate/consolidation/triage/quick/judge)
+  ## and model, so side calls land in usage.jsonl and the trace like the
+  ## loop's own. A call that raises reports nothing and raises as before;
+  ## without an observer this is the client it was given. The loop keeps
+  ## reporting its own calls — meter the clients around it, never this.
+  let wrapped = client
+  result = LlmClient(
+    create: proc(req: JsonNode): JsonNode {.closure.} =
+      let response = wrapped.create(req)
+      if not notify.isNil:
+        let usage = response.jget("usage")
+        let stop = response.jget("stop_reason")
+        notify("llm", %*{"kind": kind, "model": model,
+          "stop_reason": (if stop.kind == JString: stop.getStr()
+            else: ""),
+          "usage": {"in": usageNum(usage, "in"),
+            "out": usageNum(usage, "out")}})
+      response,
+    stream: wrapped.stream)
+
 const iterationLimitReply* =
   "(I hit my iteration limit before finishing — try breaking the request into smaller steps.)"
 

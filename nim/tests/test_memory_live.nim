@@ -83,10 +83,31 @@ suite "gated retrieval":
     let found = gatedRetrieve(db, client, "mini", 4, "thanks!",
       proc(kind: string, ev: JsonNode) {.closure.} =
         kinds.add(kind)
-        decisions.add(ev["decision"].getStr()))
+        if kind == "gate":
+          decisions.add(ev["decision"].getStr()))
     assert found == ""
-    assert kinds == @["gate"]
+    assert kinds == @["llm", "gate"]
     assert decisions == @["skip"]
+    db.close()
+    removeDir(home)
+
+  test "the gate call is metered with kind and model":
+    let home = freshHome("waku-memlive-gatemeter")
+    let db = connectDb(home)
+    addFact(db, "Alex", "prefers mornings")
+    let client = LlmClient(create: proc(req: JsonNode): JsonNode =
+      %*{"stop_reason": "end_turn", "usage": {"in": 11, "out": 2},
+        "content": [{"type": "text",
+          "text": """{"retrieve": false, "query": "", "reason": "x"}"""}]})
+    var llms: seq[JsonNode] = @[]
+    discard gatedRetrieve(db, client, "mini", 4, "thanks!",
+      proc(kind: string, ev: JsonNode) {.closure.} =
+        if kind == "llm":
+          llms.add(ev))
+    assert llms.len == 1
+    assert llms[0]["kind"].getStr() == "gate"
+    assert llms[0]["model"].getStr() == "mini"
+    assert llms[0]["usage"]["in"].getInt() == 11
     db.close()
     removeDir(home)
 

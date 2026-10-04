@@ -51,8 +51,13 @@ type
 
 proc judgeReply*(task, reply: string, provider, model: string,
     tools: seq[string], buildClient: JudgeClientFn,
-    sleeper: proc(ms: int) {.closure.} = nil): JsonNode =
+    sleeper: proc(ms: int) {.closure.} = nil,
+    notify: Observer = nil): JsonNode =
   ## Grade one reply, or `JNull`. Empty replies are not graded at all.
+  ## The referee call is metered like every side call; the live seam
+  ## passes nil until an observer reaches the grading path (the arena
+  ## streams grade over SSE, outside any tracer — wiring that through
+  ## is a follow-up, not this unit).
   if reply.strip().len == 0:
     return newJNull()
   let prov = if provider.len > 0: provider
@@ -75,7 +80,8 @@ proc judgeReply*(task, reply: string, provider, model: string,
       let client = buildClient(prov, modl)
       let req = %*{"model": modl, "max_tokens": 300,
                    "messages": @[%*{"role": "user", "content": prompt}]}
-      text = textOf(client.create(req)["content"])
+      text = textOf(meteredClient(client, "judge", modl,
+        notify).create(req)["content"])
       ok = true
       break
     except CatchableError:

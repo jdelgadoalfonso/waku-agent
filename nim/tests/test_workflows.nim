@@ -87,6 +87,20 @@ proc fullStub(reply: string): FullFn =
     LoopResult(reply: reply, toolCalls: @[], iterations: 2)
 
 suite "phase 4d classify":
+  test "the classify call is metered as triage":
+    let script = Script(items: @[textResp("{\"route\": \"quick\"}")],
+      seen: @[])
+    var llms: seq[JsonNode] = @[]
+    let obs: Observer = proc(kind: string, ev: JsonNode) =
+      if kind == "llm":
+        llms.add(ev)
+    let (route, _) = classifyMessage(scriptedClient(script), "mini",
+      "hi", obs)
+    assert route == "quick"
+    assert llms.len == 1
+    assert llms[0]["kind"].getStr() == "triage"
+    assert llms[0]["model"].getStr() == "mini"
+    assert llms[0]["usage"]["in"].getInt() == 1
   test "no JSON fails open to full":
     let script = Script(items: @[textResp("just answer it")])
     assert classifyMessage(scriptedClient(script), "mini", "hi") ==

@@ -23,6 +23,8 @@
 
 import std/json
 import std/os
+import std/strutils
+import std/sysrand
 import std/times
 
 import ./jsondump
@@ -37,6 +39,14 @@ type
     provider*: string
     model*: string
     path*: string  ## today's trace file (fixed at construction, like Python)
+    turnId*: string  ## current turn, "" outside one (reset by `endTurn`)
+
+proc mintTurnId*(): string =
+  ## `t_<16 hex>` like Python's `"t_" + secrets.token_hex(8)`: one id
+  ## joins a turn's rows across the trace and the ledger.
+  result = "t_"
+  for b in urandom(8):
+    result.add(int(b).toHex(2).toLowerAscii())
 
 proc utcStamp*(): string =
   ## `datetime.now(UTC).isoformat(timespec="milliseconds")`.
@@ -70,9 +80,20 @@ proc usageInt(ev: JsonNode, key: string): int =
 proc recordUsage(t: Tracer, ev: JsonNode) =
   ## One LLM call's tokens append to the PERMANENT ledger (never wiped,
   ## unlike traces). Tokens are the ground truth; dollars derive from
-  ## pricing, so only tokens + provider/model are stored.
+  ## pricing, so only tokens + provider/model are stored. Every model
+  ## call a turn makes lands here: the loop's own (`kind` "loop") and
+  ## the side calls `meteredClient` reports with their own `kind` and
+  ## model. Each row carries the turn's `turn_id`.
+  let kindNode = ev.jget("kind")
+  let modelNode = ev.jget("model")
   let rec = %*{"ts": utcStamp(), "provider": t.provider,
-               "model": t.model, "kind": "loop",
+               "model": (if modelNode.kind == JString and
+                 modelNode.getStr().len > 0: modelNode.getStr()
+                 else: t.model),
+               "kind": (if kindNode.kind == JString and
+                 kindNode.getStr().len > 0: kindNode.getStr()
+                 else: "loop"),
+               "turn_id": t.turnId,
                "in": usageInt(ev, "in"), "out": usageInt(ev, "out")}
   createDir(t.home)
   var f: File
@@ -96,13 +117,18 @@ proc event*(t: Tracer, kind: string, ev: JsonNode) =
   t.writeRecord(kind, outp)
 
 proc turn*(t: Tracer, userMessage: string) =
-  ## One run opens with a `turn_start` marker (the root span in Python).
-  t.writeRecord("turn_start", %*{"user_message": userMessage})
+  ## One run opens with a `turn_start` marker (the root span in Python),
+  ## carrying the fresh `turn_id` every row of the turn shares.
+  t.turnId = mintTurnId()
+  t.writeRecord("turn_start",
+    %*{"turn_id": t.turnId, "user_message": userMessage})
 
 proc endTurn*(t: Tracer, reply: string, iterations: int) =
   ## ... and closes with `turn_end` (flushed per turn, so the trace
-  ## survives even a killed process).
-  t.writeRecord("turn_end", %*{"reply": reply, "iterations": iterations})
+  ## survives even a killed process). The id resets, like Python.
+  t.writeRecord("turn_end", %*{"turn_id": t.turnId, "reply": reply,
+    "iterations": iterations})
+  t.turnId = ""
 
 proc tracerEvent*(t: Tracer): Observer =
   ## `tracer.event` as a closured Observer for `compose` and the loop.

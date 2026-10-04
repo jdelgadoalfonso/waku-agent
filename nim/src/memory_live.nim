@@ -95,8 +95,10 @@ proc gatedRetrieve*(db: DbConn, client: LlmClient, smallModel: string,
     notify: Observer = nil): string =
   ## Port of `Memory.gated_retrieve`: the gate decides (and is announced
   ## on `notify`, like Python), then facts plus 3 episodes join with
-  ## newlines. "" means "nothing relevant" — or a skip.
-  let (retrieve, query, reason) = shouldRetrieve(client, smallModel,
+  ## newlines. "" means "nothing relevant" — or a skip. The gate's
+  ## own call is metered, so its dollars reach the ledger like the loop's.
+  let (retrieve, query, reason) = shouldRetrieve(
+    meteredClient(client, "gate", smallModel, notify), smallModel,
     message)
   if not notify.isNil:
     notify("gate", %*{"decision": (if retrieve: "retrieve" else: "skip"),
@@ -166,7 +168,7 @@ proc matchingSkills*(home: string, bundled: seq[string],
   return chunks.join("\n\n")
 
 proc consolidateIfDue*(db: DbConn, client: LlmClient, smallModel: string,
-    everyN: int): int =
+    everyN: int, notify: Observer = nil): int =
   ## Port of `consolidate_if_due`: fewer than `everyN` exchanges (2 rows
   ## each) pending means not due. A distilled fact needs subject AND
   ## content; the log rows flip to consolidated only after the writes —
@@ -187,7 +189,8 @@ proc consolidateIfDue*(db: DbConn, client: LlmClient, smallModel: string,
     let req = %*{"model": smallModel, "max_tokens": 4096,
                  "messages": @[%*{"role": "user",
                    "content": formatPrompt(summarizerPrompt, log.join("\n"))}]}
-    let text = textOf(client.create(req)["content"])
+    let text = textOf(meteredClient(client, "consolidation",
+      smallModel, notify).create(req)["content"])
     if '{' notin text:
       return 0
     distilled = parseJson(text[text.find('{') .. text.rfind('}')])
@@ -258,7 +261,7 @@ proc wireMemory*(w: var Waku, settings: Settings, db: DbConn,
       matchingSkills(home, bundled, userMessage)
   w.afterTurn =
     proc(notify: Observer) {.closure.} =
-      let fresh = consolidateIfDue(db, client, smallModel, everyN)
+      let fresh = consolidateIfDue(db, client, smallModel, everyN, notify)
       if fresh > 0 and not notify.isNil:
         notify("consolidation", %*{"new_facts": fresh})
       exportMarkdown(db, home)

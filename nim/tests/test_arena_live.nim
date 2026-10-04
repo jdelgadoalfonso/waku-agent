@@ -78,8 +78,10 @@ suite "live model race":
     assert collected.len == 1
     assert collected[0]["reply"].getStr() == "hi there"
     assert collected[0]["gate"]["decision"].getStr() == "skip"
-    assert collected[0]["tokens_in"].getInt() == 10
-    assert collected[0]["tokens_out"].getInt() == 5
+    # Gate + loop: the metered gate call lands in the ledger beside the
+    # loop's own row (spec 011) — 10/5 each here.
+    assert collected[0]["tokens_in"].getInt() == 20
+    assert collected[0]["tokens_out"].getInt() == 10
     var kinds: seq[string] = @[]
     for f in frames:
       kinds.add(f.split(':')[0])
@@ -211,6 +213,21 @@ suite "live judge":
       proc(prov, mdl: string): LlmClient =
         raise newException(CatchableError, "must not run"), nil)
     assert grade.kind == JNull
+
+  test "the referee call is metered as judge":
+    let client = LlmClient(create: proc(req: JsonNode): JsonNode =
+      textResp("""{"score": 8, "reason": "solid work"}""", 4, 1))
+    var llms: seq[JsonNode] = @[]
+    let obs: Observer = proc(kind: string, ev: JsonNode) =
+      if kind == "llm":
+        llms.add(ev)
+    let grade = judgeReply("do the thing", "did it", "p", "m",
+      @[], proc(prov, mdl: string): LlmClient = client, nil, obs)
+    assert grade["score"].getInt() == 8
+    assert llms.len == 1
+    assert llms[0]["kind"].getStr() == "judge"
+    assert llms[0]["model"].getStr() == "m"
+    assert llms[0]["usage"]["in"].getInt() == 4
 
 suite "live probes and graph stream":
   test "provider probe passes silently without a matching key":
