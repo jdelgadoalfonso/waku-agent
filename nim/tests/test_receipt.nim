@@ -74,8 +74,8 @@ suite "receipt key sets":
     assert keysOf(r["tools"][0]) == toolKeys
     assert keysOf(r["memory"]) == memoryKeys
     assert keysOf(r["memory"]["searches"][0]) == searchKeys
-    assert r["memory"].hasKey("report") == false,
-      "this port has no report event, so no report key"
+    assert r["memory"]["report"].kind == JNull,
+      "no report event in this turn, so a null report"
 
   test "an empty turn is a zero receipt, not a crash":
     let r = buildReceipt(@[], "anthropic")
@@ -194,7 +194,7 @@ suite "privacy":
       assert secret notin text, "a key reached the receipt"
     assert r["tools"] == %*[%*{"tool": "treg_catalog_call_read",
       "provider": "tomba", "usd": 0.01, "status": "ok"}]
-    assert r["memory"].hasKey("report") == false, "no report key in this port"
+
 
   test "a name, an id and a provider are held to their short pattern":
     # A provider that is really a key, a trace id with a newline smuggled

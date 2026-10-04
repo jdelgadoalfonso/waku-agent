@@ -21,6 +21,7 @@
 import std/algorithm
 import std/json
 import std/os
+import std/re
 import std/strutils
 import std/times
 import std/unicode
@@ -61,6 +62,20 @@ Reply with ONLY this JSON:
 Exchanges:
 {log}"""
     ## Verbatim `SUMMARIZER_PROMPT`.
+
+  reportRule* = """
+
+These exchanges saved a research report, so its findings are already kept
+in the report. Do NOT extract facts about the companies, products or markets
+it covers. Keep only facts about the user, their people, or a decision they
+made, at most 2, and set "company_research" to false.
+The report:
+{report}"""
+    ## Port of `REPORT_RULE` with `REPORT_TURN_MAX_FACTS` (= 2) written
+    ## out, added to the prompt when the batch saved a report (spec 009 B).
+  reportTurnMaxFacts* = 2
+    ## The most loose facts a report turn keeps, whatever the model
+    ## proposed (port of `REPORT_TURN_MAX_FACTS`).
 
 proc formatPrompt*(prompt, message: string): string =
   ## The one substitution both prompts need (`{message}` / `{log}`).
@@ -181,13 +196,40 @@ proc matchingSkills*(home: string, bundled: seq[string],
     chunks.add("### " & scored[i][1] & "\n" & scored[i][2])
   return chunks.join("\n\n")
 
+proc aboutReport*(fact: JsonNode, report: string): bool =
+  ## A fact whose subject the report names is a finding, and the report
+  ## already holds it: "Mem0" in a report on mem0's competitors. Port of
+  ## `_about_report` (whole-word, case-insensitive; a subject shorter than
+  ## two characters never matches).
+  let subject = strutils.splitWhitespace(
+    fact.jget("subject").getStr()).join(" ")
+  if subject.len < 2:
+    return false
+  var rx = "(?<!\\w)"
+  for r in subject.runes:
+    let c = chr(r.ord)
+    if c in {'a' .. 'z', 'A' .. 'Z', '0' .. '9', '_'}:
+      rx.add(c)
+    else:
+      rx.add("\\" & c)
+  rx.add("(?!\\w)")
+  try:
+    let found = report.replace("\n", " ").findAll(
+      re(rx, flags = {reIgnoreCase}))
+    return found.len > 0
+  except RegexError:
+    false
+
 proc consolidateIfDue*(db: DbConn, client: LlmClient, smallModel: string,
-    everyN: int, notify: Observer = nil): int =
+    everyN: int, notify: Observer = nil,
+    reportBody: string = ""): int =
   ## Port of `consolidate_if_due`: fewer than `everyN` exchanges (2 rows
   ## each) pending means not due. A distilled fact needs subject AND
   ## content; the log rows flip to consolidated only after the writes —
   ## a failure anywhere keeps them pending for next time, never loses
-  ## them. Returns new facts written.
+  ## them. Returns new facts written. `reportBody` is the research report
+  ## this turn saved (spec 009 B): the prompt then caps the batch at two
+  ## facts about the person and drops what the report already holds.
   var rows: seq[Row] = @[]
   for row in db.getAllRows(sql(
       "SELECT id, role, content FROM chat_log WHERE consolidated = 0 " &
@@ -199,10 +241,13 @@ proc consolidateIfDue*(db: DbConn, client: LlmClient, smallModel: string,
   for r in rows:
     log.add(r[1] & ": " & r[2])
   var distilled: JsonNode
+  var prompt = formatPrompt(summarizerPrompt, log.join("\n"))
+  if reportBody.len > 0:
+    prompt = prompt & reportRule.replace("{report}", reportBody)
   try:
     let req = %*{"model": smallModel, "max_tokens": 4096,
                  "messages": @[%*{"role": "user",
-                   "content": formatPrompt(summarizerPrompt, log.join("\n"))}]}
+                   "content": prompt}]}
     let text = textOf(meteredClient(client, "consolidation",
       smallModel, notify).create(req)["content"])
     if '{' notin text:
@@ -214,7 +259,23 @@ proc consolidateIfDue*(db: DbConn, client: LlmClient, smallModel: string,
   if distilled.kind == JObject:
     let items = distilled.jget("facts")
     if items.kind == JArray:
+      # Spec 009 B: with a report in the batch, facts about what the report
+      # covers are dropped (the report holds them) and at most two about
+      # the person survive.
+      var kept: seq[JsonNode] = @[]
       for fact in items:
+        kept.add(fact)
+      if reportBody.len > 0:
+        var aboutPerson: seq[JsonNode] = @[]
+        for fact in kept:
+          if not aboutReport(fact, reportBody):
+            aboutPerson.add(fact)
+        kept = @[]
+        for i, fact in aboutPerson:
+          if i >= reportTurnMaxFacts:
+            break
+          kept.add(fact)
+      for fact in kept:
         let subject = fact.jget("subject").getStr()
         let content = fact.jget("content").getStr()
         if subject.len > 0 and content.len > 0:
@@ -263,6 +324,7 @@ proc wireMemory*(w: var Waku, settings: Settings, db: DbConn,
   ## MEMORY.md sync behind `afterTurn`. Builders (CLI, dashboard,
   ## gateways) call this once per agent; tests keep building unwired
   ## agents straight from `newWaku`.
+  let cell = w.reportCell   ## the turn's saved report, read through a ref
   let home = settings.home
   let smallModel = settings.smallModel
   let topK = settings.retrievalTopK
@@ -278,7 +340,12 @@ proc wireMemory*(w: var Waku, settings: Settings, db: DbConn,
       matchingSkillNames(home, bundled, message)
   w.afterTurn =
     proc(notify: Observer) {.closure.} =
-      let fresh = consolidateIfDue(db, client, smallModel, everyN, notify)
+      # `w` is a `var Waku` and cannot be captured; the report body is
+      # read through the agent's own cell, which the turn sets just before
+      # (spec 009 B).
+      let reportBody = if cell.isNil: "" else: cell[]
+      let fresh = consolidateIfDue(db, client, smallModel, everyN, notify,
+        reportBody)
       if fresh > 0 and not notify.isNil:
         notify("consolidation", %*{"new_facts": fresh})
       exportMarkdown(db, home)

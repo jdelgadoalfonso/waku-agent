@@ -15,7 +15,12 @@ Two units in order, one work-unit commit each, no push.
 - [x] T1 (S1, S2): backend seam + read path — Engram-first via registry
   tools (no bridge changes); scorer compartido sin cambio de conducta;
   receipt mapea engram_mem_search. Suite 1102 OK, cero warnings.
-- [ ] T2 (S3, S4): write path + receipt key + cap — route: implement + nimble test
+- [x] T2 (S3, S4): write path + receipt key + cap — reports.nim (find /
+  chatReply / isCompanyResearch fail-closed / saveReport), meta.report,
+  receipt memory.report de vuelta, cap 009 B en consolidateIfDue vía
+  reportCell (un closure no puede capturar un var Waku). Suite 1114 OK.
+  Divergencias: scopes de Engram en vez de project:Company brain; kind
+  semantic -> type discovery; sin read_first para reports.
 
 ## Log
 - L1: user "vamos a hacer brain/reports" → investigation → proposal nim-brain-reports.md → user "ok" (company-project mapping as proposed).

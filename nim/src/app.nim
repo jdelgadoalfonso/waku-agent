@@ -55,6 +55,7 @@ import ./jsondump
 import ./loop
 import ./memory
 import ./receipt
+import ./reports
 import ./session
 import ./tools
 import ./trace
@@ -84,6 +85,11 @@ type
     tracer*: Tracer
     graphTurn*: GraphTurn
     afterTurn*: AfterTurn
+    reportCell*: ref string
+      ## The research report THIS turn saved (spec 009 B), as a cell:
+      ## `respond` writes it and the consolidation seam (a closure over a
+      ## `var Waku`, which cannot capture the agent itself) reads it. Empty
+      ## every other turn.
 
 proc newWaku*(settings: Settings, client: LlmClient, db: DbConn = nil,
               tools = ToolRegistry(), graphTurn: GraphTurn = nil,
@@ -96,6 +102,8 @@ proc newWaku*(settings: Settings, client: LlmClient, db: DbConn = nil,
   result.tools = tools
   result.session = newSession(settings, db = db)
   result.tracer = newTracer(settings.home, settings.provider, settings.model)
+  new(result.reportCell)
+  result.reportCell[] = ""
   result.graphTurn = graphTurn
   result.afterTurn = afterTurn
 
@@ -177,7 +185,8 @@ proc respond*(w: var Waku, userMessage: string, observer: Observer = nil,
   # observer chain keeps handing the same nodes around.
   var turnEvents: seq[tuple[kind: string, ev: JsonNode]] = @[]
   proc capture(kind: string, ev: JsonNode) =
-    if kind == "llm" or kind == "tool" or kind == "consolidation":
+    if kind == "llm" or kind == "tool" or kind == "consolidation" or
+        kind == "report":
       turnEvents.add((kind, copy(ev)))
     if kind == "gate":
       captured["gate"] = %*{"decision": ev.jget("decision"),
@@ -210,6 +219,28 @@ proc respond*(w: var Waku, userMessage: string, observer: Observer = nil,
   if not answered:
     res = w.runFullTurn(userMessage, notify, stream)
 
+  # Spec 007: a reply holding a research report saves it whole to memory
+  # and keeps only its first sentences in the chat. No backend, or a
+  # failed send, leaves the reply whole and emits nothing.
+  if not w.reportCell.isNil:
+    w.reportCell[] = ""
+  var reportEvent = newJNull()
+  var report: Report
+  if findReport(res.reply, report):
+    # The client and model are read out of `w` before the closure: a
+    # `var Waku` cannot be captured, and the classifier only needs these.
+    let reportClient = w.client
+    let reportModel = w.settings.smallModel
+    let saved = saveReport(res.reply, saveBackendFor(w.tools),
+      proc(one: Report): bool =
+        isCompanyResearch(reportClient, reportModel, one, notify))
+    if saved.event.kind == JObject:
+      res.reply = saved.reply
+      reportEvent = saved.event
+      if not w.reportCell.isNil:
+        w.reportCell[] = report.body
+      notify("report", saved.event)
+
   let quick = captured.jget("graph_route").jget("target").getStr() ==
     "quick_reply"
   var metaTools = newJArray()
@@ -232,6 +263,7 @@ proc respond*(w: var Waku, userMessage: string, observer: Observer = nil,
     "latency_ms": int((getMonoTime() - t0).inMilliseconds),
     "tools": metaTools,
     "used": metaUsed,
+    "report": reportEvent,
     # which brain answered — a reopened thread (or a mid-thread model
     # switch) shows it per card. A quick graph turn ran the small model;
     # say so honestly.

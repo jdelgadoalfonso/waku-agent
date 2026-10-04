@@ -17,13 +17,21 @@
 ## connected). `brainBackendFor` finds it there; nothing found means the
 ## whole read path is off, exactly like Python with no Waku Memory.
 ##
+## SCOPES. Python asks memory for `scope: "all"` and files a report under
+## `project:Company brain`. Engram has no projects to invent: its scopes
+## are project/personal/global, so the same two-way split maps as
+## `global` (knowledge about the world, readable by every agent —
+## waku.one's Knowledge) for company research and `personal` (about the
+## person) for everything else, and a search without a scope filter is
+## "everywhere" (Python's "all"). Engram's `type` replaces Waku
+## Memory's `kind`: a report is filed as `discovery`.
+##
 ## Two deliberate divergences, both from the transport shape: Engram
 ## answers text (`Found N memories:…`), not Waku Memory's JSON entries,
-## so `_entries` parses the text rows (`[n] #id (type) — title` plus the
-## lines under it, capped like Python's `TEXT_CHARS`) instead of JSON,
-## and there is a single search pair per turn (subject here, company
-## project second) rather than subject-plus-kind — Engram has no `kind`
-## partition to aim the second search at.
+## so `brainEntries` parses the text rows (`[n] #id (type) — title` plus
+## the lines under it, capped like Python's `TEXT_CHARS`) instead of
+## JSON, and a report's text carries no date, so the Used list's
+## `created_at` is empty rather than invented.
 
 import std/json
 import std/strutils
@@ -39,9 +47,15 @@ const
   brainSearchTool* = "engram_mem_search"
     ## The tool name the model would call for the same search, and the
     ## name the read path notifies its searches under.
-  companyProject* = "company"
-    ## Where company/market research lives (Python's `COMPANY_PROJECT`):
-    ## a project of its own, never the agent's working project.
+  companyScope* = "global"
+    ## Where company/market research lives (Python's `COMPANY_PROJECT`,
+## which is a project; Engram's scopes are project/personal/global, so
+## shared knowledge is `global`): readable by every agent on the machine.
+  personalScope* = "personal"
+    ## What is about the person rather than the work (Python's `global`,
+## which in Engram's vocabulary is the company brain instead).
+  reportType* = "discovery"
+    ## Engram's `type` for a research report (Python's `kind: semantic`).
   subjectLimit* = 6
   companyLimit* = 3
   textChars* = 600
@@ -139,8 +153,8 @@ proc readFirst*(message: string,
   let about = subject(message)
   let asks = @[
     %*{"query": about, "limit": subjectLimit, "match_mode": "any"},
-    %*{"query": about, "project": companyProject, "limit": companyLimit,
-       "match_mode": "any"}]
+    %*{"query": about, "scope": companyScope, "type": reportType,
+       "limit": companyLimit, "match_mode": "any"}]
   var seen: seq[string] = @[]
   var blocks: seq[string] = @[]
   for args in asks:

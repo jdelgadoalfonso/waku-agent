@@ -31,6 +31,8 @@
 ##              is read, which is why a receipt cannot quote an argument.
 ## - `consolidation` — `new_facts`, which is exactly what `memory_live.nim`
 ##              announces after a consolidation.
+## - `report`   — `memory_id` (spec 007's saved research report; `JNull`
+##              when the turn saved none).
 ##
 ## PRIVACY. A receipt holds names, counts, dollars and ids, never text: no
 ## tool arguments, no tool output, no prompt, no reply, no memory body, no
@@ -46,17 +48,14 @@
 ## WHAT THE PORT HAS NO EMITTER FOR (the deliberate gaps, not oversights):
 ## - `turn_id`, `model.id` and `memory.used` are the CALLER's three values
 ##   (Python takes them as keyword arguments). This builder is handed a
-##   turn's events and a provider, so it leaves them neutral ("", 0) rather
-##   than guessing which model answered — naming the gate's small model as
-##   the answering brain of a full turn would be a lie. Surfacing (unit 3)
-##   fills them from the turn it is already inside.
-## - There is no `report` event and no `memory.report` key: research reports
-##   are a non-goal, blocked on hosted Waku Memory in the port (proposal
-##   §4), so nothing to copy.
+##   turn's events and a provider, so it leaves them neutral ("", 0)
+##   rather than guessing which model answered — naming the gate's
+##   small model as the answering brain of a full turn would be a lie.
+##   Surfacing (unit 3) fills them from the turn it is already inside.
 ## - `memory.kept` is the COUNT of facts a consolidation created, not
-##   Python's list of kept facts with `memory_id`/`sent`: this port has no
-##   Waku Memory connection handing those ids out, so `new_facts` is the
-##   only honest thing it can hold.
+##   Python's list of kept facts with `memory_id`/`sent`: this port's
+##   consolidation announces a count, so `new_facts` is the only honest
+##   thing it can hold.
 ##
 ## ESTIMATE ONLY. `estimate` is always true and `credits` always null: the
 ## hosted metering proxy's exact charges are a non-goal (proposal §4), so
@@ -80,8 +79,10 @@ const
     ## change: `tests/test_receipt.nim` pins these sets.
   modelKeys* = ["id", "in", "out", "usd", "estimate", "calls"]
   toolKeys* = ["tool", "provider", "usd", "status"]
-  memoryKeys* = ["searches", "used", "kept"]
-    ## Python's `MEMORY_KEYS` minus `report` — see the header.
+  memoryKeys* = ["searches", "used", "kept", "report"]
+    ## Python's `MEMORY_KEYS` whole: `report` is back since the port
+    ## gained its emitter (spec 007 saves a report into a `report`
+    ## event) — before that it had nothing to copy.
   searchKeys* = ["tool", "found", "trace_id"]
 
   # Python's `_ID` / `_NAME` / `_PROVIDER`, as fullmatch patterns. Nim's
@@ -204,12 +205,15 @@ proc buildReceipt*(events: seq[tuple[kind: string, ev: JsonNode]],
   var tools = newJArray()
   var searches = newJArray()
   var kept = 0
+  var report = newJNull()
   for pair in events:
     let kind = pair.kind
     let ev = pair.ev
     if ev.kind != JObject:
       continue
     case kind
+    of "report":
+      report = idOrNull(ev.jget("memory_id"))
     of "llm":
       let usage = ev.jget("usage")
       let nIn = max(usageNum(usage, "in"), 0)
@@ -257,6 +261,7 @@ proc buildReceipt*(events: seq[tuple[kind: string, ev: JsonNode]],
               "model": %*{"id": %"", "in": %tokensIn, "out": %tokensOut,
                 "usd": %modelUsd, "estimate": %true, "calls": callList},
               "tools": tools,
-              "memory": %*{"searches": searches, "used": %0, "kept": %kept},
+              "memory": %*{"searches": searches, "used": %0, "kept": %kept,
+                "report": report},
               "total_usd": %round6(modelUsd + toolUsd),
               "credits": newJNull()}

@@ -12,10 +12,12 @@ import std/unittest
 import db_connector/db_sqlite
 
 import ../src/app
+import ../src/brain
 import ../src/db
 import ../src/jsondump
 import ../src/memory_live
 import ../src/receipt
+import ../src/reports
 import ../src/trace
 
 type
@@ -466,5 +468,66 @@ suite "spec 009 brain reads first":
     assert res.reply == "plain answer"
     assert "tool" notin kinds
     assert res.used.len == 0 and res.readFirst.len == 0
+    db.close()
+    removeDir(home)
+
+suite "spec 007 a saved research report":
+  test "a marked reply is saved whole and the chat keeps the lead":
+    let home = freshHome("waku-app-reportsave")
+    let db = connectDb(home)
+    let marked = "Here is what I found.\n\n" & reportMarker &
+      "\n\n# mem0 competitors\n\n## Summary\n- it charges per seat\n\n" &
+      "## Findings\nlong body"
+    var savedArgs: seq[JsonNode] = @[]
+    # the loop answers first, the company/personal classifier second
+    let script = Script(items: @[textResp(marked),
+      textResp("""{"company_research": true}""")])
+    var reg = echoRegistry("x")
+    reg.register(Tool(name: "engram_mem_save", description: "s",
+      inputSchema: %*{"type": "object"},
+      fn: proc(args: JsonNode): string =
+        savedArgs.add(args)
+        """{"id": "42"}"""))
+    var w = newWaku(testSettings(home), scriptedClient(script), db, reg)
+    var kinds: seq[string] = @[]
+    var reports: seq[JsonNode] = @[]
+    let res = w.respond("research mem0 competitors pricing launches",
+      proc(kind: string, ev: JsonNode) {.closure.} =
+        kinds.add(kind)
+        if kind == "report":
+          reports.add(ev))
+    # the chat keeps the preface and the saved line, not the report
+    assert res.reply.startsWith("Here is what I found.")
+    assert "Report saved: mem0 competitors." in res.reply
+    assert reportMarker notin res.reply
+    assert reports.len == 1
+    assert reports[0]["memory_id"].getStr() == "42"
+    assert reports[0]["scope"].getStr() == companyScope
+    assert savedArgs[0]["content"].getStr().startsWith(reportMarker)
+    # the turn's meta carries the card a reopened thread draws
+    let meta = chatMeta(db)
+    assert meta["report"]["memory_id"].getStr() == "42"
+    assert meta["report"]["summary"].len == 1
+    # and the receipt names the report too
+    assert res.receipt["memory"]["report"].getStr() == "42"
+    db.close()
+    removeDir(home)
+
+  test "no backend leaves the report in the reply":
+    let home = freshHome("waku-app-reportoff")
+    let db = connectDb(home)
+    let marked = "lead only\n\n" & reportMarker & "\n\n# t"
+    let script = Script(items: @[textResp(marked)])
+    var w = newWaku(testSettings(home), scriptedClient(script), db,
+      echoRegistry("x"))
+    var reports: seq[JsonNode] = @[]
+    let res = w.respond("research mem0 competitors pricing launches",
+      proc(kind: string, ev: JsonNode) {.closure.} =
+        if kind == "report":
+          reports.add(ev))
+    assert res.reply == marked, "no memory, no shortened reply"
+    assert reports.len == 0
+    assert chatMeta(db)["report"].kind == JNull
+    assert res.receipt["memory"]["report"].kind == JNull
     db.close()
     removeDir(home)

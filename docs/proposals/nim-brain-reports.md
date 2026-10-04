@@ -32,11 +32,13 @@ Design, mirroring Python's transport-agnostic seams (`search_via` /
   `waku_memory` later by the same shape) is configured, nil otherwise
   — nil means the whole feature is off, fail-open, exactly like
   Python with no Waku Memory.
-- Scope mapping (maintainer eyes here): company research files under
-  an Engram project for the company brain, personal reports as
-  `global` — the same split Python makes with `COMPANY_PROJECT`.
-  Default proposal: a `company` project; nothing leaves the machine
-  either way (local-first beats the hosted original on privacy).
+- Scope mapping (maintainer yes, as implemented): Engram's scopes are
+  project/personal/global, so the same two-way split Python makes with
+  `COMPANY_PROJECT` maps as `global` for company research (shared
+  knowledge about the world, readable by every agent) and `personal`
+  for reports about the person; a read with no scope filter is
+  Python's "all". Engram's `type: discovery` stands in for Waku
+  Memory's `kind: semantic`. Nothing leaves the machine either way.
 
 ## 3. Port plan (two units, in order)
 

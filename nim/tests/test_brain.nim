@@ -75,7 +75,7 @@ suite "read first":
     assert calls.len == 2
     assert calls[0]["tool"].getStr() == brainSearchTool
     assert calls[0]["args"]["limit"].getInt() == subjectLimit
-    assert calls[1]["args"]["project"].getStr() == companyProject
+    assert calls[1]["args"]["scope"].getStr() == companyScope
     assert used.len == 1, "same hit twice dedupes by id"
     assert used[0]["id"].getStr() == "#12"
     assert used[0]["report"].getBool() == false
