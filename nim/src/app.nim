@@ -20,6 +20,16 @@
 ##   it); persistence itself (`add_exchange` → chat_log) happens every
 ##   turn, like Python.
 ##
+## The receipt (spec 011 S4) follows Python's `_receipt` in ORDER — persist,
+## consolidate, build, meta, trace event, end turn — with four differences
+## the builder's own header already owns: no `used` count (`memory.used`
+## stays 0; nothing carries one), no hosted `charges` (`credits` stays
+## null), `last_insert_rowid()` instead of the row id `add_exchange`
+## returns, and no `log.exception` on a failed receipt (this build has no
+## logger seam; the turn survives instead). `default_model` is likewise
+## absent: `buildReceipt` prices a model-less event at the provider
+## estimate, exactly as its unit 2 pinned.
+##
 ## What 4c DOES fix canonically (verifier note 8 from 4b): the turn `meta`
 ## renders with `jsonDumps` (`json.dumps`-shaped, `{"iterations": 1}` with
 ## the space), because the dashboard reads meta for the turn card. And the
@@ -42,6 +52,8 @@ import db_connector/db_sqlite
 import ./config
 import ./jsondump
 import ./loop
+import ./memory
+import ./receipt
 import ./session
 import ./tools
 import ./trace
@@ -95,6 +107,14 @@ proc statusOf*(output: string): string =
   else:
     "ok"
 
+proc lastChatRowId(db: DbConn): int64 =
+  ## The row `logChat` just wrote — SQLite's own answer. Python's
+  ## `add_exchange` returns its row id and `logChat` here returns nothing
+  ## (left alone by the receipt unit), so the turn asks the connection,
+  ## which is why this must be read before anything else inserts.
+  for row in db.getAllRows(sql"SELECT last_insert_rowid()"):
+    return row[0].parseBiggestInt()
+
 proc toToolCalls*(calls: seq[JsonNode]): seq[ToolCall] =
   ## The loop's `{tool, args, output}` events into session fold entries.
   ## `args` renders Python-style (`pyStr`); a missing key reads `None`,
@@ -130,7 +150,14 @@ proc respond*(w: var Waku, userMessage: string, observer: Observer = nil,
   ## One full turn: working memory → loop (or graph) → persist. Everything
   ## that happens is both shown (observer) and recorded (tracer).
   var captured = newJObject()
+  # Spec 011: the events a receipt is built from, in the order they came —
+  # the same list Python's `_capture` keeps, alongside the telemetry below
+  # (this extends the capture, it does not replace it). `copy` because the
+  # observer chain keeps handing the same nodes around.
+  var turnEvents: seq[tuple[kind: string, ev: JsonNode]] = @[]
   proc capture(kind: string, ev: JsonNode) =
+    if kind == "llm" or kind == "tool" or kind == "consolidation":
+      turnEvents.add((kind, copy(ev)))
     if kind == "gate":
       captured["gate"] = %*{"decision": ev.jget("decision"),
                             "reason": ev.jget("reason")}
@@ -188,7 +215,41 @@ proc respond*(w: var Waku, userMessage: string, observer: Observer = nil,
   }
   w.session.addExchange(userMessage, res.reply, toToolCalls(res.toolCalls),
                         source, jsonDumps(meta))
+  # The assistant row `addExchange` just stored — read BEFORE `afterTurn`:
+  # a due consolidation inserts fact rows on this same connection, which
+  # would move `last_insert_rowid()` off the chat row. (-1: no db wired.)
+  let chatRow = if w.db.isNil: -1 else: lastChatRowId(w.db)
   if not w.afterTurn.isNil:
     w.afterTurn(notify)
+  # Spec 011 (the oracle's order): the receipt is built ONCE, after
+  # consolidation has kept what it keeps — its `consolidation` event
+  # carries `new_facts`, and it reads the chat log this turn just wrote.
+  #
+  # The three values `buildReceipt` deliberately leaves neutral are filled
+  # HERE, by the turn that owns them: `turn_id` is still set (`endTurn` has
+  # not run yet), and `model.id` is the brain this turn's meta already
+  # named (a quick graph turn ran the small model, as the meta says).
+  # `memory.used` stays 0 on purpose: `session.retrieve` hands the prompt
+  # JOINED TEXT, so no count of retrieved facts crosses any seam, and
+  # inventing one would be a lie (see `receipt.nim`'s header).
+  #
+  # A receipt that raises must NEVER fail the turn: the reply is already
+  # stored and the tracer closes the turn either way, so the worst case is
+  # a turn with no receipt line under it. Caught and skipped here — Python
+  # logs the exception, and this build has no logger seam.
+  try:
+    let turnId = w.tracer.turnId
+    # `rec`, not `receipt`: the module name stays readable in this scope.
+    var rec = buildReceipt(turnEvents, w.settings.provider)
+    rec["turn_id"] = %turnId
+    rec["model"]["id"] = %meta.jget("model").getStr()
+    res.receipt = rec
+    meta["turn_id"] = %turnId
+    meta["receipt"] = copy(rec)
+    if chatRow >= 0:
+      w.db.updateChatMeta(chatRow, jsonDumps(meta))
+    w.tracer.event("receipt", rec)
+  except CatchableError:
+    discard  # the answer is the product; the receipt is one line under it
   w.tracer.endTurn(res.reply, res.iterations)
   return res

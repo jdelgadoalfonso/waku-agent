@@ -14,6 +14,7 @@ import db_connector/db_sqlite
 import ../src/app
 import ../src/db
 import ../src/jsondump
+import ../src/receipt
 import ../src/trace
 
 type
@@ -66,6 +67,14 @@ proc chatMeta(db: DbConn): JsonNode =
   let rows = db.getAllRows(
     sql"SELECT meta FROM chat_log WHERE role='assistant' ORDER BY id DESC LIMIT 1")
   parseJson(rows[0][0])
+
+proc keysOf(node: JsonNode): seq[string] =
+  ## An object's keys in insertion order, the way `test_receipt.nim` reads
+  ## a pinned set.
+  result = @[]
+  if node.kind == JObject:
+    for key in node.keys:
+      result.add(key)
 
 suite "phase 4c json dumps":
   test "separators match json.dumps defaults":
@@ -285,5 +294,129 @@ suite "phase 4c graph door":
       if e["type"].getStr() == "graph_end" and e["error"].kind != JNull:
         found = true
     assert found
+    db.close()
+    removeDir(home)
+
+suite "spec 011 turn receipt":
+  test "a scripted turn carries the receipt the builder pinned":
+    let home = freshHome("waku-app-receipt")
+    let db = connectDb(home)
+    let script = Script(items: @[toolResp("t1", "echo", %*{"text": "x"}),
+                                 textResp("done")])
+    var w = newWaku(testSettings(home), scriptedClient(script), db,
+                    echoRegistry("echo:x"),
+      afterTurn = proc(n: Observer) =
+        # consolidation runs AFTER the exchange is stored and reports what
+        # it kept; the receipt is built after it, so the kept count is here.
+        n("consolidation", %*{"new_facts": 2}))
+    let res = w.respond("go")
+    assert keysOf(res.receipt) == receiptKeys, "the pinned key set, in order"
+    # which brain answered, named by the turn itself (not by the builder)
+    assert res.receipt["model"]["id"].getStr() == "m"
+    # both loop calls counted: 3+2 in, 7+5 out
+    assert res.receipt["model"]["in"].getInt() == 5
+    assert res.receipt["model"]["out"].getInt() == 12
+    assert res.receipt["model"]["calls"] == %*[%*{"kind": "loop", "n": 2}]
+    assert res.receipt["tools"] == %*[%*{"tool": "echo", "provider": "",
+      "usd": nil, "status": "ok"}]
+    assert res.receipt["memory"]["kept"].getInt() == 2,
+      "the receipt is built after consolidation, so it counts what it kept"
+    assert res.receipt["memory"]["used"].getInt() == 0,
+      "nothing carries a count of retrieved facts, so nothing claims one"
+    # 5 in @ $3/M + 12 out @ $15/M on the unknown-provider estimate
+    assert abs(res.receipt["total_usd"].getFloat - 0.000195) < 1e-9
+    assert res.receipt["credits"].kind == JNull
+    # one id joins this turn's rows, and it is the id the trace opened with
+    let lines = traceLines(home)
+    assert res.receipt["turn_id"].getStr() == lines[0]["turn_id"].getStr()
+    assert res.receipt["turn_id"].getStr().startsWith("t_")
+    var kinds: seq[string] = @[]
+    for e in lines: kinds.add(e["type"].getStr())
+    assert kinds[^2] == "receipt", "the receipt lands before the turn closes"
+    assert kinds[^1] == "turn_end"
+    for e in lines:
+      if e["type"].getStr() == "receipt":
+        assert e["model"]["id"].getStr() == "m", "the trace carries the payload"
+        assert e["memory"]["kept"].getInt() == 2
+    db.close()
+    removeDir(home)
+
+  test "a quick graph turn names the small model in its receipt":
+    let home = freshHome("waku-app-receiptquick")
+    let db = connectDb(home)
+    let script = Script(items: @[textResp("unused")])
+    var w = newWaku(testSettings(home, graphWorkflows = true),
+                    scriptedClient(script), db,
+      graphTurn = proc(msg: string, n: Observer,
+                       s: bool): tuple[answered: bool, res: LoopResult] =
+        n("route", %*{"target": "quick_reply", "reason": "trivial"})
+        (true, LoopResult(reply: "quick!", toolCalls: @[], iterations: 1)))
+    let res = w.respond("hi")
+    assert res.receipt["model"]["id"].getStr() == "mini",
+      "the answering brain is the one the turn's meta already named"
+    assert res.receipt["model"]["in"].getInt() == 0
+    db.close()
+    removeDir(home)
+
+  test "the stored meta round-trips turn_id plus the receipt":
+    let home = freshHome("waku-app-receiptmeta")
+    let db = connectDb(home)
+    let script = Script(items: @[textResp("hello there")])
+    var w = newWaku(testSettings(home), scriptedClient(script), db)
+    let res = w.respond("hi")
+    let meta = chatMeta(db)
+    assert meta["turn_id"].getStr() == res.receipt["turn_id"].getStr()
+    assert meta["receipt"] == res.receipt,
+      "the reopened thread draws the same line the Loop tab does"
+    # the rewrite kept the canonical render (the space after ':'), and it
+    # landed on the assistant row that was just written, not a new row
+    let rows = db.getAllRows(
+      sql"SELECT meta FROM chat_log WHERE role='assistant'")
+    assert rows.len == 1
+    assert "\"iterations\": 1" in rows[0][0]
+    assert "\"turn_id\": \"t_" in rows[0][0]
+    db.close()
+    removeDir(home)
+
+  test "fact inserts after the exchange do not steal the receipt's row":
+    # `last_insert_rowid` is read BEFORE `afterTurn`: a due consolidation
+    # inserts fact rows on the same connection, which would otherwise move
+    # the id off the assistant row the exchange just stored.
+    let home = freshHome("waku-app-receiptrow")
+    let db = connectDb(home)
+    let script = Script(items: @[textResp("noted")])
+    var w = newWaku(testSettings(home), scriptedClient(script), db,
+      afterTurn = proc(n: Observer) =
+        db.exec(sql("INSERT INTO facts (subject, content) " &
+          "VALUES ('k', 'v')"))
+        n("consolidation", %*{"new_facts": 1}))
+    let res = w.respond("hi")
+    let got = db.getAllRows(
+      sql"SELECT meta FROM chat_log WHERE role='assistant'")
+    assert got.len == 1
+    assert parseJson(got[0][0])["receipt"] == res.receipt,
+      "the receipt landed on the assistant row, not the fact row"
+    assert parseJson(got[0][0])["receipt"]["memory"]["kept"].getInt() == 1
+    db.close()
+    removeDir(home)
+
+  test "a receipt that cannot land still answers the turn":
+    # The reply is stored and the tracer closes the turn either way, so a
+    # receipt that raises costs one line, never the answer. Fault injected
+    # through the one seam the receipt's own write needs: consolidation
+    # reported, then the table it would update stopped being there.
+    let home = freshHome("waku-app-receiptfail")
+    let db = connectDb(home)
+    let script = Script(items: @[textResp("still answered")])
+    var w = newWaku(testSettings(home), scriptedClient(script), db,
+      afterTurn = proc(n: Observer) =
+        n("consolidation", %*{"new_facts": 1})
+        db.exec(sql"ALTER TABLE chat_log RENAME TO chat_log_gone"))
+    let res = w.respond("hi")
+    assert res.reply == "still answered"
+    var kinds: seq[string] = @[]
+    for e in traceLines(home): kinds.add(e["type"].getStr())
+    assert kinds[^1] == "turn_end", "the turn still closes"
+    assert "receipt" notin kinds, "no receipt line, and the turn survived it"
     db.close()
     removeDir(home)

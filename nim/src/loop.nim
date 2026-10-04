@@ -34,6 +34,14 @@ type
     reply*: string
     toolCalls*: seq[JsonNode]
     iterations*: int
+    receipt*: JsonNode = newJNull()
+      ## The turn's receipt (spec 011 S4), null until `app.respond` builds
+      ## one: the pure builder leaves `turn_id`/`model.id` neutral, so only
+      ## the turn that owns them can fill them in. The field DEFAULT (not a
+      ## bare `JsonNode`) is the point — every `LoopResult(...)` literal
+      ## above and in `triage.nim` compiles unchanged, and reading
+      ## `result.receipt.kind` stays safe, where a nil JsonNode is a
+      ## segfault waiting for its first dereference.
 
 proc usageNum*(node: JsonNode, key: string): int =
   ## A ledger number that may be missing: absent or non-integer usage

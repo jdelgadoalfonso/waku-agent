@@ -191,6 +191,25 @@ proc logChat*(db: DbConn, userMessage, reply: string, sessionId = "default",
               "VALUES ('assistant', ?, ?, ?)"),
             reply, sessionId, source)
 
+proc updateChatMeta*(db: DbConn, rowId: int64, meta: string) =
+  ## Replace one assistant row's meta. Port of `Memory.update_meta`
+  ## (spec 011 S4): the turn's receipt counts what consolidation kept, and
+  ## consolidation reads the chat log the exchange was just written to, so
+  ## the receipt lands in meta AFTER the row exists — one rewrite, never
+  ## two writers (the oracle order in `app.respond`).
+  ##
+  ## `meta` arrives pre-rendered like `logChat`'s: `app.respond` keeps ONE
+  ## canonical `jsonDumps` render for the column, so a reopened thread and
+  ## a rewritten one are byte-identical.
+  ##
+  ## `rowid`, not `id`: `chat_log`'s `id INTEGER PRIMARY KEY` IS the
+  ## rowid in SQLite, so both name the same row. Python uses the id its
+  ## `add_exchange` hands back; this port's `logChat` returns nothing
+  ## (left alone by this unit), so the caller reads SQLite's own
+  ## `last_insert_rowid()`.
+  db.exec(sql("UPDATE chat_log SET meta = ? WHERE rowid = ?"), meta,
+          $rowId)
+
 proc sessionHistory*(db: DbConn,
                      sessionId: string): seq[tuple[user, reply: string]] =
   ## Port of `Memory.session_history`: the (user, assistant) exchanges of

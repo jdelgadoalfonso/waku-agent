@@ -19,6 +19,7 @@ import ../src/integrations
 import ../src/memory
 import ../src/pricing
 import ../src/providers
+import ../src/receipt
 
 proc freshDir(name: string): string =
   result = getTempDir() / name
@@ -386,6 +387,67 @@ suite "phase 8a /api/data status":
     assert s["latency_avg"].getInt() == 3000
     assert s["latency_p95"].getInt() == 3000
     assert s["trace_files"].getInt() == 1
+    removeDir(root)
+
+  test "a turn carries the receipt its trace recorded, cost unchanged":
+    # Spec 011: `app.respond` writes one `receipt` event per turn; the Loop
+    # tab reads `t.receipt` (render.js). The payload is what `receipt.nim`
+    # built, with the record's own `type`/`ts` wrapper taken off, so the
+    # keys land in the builder's order.
+    let root = freshDir("waku-dash-datareceipt")
+    createDir(root / "static")
+    createDir(root / "traces")
+    writeFile(root / "traces" / "2026-10-01.jsonl",
+      "{\"type\": \"turn_start\", \"user_message\": \"hi\", " &
+      "\"ts\": \"2026-10-01T00:00:01+00:00\"}\n" &
+      "{\"type\": \"llm\", \"usage\": {\"in\": 100, \"out\": 50}, " &
+      "\"ts\": \"2026-10-01T00:00:02+00:00\"}\n" &
+      "{\"type\": \"receipt\", \"turn_id\": \"t_abc\", " &
+      "\"model\": {\"id\": \"m\", \"in\": 100, \"out\": 50, " &
+      "\"usd\": 0.00105, \"estimate\": true, " &
+      "\"calls\": [{\"kind\": \"loop\", \"n\": 1}]}, " &
+      "\"tools\": [], \"memory\": {\"searches\": [], \"used\": 0, " &
+      "\"kept\": 2}, \"total_usd\": 0.00105, \"credits\": null, " &
+      "\"ts\": \"2026-10-01T00:00:03+00:00\"}\n" &
+      "{\"type\": \"turn_end\", \"reply\": \"hey\", \"iterations\": 1, " &
+      "\"ts\": \"2026-10-01T00:00:04+00:00\"}\n")
+    let node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    assert node["turns"].len == 1
+    let t = node["turns"][0]
+    var keys: seq[string] = @[]
+    for k in t["receipt"].keys:
+      keys.add(k)
+    assert keys == receiptKeys, "the builder's pinned set, in its order"
+    assert t["receipt"]["turn_id"].getStr() == "t_abc"
+    assert t["receipt"]["model"]["id"].getStr() == "m"
+    assert t["receipt"]["memory"]["kept"].getInt() == 2
+    assert t["receipt"]["credits"].kind == JNull
+    # repricing is untouched: cost still comes from this turn's own calls
+    assert abs(t["cost"].getFloat - 0.00105) < 1e-9
+    assert node["stats"]["turns"].getInt() == 1
+    assert node["stats"]["tokens_in"].getInt() == 100
+    removeDir(root)
+
+  test "a turn with no receipt event carries no receipt key":
+    # The footer's fallback line (seconds, iterations, model) must still be
+    # what an unrecorded turn draws, so the key is absent, not null.
+    let root = freshDir("waku-dash-datareceiptnone")
+    createDir(root / "static")
+    createDir(root / "traces")
+    writeFile(root / "traces" / "2026-10-01.jsonl",
+      "{\"type\": \"turn_start\", \"user_message\": \"hi\", " &
+      "\"ts\": \"2026-10-01T00:00:01+00:00\"}\n" &
+      "{\"type\": \"llm\", \"usage\": {\"in\": 100, \"out\": 50}, " &
+      "\"ts\": \"2026-10-01T00:00:02+00:00\"}\n" &
+      "{\"type\": \"turn_end\", \"reply\": \"hey\", \"iterations\": 1, " &
+      "\"ts\": \"2026-10-01T00:00:03+00:00\"}\n")
+    let node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    assert node["turns"].len == 1
+    let t = node["turns"][0]
+    assert t.hasKey("receipt") == false
+    assert abs(t["cost"].getFloat - 0.00105) < 1e-9
     removeDir(root)
 
   test "an unfinished turn names the hang, a bad stamp blanks latency":

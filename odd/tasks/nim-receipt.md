@@ -19,7 +19,10 @@ Three units in order, one work-unit commit each, no push.
 - [x] T2 (S3): receipt.nim builder + pins — worker-built, parent review
   found the input shape wrong ("type" field vs oracle's (kind, ev)
   pairs); corrected before commit. Judge con notify=nil (ver T1 L2).
-- [ ] T3 (S4): surfacing in app/turnSection — route: implement + nimble test
+- [x] T3 (S4): surfacing in app/turnSection — worker-built, parent review
+  found stale-rowid (last_insert_rowid read after afterTurn; a due
+  consolidation moved it onto the fact row) — hoisted to right after
+  addExchange + regression pin. donePayload without receipt: follow-up.
 
 ## Log
 - L1: user "si" x2 → write receipt proposal; user "ok" → maintainer yes, authorized units 1-3.

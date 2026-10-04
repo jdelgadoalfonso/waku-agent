@@ -551,17 +551,21 @@ proc turnSection*(home, provider, model: string,
   ## `(turns, stats)` from the trace events — port of the turns-grouping
   ## + stats block in Python `collect()`: events between `turn_start` and
   ## `turn_end` become one turn (gate, llm calls, tools, graph route,
-  ## reply); each turn pays its latency (first-to-last stamp) and its
-  ## repriced cost, and `stats` aggregates the FULL list while `turns`
+  ## receipt, reply); each turn pays its latency (first-to-last stamp) and
+  ## its repriced cost, and `stats` aggregates the FULL list while `turns`
   ## serves at most the newest 50. Always arrays — the Loop tab reads
   ## `d.turns.length` with no fallback, so `undefined` here is the
   ## `TypeError` that blanks the page.
   ##
-  ## Two deliberate divergences: tool rows read `statusOf` (the port's
+  ## Three deliberate divergences: tool rows read `statusOf` (the port's
   ## ok/error classifier — the `warn` middle state has no seam in
-  ## `app.statusOf`, so warn-ish outputs read ok), and pricing never
+  ## `app.statusOf`, so warn-ish outputs read ok), pricing never
   ## touches the network (Python warms the catalog cache; `priceFor`
-  ## reads it as-is, offline).
+  ## reads it as-is, offline), and a turn's `receipt` is the one `app`
+  ## RECORDED (Python's `collect()` never reads the `receipt` trace event,
+  ## so the port surfaces the recorded line instead of recomputing it).
+  ## Repricing does not change: `cost` still comes from this turn's own
+  ## `llm_calls` at the provider estimate, receipt or not.
   let (events, files) = readTraceEvents(home)
   let fileCount = files.len
   var turns: seq[JsonNode] = @[]
@@ -597,6 +601,20 @@ proc turnSection*(home, provider, model: string,
       current["tools"].add(copy(ev))
     elif typ == "consolidation":
       current["consolidation"] = copy(ev)
+    elif typ == "receipt":
+      # Spec 011: the receipt the turn already recorded, so the Loop tab
+      # draws the same line a reopened thread draws from `meta.receipt`
+      # (`render.js` reads `t.receipt`). The trace record wraps the
+      # payload in `type` and `ts`, so those two come off and what lands
+      # on the turn is the object `receipt.nim` built — its pinned keys,
+      # in the builder's order. A turn with no `receipt` event carries NO
+      # `receipt` key at all: the footer falls back to seconds,
+      # iterations and model, exactly as before.
+      if ev.kind == JObject:
+        var r = copy(ev)
+        r.delete("type")
+        r.delete("ts")
+        current["receipt"] = r
     elif typ == "turn_end":
       current["reply"] = ev.jget("reply")
       current["iterations"] = ev.jget("iterations")
