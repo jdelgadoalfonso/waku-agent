@@ -295,6 +295,20 @@ proc toRegistryTools*(server: string, metas: seq[McpToolMeta],
       fn: proc(args: JsonNode): string {.closure.} =
         callToolVia(exc, server, tname, args)))
 
+proc expectsReply*(line: string): bool =
+  ## JSON-RPC framing rule for the stdio transport: a message without
+  ## an `id` member is a notification — the server sends no response
+  ## line for it, so the transport must not read after writing one.
+  ## Reading anyway blocks until the server speaks again, which for
+  ## `notifications/initialized` is never (found live against
+  ## `engram mcp`: exactly two reply lines for initialize + tools/list).
+  ## Unparseable lines default to true so the read surfaces the real
+  ## error instead of silently swallowing the exchange.
+  try:
+    result = parseJson(line.strip()).hasKey("id")
+  except JsonParsingError:
+    result = true
+
 proc startStdioExchange*(command: string, args: seq[string],
                          env: Table[string, string]): ExchangeFn =
   ## Live stdio transport: launch the server and trade newline-delimited
@@ -313,6 +327,8 @@ proc startStdioExchange*(command: string, args: seq[string],
   result = proc(requestLine: string): string {.closure.} =
     child.inputStream.writeLine(requestLine.strip())
     child.inputStream.flush()
+    if not expectsReply(requestLine):
+      return ""
     return child.outputStream.readLine() & "\n"
 
 ## Phase 6b — streamable HTTP + bridge + `waku mcp` CLI helpers.

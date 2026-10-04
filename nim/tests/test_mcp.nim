@@ -211,6 +211,13 @@ suite "phase 6a stdio exchange":
       "notifications/initialized"
     assert parseJson(seen[][2].strip())["method"].getStr() == "tools/list"
 
+  test "expectsReply is false for notifications, true for requests":
+    assert not expectsReply(initializedNote())
+    assert expectsReply(initializeReq(1))
+    assert expectsReply(listToolsReq(2))
+    assert expectsReply("""{"jsonrpc":"2.0","id":"abc","method":"tools/list","params":{}}""")
+    assert expectsReply("{nope")
+
   test "an exchange failure propagates for the caller to skip":
     let failing: ExchangeFn = proc(req: string): string {.closure.} =
       raise newException(ValueError, "boom")
