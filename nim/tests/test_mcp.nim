@@ -199,6 +199,33 @@ suite "phase 6a response parsers":
     assert parseCallResult("""{"jsonrpc":"2.0","id":3,
       "result": {"content": []}}""") == "(no output)"
 
+suite "registry tools call the server's own name":
+  test "each tool asks for itself, not the last one listed":
+    # Regression pin (found live against `engram mcp`): building the
+    # registry in a loop made every closure share one binding, so
+    # `mem_search` asked the server for whatever tool came last.
+    var asked: seq[string] = @[]
+    let naming: ExchangeFn = proc(req: string): string {.closure.} =
+      let node = parseJson(req.strip())
+      let meth = node["method"].getStr()
+      if meth == "tools/call":
+        asked.add(node["params"]["name"].getStr())
+        return callOkLine
+      if meth == "tools/list":
+        return listOkLine
+      initOkLine
+    let reg = toRegistryTools("engram", @[
+      McpToolMeta(name: "mem_search", description: "s",
+        inputSchema: %*{"type": "object"}),
+      McpToolMeta(name: "mem_save", description: "s",
+        inputSchema: %*{"type": "object"}),
+      McpToolMeta(name: "mem_update", description: "s",
+        inputSchema: %*{"type": "object"})], naming)
+    assert reg.len == 3
+    for t in reg:
+      discard t.fn(%*{"query": "x"})
+    assert asked == @["mem_search", "mem_save", "mem_update"]
+
 suite "phase 6a stdio exchange":
   test "listToolsVia initializes then lists, returning tool metas":
     let seen = newSeen()

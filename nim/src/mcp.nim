@@ -281,19 +281,28 @@ proc callToolVia*(exchange: ExchangeFn, server, tool: string,
   except CatchableError as exc:
     return "MCP call " & server & "_" & tool & " failed: " & exc.msg
 
+proc toolFor*(server, tname: string, meta: McpToolMeta,
+              exchange: ExchangeFn): Tool =
+  ## One server tool as a `Tool`: the model reads `modelSafeName`, the
+  ## server hears its own `meta.name`. A PROC, not a loop body, on
+  ## purpose: a `let` inside a `for` is ONE binding that every closure
+  ## shares, so a loop-built registry called the LAST tool of the list
+  ## under every name (found live against `engram mcp`: `mem_search`
+  ## asked the server for `mem_update`). Parameters are per call, so each
+  ## closure here keeps its own name.
+  result = Tool(
+    name: modelSafeName(server, tname),
+    description: "[MCP:" & server & "] " & meta.description,
+    inputSchema: meta.inputSchema,
+    fn: proc(args: JsonNode): string {.closure.} =
+      callToolVia(exchange, server, tname, args))
+
 proc toRegistryTools*(server: string, metas: seq[McpToolMeta],
                       exchange: ExchangeFn): seq[Tool] =
-  ## Port of the `Tool(...)` construction in `MCPBridge.start`: the
-  ## model reads `modelSafeName`, the server hears its own `meta.name`.
+  ## Port of the `Tool(...)` construction in `MCPBridge.start`, one
+  ## `toolFor` per meta (see why it is a proc).
   for meta in metas:
-    let tname = meta.name
-    let exc = exchange
-    result.add(Tool(
-      name: modelSafeName(server, tname),
-      description: "[MCP:" & server & "] " & meta.description,
-      inputSchema: meta.inputSchema,
-      fn: proc(args: JsonNode): string {.closure.} =
-        callToolVia(exc, server, tname, args)))
+    result.add(toolFor(server, meta.name, meta, exchange))
 
 proc expectsReply*(line: string): bool =
   ## JSON-RPC framing rule for the stdio transport: a message without

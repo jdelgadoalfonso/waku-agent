@@ -37,8 +37,14 @@ import std/json
 import std/strutils
 
 import ./tools
+import ./wire
 
 const
+  reportMarkerOf* = "<!-- waku-report v1 -->"
+    ## The line that opens a research report (spec 007's marker). Declared
+    ## here because a memory that IS a report is recognized by it; the
+    ## writer lives in `reports.nim`.
+
   researchSkill* = "research-report"
     ## The skill whose trigger marks a turn as research. Its matcher is
     ## the detector: no second heuristic to drift from what the skill
@@ -106,23 +112,84 @@ proc subject*(message: string): string =
       kept.add(word)
   if kept.len > 0: kept.join(" ") else: message.strip()
 
+proc startsMarker*(body: string): bool =
+  ## A report opens with the marker, whatever indent precedes it.
+  var s2 = body
+  while s2.len > 0 and s2[0] in {' ', '\t'}:
+    s2 = s2[1 .. ^1]
+  s2.startsWith(reportMarkerOf)
+
+proc entryText*(body: string): string =
+  ## What one memory may put in the prompt: the body (or snippet) with
+  ## the report marker gone, whitespace folded, capped at `textChars`.
+  ## Port of Python's `_text`.
+  var body2 = body.replace(reportMarkerOf, "").strip()
+  body2 = body2.splitWhitespace().join(" ")
+  if body2.len > textChars:
+    body2 = body2[0 ..< textChars - 1] & "…"
+  body2
+
+proc jsonEntries*(doc: JsonNode): seq[JsonNode] =
+  ## Waku Memory's own answer shape (`{"entries": [...]}`), read exactly
+  ## like Python's `_entries`/`_is_report`/`_title`/`_text`: an entry
+  ## without an id is skipped, a report is one whose body opens with the
+  ## marker or whose kind is `semantic`, and its title is its `# ` line.
+  if doc.kind != JObject:
+    return
+  let entries = doc.jget("entries")
+  if entries.kind != JArray:
+    return
+  for e in entries:
+    if e.kind != JObject:
+      continue
+    let id = e.jget("id").getStr()
+    if id.len == 0:
+      continue
+    let body = e.jget("body").getStr()
+    let snippet = e.jget("snippet").getStr()
+    let whole = if body.len > 0: body else: snippet
+    var title = ""
+    for line in whole.splitLines():
+      if line.startsWith("# "):
+        title = line[2 .. ^1].strip()
+        break
+    let kind = e.jget("kind").getStr()
+    result.add(%*{"id": id, "title": title, "text": entryText(whole),
+      "created_at": e.jget("created_at").getStr(),
+      "kind": kind,
+      "report": (startsMarker(whole) or kind == "semantic")})
+
 proc brainEntries*(text: string): seq[JsonNode] =
-  ## One `{id, title, text}` per Engram hit row (`[n] #id (type) — title`
-  ## plus the lines under it): the entries behind a Used list. Rows
-  ## without an id are skipped, like Python's entries without one, and
-  ## each text is capped at `textChars`, ellipsis included.
+  ## One `{id, title, text, created_at, kind, report}` per hit. Three
+  ## shapes are accepted, in this order: Waku Memory's JSON `entries`
+  ## (Python's shape), a JSON envelope whose `result` holds Engram's text
+  ## rows, and those rows themselves (`[n] #id (type) — title` plus the
+  ## lines under them — a JSON string keeps its newlines ESCAPED, so the rows
+  ## are only lines once the envelope is unwrapped). Rows without an id
+  ## are skipped, like Python's entries without one, and each text is
+  ## capped at `textChars`, ellipsis included.
   result = @[]
+  try:
+    let doc = parseJson(text)
+    if doc.kind == JObject and doc.hasKey("entries"):
+      return jsonEntries(doc)
+    if doc.kind == JObject and doc.jget("result").kind == JString:
+      return brainEntries(doc.jget("result").getStr())
+  except JsonParsingError:
+    discard
   var curId = ""
   var curTitle = ""
   var curLines: seq[string] = @[]
+  var curKind = ""
   template flushEntry() =
     if curId.len > 0:
-      var body = curLines.join(" ").splitWhitespace().join(" ")
-      if body.len > textChars:
-        body = body[0 ..< textChars - 1] & "…"
-      result.add(%*{"id": curId, "title": curTitle, "text": body})
+      let body = curLines.join("\n")
+      result.add(%*{"id": curId, "title": curTitle,
+        "text": entryText(body), "created_at": %"", "kind": curKind,
+        "report": startsMarker(body)})
       curId = ""
       curTitle = ""
+      curKind = ""
       curLines = @[]
   for line in text.splitLines():
     let s = line.strip()
@@ -134,7 +201,13 @@ proc brainEntries*(text: string): seq[JsonNode] =
         flushEntry()
         let idEnd = s.find(' ', hash)
         curId = if idEnd > hash: s[hash ..< idEnd] else: s[hash .. ^1]
-        curTitle = if dash > 0: s[dash + 3 .. ^1].strip() else: ""
+        if dash > 0:
+          curTitle = s[dash + 3 .. ^1].strip()
+          # "(discovery)" sits between the id and the dash
+          let open = s.find('(', close)
+          let closeParen = s.find(')', close)
+          if open > close and closeParen > open:
+            curKind = s[open + 1 ..< closeParen].strip()
         curLines = @[]
         continue
     if curId.len > 0 and s.len > 0:
@@ -151,10 +224,22 @@ proc readFirst*(message: string,
   if not brainConnected(backend):
     return result
   let about = subject(message)
+  # `any` for the subject search, `all` for the targeted one: the first
+  # must FIND an earlier report even when the words do not all appear in
+  # it (`all` found nothing for "mem0 competitors pricing" against a
+  # report that never says "pricing"), which is the reason Python runs a
+  # second search at all; the second is a precise lookup (scope + type),
+  # so AND is free there. `all_projects` is Engram's Python "all" scope,
+  # and it is REQUIRED:
+  # a search without a project (or this flag) is refused outright
+  # (`expected_project must be a valid non-empty project name`), so the
+  # port never names a project it cannot know.
   let asks = @[
-    %*{"query": about, "limit": subjectLimit, "match_mode": "any"},
-    %*{"query": about, "scope": companyScope, "type": reportType,
-       "limit": companyLimit, "match_mode": "any"}]
+    %*{"query": about, "all_projects": true, "limit": subjectLimit,
+       "match_mode": "any"},
+    %*{"query": about, "all_projects": true, "scope": companyScope,
+       "type": reportType, "limit": companyLimit,
+       "match_mode": "all"}]
   var seen: seq[string] = @[]
   var blocks: seq[string] = @[]
   for args in asks:
@@ -170,7 +255,8 @@ proc readFirst*(message: string,
         continue
       seen.add(e["id"].getStr())
       result.used.add(%*{"id": e["id"], "text": e["text"],
-        "created_at": %"", "kind": %"", "report": %false})
+        "created_at": e["created_at"], "kind": e["kind"],
+        "report": e["report"]})
       blocks.add("- " & e["title"].getStr() & " (" &
         e["id"].getStr() & "): " & e["text"].getStr())
   if blocks.len == 0:

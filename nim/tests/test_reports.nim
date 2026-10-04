@@ -32,7 +32,8 @@ proc saveBackend(answer: string, fail = false): SaveBackend =
     answer)
 
 proc companyBackend(): SaveBackend =
-  saveBackend("""{"id": "42"}""")
+  ## Engram answers a NUMBER id; a string id is accepted too.
+  saveBackend("""{"id": 42}""")
 
 suite "find the report":
   test "a marker line opens a report":
@@ -104,11 +105,12 @@ suite "save the report":
     var savedArgs: seq[JsonNode] = @[]
     var backend = SaveBackend(save: proc(args: JsonNode): string {.closure.} =
       savedArgs.add(args)
-      """{"id": "42"}""")
+      """{"id": 42}""")
     let company = saveReport(marked, backend,
       proc(one: Report): bool = true)
     assert company.reply != marked
-    assert company.event["memory_id"].getStr() == "42"
+    assert company.event["memory_id"].getStr() == "42",
+      "a numeric id is carried as its own text, like Python's id"
     assert company.event["scope"].getStr() == companyScope
     let personal = saveReport(marked, backend,
       proc(one: Report): bool = false)
@@ -117,6 +119,17 @@ suite "save the report":
     assert savedArgs[0]["content"].getStr().startsWith(reportMarker)
     assert savedArgs[0]["type"].getStr() == reportType
     assert savedArgs[0]["capture_prompt"].getBool() == false
+
+  test "a string id is accepted, and a nested one too":
+    var r: Report
+    discard findReport(marked, r)
+    let strId = saveReport(marked, saveBackend("""{"id": "abc"}"""),
+      proc(one: Report): bool = true)
+    assert strId.event["memory_id"].getStr() == "abc"
+    let nested = saveReport(marked,
+      saveBackend("""{"observation": {"id": 7}}"""),
+      proc(one: Report): bool = true)
+    assert nested.event["memory_id"].getStr() == "7"
 
   test "no report, no backend or a failed send leaves the reply whole":
     let backend = companyBackend()

@@ -167,16 +167,16 @@ proc rememberReport*(backend: SaveBackend, report: Report,
     answer = parseJson(text)
   except JsonParsingError:
     raise newException(IOError, text[0 ..< min(200, text.len())])
-  let id = answer.jget("id").getStr()
-  if id.len > 0:
-    return id
-  let nested = answer.jget("observation")
-  if nested.kind == JObject:
-    let nid = nested.jget("id")
-    if nid.kind == JString and nid.getStr().len > 0:
-      return nid.getStr()
-    if nid.kind == JInt:
-      return $nid.getBiggestInt()
+  # Engram answers `{"id": 406, ...}` — a NUMBER. Other shapes (a string
+  # id, an `observation.id`) are accepted too; none of them means the send
+  # did not land, which is what the caller treats as a failed send.
+  for node in [answer.jget("id"),
+      answer.jget("observation").jget("id"),
+      answer.jget("memory").jget("id")]:
+    if node.kind == JString and node.getStr().len > 0:
+      return node.getStr()
+    if node.kind == JInt:
+      return $node.getBiggestInt()
   raise newException(IOError, "the backend named no id for the report")
 
 proc saveReport*(reply: string, backend: SaveBackend,

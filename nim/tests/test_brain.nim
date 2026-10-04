@@ -75,6 +75,12 @@ suite "read first":
     assert calls.len == 2
     assert calls[0]["tool"].getStr() == brainSearchTool
     assert calls[0]["args"]["limit"].getInt() == subjectLimit
+    assert calls[0]["args"]["all_projects"].getBool(),
+      "Engram refuses a search that names no project"
+    assert calls[0]["args"]["match_mode"].getStr() == "any",
+      "the subject search is broad recall, like Python's"
+    assert calls[1]["args"]["match_mode"].getStr() == "all",
+      "the targeted one is a precise lookup"
     assert calls[1]["args"]["scope"].getStr() == companyScope
     assert used.len == 1, "same hit twice dedupes by id"
     assert used[0]["id"].getStr() == "#12"
@@ -97,3 +103,33 @@ suite "backend lookup":
     assert brainConnected(backend)
     var empty: ToolRegistry
     assert not brainConnected(brainBackendFor(empty))
+
+suite "backend answer shapes":
+  test "a json envelope unwraps to its rows, with kind and report":
+    # Engram answers a JSON envelope whose `result` holds the rows with
+    # their newlines ESCAPED, so parsing the envelope as text finds none.
+    let envelope = $(%*{"project": "", "result": hits})
+    let found = brainEntries(envelope)
+    assert found.len == 1
+    assert found[0]["id"].getStr() == "#12"
+    assert found[0]["kind"].getStr() == "decision"
+    assert found[0]["report"].getBool() == false
+
+  test "waku memory's own entries shape is read too":
+    let doc = $(%*{"entries": [
+      {"id": "m1", "body": reportMarkerOf & "\n\n# Rival map\n\n- one",
+       "kind": "semantic", "created_at": "2026-10-01"},
+      {"id": "", "body": "no id, skipped"},
+      {"id": "m2", "snippet": "Alex prefers mornings"}]})
+    let found = brainEntries(doc)
+    assert found.len == 2
+    assert found[0]["title"].getStr() == "Rival map"
+    assert found[0]["report"].getBool() == true
+    assert found[0]["created_at"].getStr() == "2026-10-01"
+    assert found[1]["text"].getStr() == "Alex prefers mornings"
+    assert found[1]["report"].getBool() == false
+
+  test "a report's marker never reaches the prompt text":
+    let doc = $(%*{"entries": [{"id": "m1",
+      "body": reportMarkerOf & "\n\n# Rival map\n\nbody here"}]})
+    assert brainEntries(doc)[0]["text"].getStr() == "# Rival map body here"
