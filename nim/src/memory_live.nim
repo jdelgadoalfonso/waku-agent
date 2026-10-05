@@ -22,6 +22,7 @@ import std/algorithm
 import std/json
 import std/os
 import std/re
+import std/sets
 import std/strutils
 import std/times
 import std/unicode
@@ -224,6 +225,65 @@ proc aboutReport*(fact: JsonNode, report: string): bool =
     return found.len > 0
   except RegexError:
     false
+
+proc recallWords*(text: string): HashSet[string] =
+  ## The words of a text, lowercased, as `restatesFact` compares them:
+  ## `"$10M,"` is `"10m"`, `"Mem0's"` is `"mem0"`, and a date like
+  ## `2026-10-05` stays one word, so it never matches a bare `2026`. Port of
+  ## `_words` (escaped line breaks and apostrophes read as the characters
+  ## they are — a tool's answer is often JSON).
+  ##
+  ## Case runs on ASCII (`isUpperAscii`): a non-ASCII capital is not a name
+  ## here, while Python counts it. The suite is ASCII; the divergence only
+  ## matters for words like `"Ünter"`, which keep their fact instead of
+  ## dropping it — the safe direction.
+  let readable = text.replace("\\n", " ").replace("\\r", " ")
+    .replace("\\t", " ").replace("\\u2019", "'").replace("\u2019", "'")
+  result = initHashSet[string]()
+  for word in readable.findAll(re"[\w$'.,%-]+"):
+    var w = word.strip(leading = true, trailing = true, chars = {'\'', '.', ',', '-'})
+    w = w.strip(leading = true, trailing = false, chars = {'$'}).toLowerAscii()
+    if w.endsWith("'s"):
+      w = w[0 .. ^3]
+    if w.len > 0:
+      result.incl(w)
+
+proc restatesFact*(content, recalled: string): bool =
+  ## True when the fact only repeats memory the turn read: it has a number
+  ## or a date, and every name, number and date in it (each word with a
+  ## capital letter or a digit) is already in `recalled`. Port of `restates`.
+  ##
+  ## `"Zep raised a $2.3M pre-seed round on 2023-12-27."` restates a report
+  ## that holds Zep, $2.3M and 2023-12-27. `"Zep raised again in 2026"`
+  ## does not: 2026 is new. A fact with no number is never dropped here,
+  ## however familiar its names — something new the user says is never lost;
+  ## RECALL_RULE asks the summariser to leave those out instead.
+  let clean = content.replace("\u2019", "'")
+  # Normalized FIRST, like Python's `_words(" ".join(...))`: the number
+  # test reads `"10m"`, not `"$10M"` — checking raw tokens would miss a
+  # fact whose only number wears a `$`.
+  var key = initHashSet[string]()
+  for w in strutils.splitWhitespace(clean):
+    var signal = false
+    for ch in w:
+      if ch.isUpperAscii or ch.isDigit:
+        signal = true
+        break
+    if signal:
+      for part in recallWords(w):
+        key.incl(part)
+  var hasNumber = false
+  for w in key:
+    if w.len > 0 and w[0].isDigit:
+      hasNumber = true
+      break
+  if not hasNumber:
+    return false
+  let known = recallWords(recalled)
+  for w in key:
+    if w notin known:
+      return false
+  true
 
 proc consolidateIfDue*(db: DbConn, facts: FactStore, episodes: EpisodeStore,
     client: LlmClient,

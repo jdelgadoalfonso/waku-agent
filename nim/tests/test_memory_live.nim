@@ -5,6 +5,7 @@
 
 import std/json
 import std/os
+import std/sets
 import std/strutils
 import std/unittest
 
@@ -206,6 +207,45 @@ suite "consolidation":
       assert row[0] == "0"
     db.close()
     removeDir(home)
+
+suite "restates":
+  const recalled = "Letta raised a $10M seed (2024-08-01) at a $60M " &
+    "valuation, the largest disclosed round among Mem0's competitors. " &
+    "Zep raised a $2.3M pre-seed on 2023-12-27. Cognee raised a $1.58M " &
+    "pre-seed on 2024-11-20. Mem0 says it raised $24M across a Seed and " &
+    "Series A, announced 2025-10-28. Aviato's newest data for these " &
+    "companies is from 2024-11-20."
+
+  test "words normalize like the_eval: money, possessives, dates":
+    assert "10m" in recallWords("$10M,")
+    assert "mem0" in recallWords("Mem0's")
+    assert "2026-10-05" in recallWords("dated 2026-10-05")
+    assert "2026" notin recallWords("dated 2026-10-05")
+
+  test "all five restated findings drop against what was read":
+    const restated = [
+      "Letta raised a $10M seed round announced 2024-08-01 at a $60M " &
+        "valuation, the largest disclosed round among Mem0's competitors.",
+      "Zep raised a $2.3M pre-seed round on 2023-12-27.",
+      "Cognee raised a $1.58M pre-seed round on 2024-11-20.",
+      "Mem0 claims it raised $24M across a Seed and Series A announced 2025-10-28.",
+      "Aviato's most recent data for Mem0's competitors is dated 2024-11-20."]
+    for content in restated:
+      assert restatesFact(content, recalled), "kept a restatement: " & content
+
+  test "something new the user says is kept: 2026 is not in what was read":
+    assert restatesFact("Zep raised another round in 2026.", recalled) == false
+
+  test "a fact without a number is never dropped by the rule":
+    assert restatesFact("Sean decided to price below Mem0",
+      "Sean and Mem0 met last week") == false
+
+  test "memory read as JSON is compared as text":
+    let asJson = "{\"fact\": \"Zep raised a $2.3M\\npre-seed on 2023-12-27.\"}"
+    assert restatesFact("Zep raised a $2.3M pre-seed on 2023-12-27.", asJson)
+
+  test "a date is one word, so a bare year never matches it":
+    assert restatesFact("Something happened in 2026.", "dated 2026-10-05") == false
 
 suite "MEMORY.md mirror":
   test "the mirror counts what the tables hold":
