@@ -273,3 +273,87 @@ proc pgFakeStore*(): FactStore =
   result.settle = proc(timeoutMs: int): bool =
     discard timeoutMs
     true
+
+type
+  LangFakeRow = tuple[key, subject, content, source: string,
+                       vec: seq[float32]]
+
+proc langmemFakeStore*(): FactStore =
+  ## LangMem minus the library: namespaced items in memory, `fakeEmbed`
+  ## vectors, cosine order. Keys are `fact-N` strings — the port exposes the
+  ## store's own keys, like Python. Candidacy is exact token overlap (like
+  ## the pg fake) while prod ranks pure cosine: strictly narrower by
+  ## construction, so the suite stays deterministic (see `langmem.nim`).
+  var rows: seq[LangFakeRow] = @[]
+  rows.add(("fact-1", "seed", "seeded row", "user",
+            fakeEmbed("seed: seeded row")))
+  var next = 2
+
+  proc rank(query: string, topK: int): seq[LangFakeRow] =
+    let q = fakeEmbed(query)
+    var scored: seq[(float, LangFakeRow)] = @[]
+    for row in rows:
+      let haystack = row.subject.toLowerAscii() & " " & row.content.toLowerAscii()
+      var shares = false
+      for token in query.toLowerAscii().splitWhitespace():
+        if token.len >= 2 and haystack.contains(token):
+          shares = true
+      if not shares:
+        continue
+      scored.add((cosine(q, row.vec), row))
+    scored.sort(proc(a, b: (float, LangFakeRow)): int = cmp(b[0], a[0]))
+    result = @[]
+    for i in 0 ..< min(topK, scored.len):
+      result.add(scored[i][1])
+
+  result.add = proc(subject, content, source: string) =
+    let clean = subject.toLowerAscii().strip()
+    rows.add(("fact-" & $next, clean, content, source,
+              fakeEmbed(clean & ": " & content)))
+    inc next
+
+  result.search = proc(query: string, topK: int): seq[string] =
+    var found: seq[string] = @[]
+    for row in rank(query, topK):
+      found.add(if row.subject.len > 0: "[" & row.subject & "] " & row.content
+                else: row.content)
+    found
+
+  result.list = proc(limit: int): seq[StoreFact] =
+    var found: seq[StoreFact] = @[]
+    var i = rows.len - 1
+    while i >= 0 and found.len < limit:
+      found.add(StoreFact(id: rows[i].key, subject: rows[i].subject,
+                          content: rows[i].content, source: rows[i].source,
+                          createdAt: "2026-01-01T00:00:00Z"))
+      dec i
+    found
+
+  result.searchWithIds = proc(query: string, topK: int): seq[StoreFact] =
+    var found: seq[StoreFact] = @[]
+    for row in rank(query, topK):
+      found.add(StoreFact(id: row.key, subject: row.subject,
+                          content: row.content, source: row.source,
+                          createdAt: ""))
+    found
+
+  result.update = proc(id: FactId, content, subject: string): bool =
+    for i, row in rows:
+      if row.key == id:
+        rows[i].content = content
+        if subject.len > 0:
+          rows[i].subject = subject.toLowerAscii().strip()
+        rows[i].vec = fakeEmbed(rows[i].subject & ": " & content)
+        return true
+    false
+
+  result.delete = proc(id: FactId): bool =
+    for i, row in rows:
+      if row.key == id:
+        rows.delete(i)
+        return true
+    false
+
+  result.settle = proc(timeoutMs: int): bool =
+    discard timeoutMs
+    true

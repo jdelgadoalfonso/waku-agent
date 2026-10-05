@@ -31,7 +31,7 @@ import ../src/factstore
 import factstore_fakes
 
 const
-  backends = ["sqlite", "mem0-fake", "zep-fake", "pg-fake"]
+  backends = ["sqlite", "mem0-fake", "zep-fake", "pg-fake", "langmem-fake"]
     ## Every backend in this build. `mem0-fake` is the stateful fake in
     ## `factstore_fakes.nim`, so the hosted contract is a gate that always
     ## runs and never reaches a network. Adding a real backend means adding
@@ -64,6 +64,8 @@ proc freshStore(name, tag: string): tuple[store: FactStore, db: DbConn,
     result.store = zepFakeStore()
   of "pg-fake":
     result.store = pgFakeStore()
+  of "langmem-fake":
+    result.store = langmemFakeStore()
   else:
     raise newException(ValueError, "no fake for backend: " & name)
 
