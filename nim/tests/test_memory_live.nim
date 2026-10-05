@@ -247,6 +247,70 @@ suite "restates":
   test "a date is one word, so a bare year never matches it":
     assert restatesFact("Something happened in 2026.", "dated 2026-10-05") == false
 
+suite "recall prompt":
+  test "the rule rides along only when something was read, capped":
+    let bare = consolidationPrompt("user: hi", "", "")
+    assert "already kept" notin bare
+    # Distinct tokens: with a repetitive string any slice also matches the
+    # kept prefix, which would pass for the wrong reason.
+    var toks: seq[string] = @[]
+    for i in 0 .. 2000:
+      toks.add("w" & align($i, 4, '0'))
+    let long = toks.join(" ")
+    assert long.len > 7000
+    let capped = consolidationPrompt("user: hi", "", long)
+    assert "already kept" in capped
+    assert "w0001" in capped
+    assert "w1999" notin capped
+
+suite "recall consolidation":
+  test "a recall turn keeps nothing it read, and still retires the rows":
+    let home = freshHome("waku-memlive-recall")
+    let db = connectDb(home)
+    let facts = store(db)
+    let episodes = sqliteEpisodeStore(db)
+    addFact(db, "zep", "Zep raised $2.3M in 2023")
+    logChat(db, "what did Zep raise?", "Zep raised $2.3M in 2023")
+    let client = scriptedClient(
+      """{"retrieve": true, "query": "Zep", "reason": "asks about Zep"}""",
+      """{"facts": [{"subject": "Zep", "content": "Zep raised $2.3M in 2023."}], "episode": ""}""")
+    var w = newWaku(liveSettings(home), client, db)
+    wireMemory(w, liveSettings(home), db, client, @[])
+    let found = w.session.retrieve("what did Zep raise?", nil)
+    assert "2.3M" in found, "the gate must find the seeded fact first"
+    var kinds: seq[string] = @[]
+    w.afterTurn(proc(kind: string, ev: JsonNode) {.closure.} = kinds.add(
+      kind & ":" & $ev.jget("new_facts").getInt(0)))
+    # afterTurn only announces kept facts, so a dropped batch reads as the
+    # metered llm call alone — no "consolidation:N" entry at all.
+    assert kinds == @["llm:0"], "restated proposal must drop: " & $kinds
+    assert listFacts(db).len == 1, "nothing new stored"
+    for row in db.getAllRows(sql"SELECT consolidated FROM chat_log"):
+      assert row[0] == "1", "rows retire even when nothing is kept"
+    db.close()
+    removeDir(home)
+
+  test "something new the user says in a recall turn is still kept":
+    let home = freshHome("waku-memlive-recallnew")
+    let db = connectDb(home)
+    let facts = store(db)
+    let episodes = sqliteEpisodeStore(db)
+    addFact(db, "zep", "Zep raised $2.3M in 2023")
+    logChat(db, "what did Zep raise, and note we meet in 2026", "as above")
+    let client = scriptedClient(
+      """{"retrieve": true, "query": "Zep", "reason": "asks about Zep"}""",
+      """{"facts": [{"subject": "Zep", "content": "Zep raised another round in 2026."}], "episode": ""}""")
+    var w = newWaku(liveSettings(home), client, db)
+    wireMemory(w, liveSettings(home), db, client, @[])
+    discard w.session.retrieve("what did Zep raise?", nil)
+    var kinds: seq[string] = @[]
+    w.afterTurn(proc(kind: string, ev: JsonNode) {.closure.} = kinds.add(
+      kind & ":" & $ev.jget("new_facts").getInt(0)))
+    assert "consolidation:1" in kinds, "new fact must survive: " & $kinds
+    assert listFacts(db).len == 2
+    db.close()
+    removeDir(home)
+
 suite "MEMORY.md mirror":
   test "the mirror counts what the tables hold":
     let home = freshHome("waku-memlive-mirror")

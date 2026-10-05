@@ -76,6 +76,20 @@ The report:
     ## Port of `REPORT_RULE` with `REPORT_TURN_MAX_FACTS` (= 2) written
     ## out, added to the prompt when the batch saved a report (spec 009 B).
   reportTurnMaxFacts* = 2
+
+const
+  recallRule* = """
+These exchanges answered from memory that is already kept, quoted below. Do NOT
+extract a fact it already holds, even reworded. Keep only what is new: what
+the user said, decided or asked to note.
+Memory read this turn:
+{recalled}"""
+    ## Added to the prompt when the turn answered from memory it read. The
+    ## deterministic `restatesFact` check below is what guarantees the drop;
+    ## this only saves the summariser proposing what would be dropped.
+  recallPromptChars* = 6000
+    ## How much of the recalled memory goes into the prompt. The
+    ## `restatesFact` check reads all of it.
     ## The most loose facts a report turn keeps, whatever the model
     ## proposed (port of `REPORT_TURN_MAX_FACTS`).
 
@@ -285,10 +299,22 @@ proc restatesFact*(content, recalled: string): bool =
       return false
   true
 
+proc consolidationPrompt*(log, reportBody, recalled: string): string =
+  ## The summarizer prompt: log, plus the report rule, plus the recall rule
+  ## (capped). Extracted so tests pin the rules without spending a model
+  ## call — the prompt only SAVES proposals, the `restatesFact` filter is
+  ## what guarantees the drop.
+  result = formatPrompt(summarizerPrompt, log)
+  if reportBody.len > 0:
+    result = result & reportRule.replace("{report}", reportBody)
+  if recalled.len > 0:
+    result = result & recallRule.replace("{recalled}",
+      recalled[0 ..< min(recalled.len, recallPromptChars)])
+
 proc consolidateIfDue*(db: DbConn, facts: FactStore, episodes: EpisodeStore,
     client: LlmClient,
     smallModel: string, everyN: int, notify: Observer = nil,
-    reportBody: string = ""): int =
+    reportBody: string = "", recalled: string = ""): int =
   ## Port of `consolidate_if_due`: fewer than `everyN` exchanges (2 rows
   ## each) pending means not due. A distilled fact needs subject AND
   ## content; the log rows flip to consolidated only after the writes —
@@ -296,6 +322,9 @@ proc consolidateIfDue*(db: DbConn, facts: FactStore, episodes: EpisodeStore,
   ## them. Returns new facts written. `reportBody` is the research report
   ## this turn saved (spec 009 B): the prompt then caps the batch at two
   ## facts about the person and drops what the report already holds.
+  ## `recalled` is the memory this turn read (the gate's text, retained by
+  ## the wiring): a proposed fact that only restates it is dropped, and the
+  ## prompt carries the rule. Empty disables both — the old behavior.
   var rows: seq[Row] = @[]
   for row in db.getAllRows(sql(
       "SELECT id, role, content FROM chat_log WHERE consolidated = 0 " &
@@ -307,9 +336,7 @@ proc consolidateIfDue*(db: DbConn, facts: FactStore, episodes: EpisodeStore,
   for r in rows:
     log.add(r[1] & ": " & r[2])
   var distilled: JsonNode
-  var prompt = formatPrompt(summarizerPrompt, log.join("\n"))
-  if reportBody.len > 0:
-    prompt = prompt & reportRule.replace("{report}", reportBody)
+  let prompt = consolidationPrompt(log.join("\n"), reportBody, recalled)
   try:
     let req = %*{"model": smallModel, "max_tokens": 4096,
                  "messages": @[%*{"role": "user",
@@ -341,6 +368,16 @@ proc consolidateIfDue*(db: DbConn, facts: FactStore, episodes: EpisodeStore,
           if i >= reportTurnMaxFacts:
             break
           kept.add(fact)
+      # A recall turn must not keep what it read: a proposed fact whose
+      # every name, number and date is already in `recalled` is dropped.
+      # Empty recalled disables the rule — this proc then behaves exactly
+      # as before, which is what every older pin asserts.
+      if recalled.len > 0:
+        var fresh: seq[JsonNode] = @[]
+        for fact in kept:
+          if not restatesFact(fact.jget("content").getStr(), recalled):
+            fresh.add(fact)
+        kept = fresh
       for fact in kept:
         let subject = fact.jget("subject").getStr()
         let content = fact.jget("content").getStr()
@@ -393,14 +430,20 @@ proc wireMemory*(w: var Waku, settings: Settings, db: DbConn,
   let cell = w.reportCell   ## the turn's saved report, read through a ref
   let facts = w.facts       ## ditto: a `var Waku` cannot be captured
   let episodes = w.episodes ## the episodic twin of the line above
+  ## What the gate found this turn, kept for consolidation: a recall turn
+  ## must not keep what it read. A fresh cell per wiring (not per turn) is
+  ## right because `afterTurn` consumes it every turn — nothing goes stale.
+  var recalledCell = ""
   let home = settings.home
   let smallModel = settings.smallModel
   let topK = settings.retrievalTopK
   let everyN = settings.consolidateEvery
   w.session.retrieve =
     proc(userMessage: string, notify: Observer): string {.closure.} =
-      gatedRetrieve(db, facts, episodes, client, smallModel, topK, userMessage,
-        notify)
+      let found = gatedRetrieve(db, facts, episodes, client, smallModel, topK,
+        userMessage, notify)
+      recalledCell = found
+      found
   w.session.skillsFor =
     proc(userMessage: string, notify: Observer): string {.closure.} =
       matchingSkills(home, bundled, userMessage)
@@ -413,8 +456,10 @@ proc wireMemory*(w: var Waku, settings: Settings, db: DbConn,
       # read through the agent's own cell, which the turn sets just before
       # (spec 009 B).
       let reportBody = if cell.isNil: "" else: cell[]
+      let recalled = recalledCell
+      recalledCell = ""
       let fresh = consolidateIfDue(db, facts, episodes, client, smallModel, everyN,
-        notify, reportBody)
+        notify, reportBody, recalled)
       if fresh > 0 and not notify.isNil:
         notify("consolidation", %*{"new_facts": fresh})
       exportMarkdown(db, home)
