@@ -356,9 +356,9 @@ episode; `settle` waits for the graph to stop growing, not just the episodes.
   `runGather`. GitHub/web stay honestly unavailable until phase 5.
 - `src/memory_live.nim` ports the live layer (`retrieval_gate.py`,
   consolidation, `MEMORY.md` mirror, skill keyword match): the gate judge
-  with fail-open, gated facts+episodes retrieval, distill-every-N and the
+  with fail-open, gated facts+episodes retrieval, distill-every-N with the
+  recall rule (a turn never re-keeps what it read — `restates`), and the
   `wireMemory` that fills the session/app seams for every built agent.
-  Hosted stores stay Python-only (no switch in `Settings`).
 - `src/commands.nim` ports `ops/commands.py` (the `/gather` + `/triage`
   table with `parse`/`describe`/honest-unknown, no dynamic imports) and
   `src/connect.nim` ports `connect.py` plus both sign-ins (`google` over
