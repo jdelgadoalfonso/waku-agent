@@ -151,6 +151,37 @@ provenance column stays blank on this backend, exactly like Python. And
 `settle` answers immediately: the embedding is computed before the insert,
 so the row is searchable as soon as Postgres commits it.
 
+## Facts can live in LangMem instead of sqlite
+
+The library, not a service: LangGraph memory primitives over a store YOU
+provide — in this process by default, in your Postgres when configured. No
+account, no console, no key of its own; what it bills you for is embeddings
+(one per `add`, one per `search`).
+
+    export WAKU_SEMANTIC_STORE=langmem
+    export OPENAI_API_KEY=sk-...        # required; without it, sqlite + a line
+    export OPENAI_EMBED_MODEL=openai:text-embedding-3-small  # optional
+    export WAKU_LANGMEM_POSTGRES=postgres://user:pass@localhost:5432/waku
+                                        # optional; without it, memory mode
+
+THE DEFAULT IS EPHEMERAL, AND THAT IS DISCLOSED LOUDLY. Without the database
+this client's rows die with the process: the agent's long-lived client holds
+them for the run, and the dashboard's per-request client sees an empty store
+— exactly like Python's per-collect construction. `list` after a restart
+returning nothing is the store working as documented, not a bug. For
+persistence run `sql/init_langmem.sql` on a fresh database and set the DSN
+above (table `langmem_store`, HNSW cosine index included).
+
+This is also why the arena reports LangMem reads as "unreadable" rather
+than "0 facts": every read through a fresh store answers from an empty
+table, and calling that zero would be a true statement about the wrong
+object.
+
+Two port notes. What gets embedded is the whole value as canonical JSON
+(upstream's default index fields), not the `subject: content` packing the
+other backends use. And `list` answers newest-first per this repo's contract;
+upstream scans in key order.
+
 ## Traces are JSONL; spans need a collector you name
 
 Every turn already writes two files under `WAKU_HOME`: `traces/<date>.jsonl`
@@ -236,6 +267,12 @@ episode; `settle` waits for the graph to stop growing, not just the episodes.
   plus `DATABASE_URL` and `OPENAI_API_KEY` (`OPENAI_EMBED_MODEL` scopes the
   model, default `text-embedding-3-small`). `settle` is immediate; every
   `add` and `search` spends one embedding.
+- `src/langmem.nim` is the library backend in two twins — in-process rows
+  plus a Postgres twin over direct SQL on the port's own `langmem_store`
+  table (JSONB value, HNSW cosine, upsert on `(prefix, key)`). Opt-in:
+  `WAKU_SEMANTIC_STORE=langmem` plus `OPENAI_API_KEY`, with
+  `WAKU_LANGMEM_POSTGRES` switching memory mode to Postgres. Memory mode is
+  ephemeral by design (see above); `settle` is immediate in both.
 - `src/wire.nim` bridges the loop's Anthropic-shape messages to OpenAI
   chat.completions (request build, response shaping, thought_signature
   echo, max_tokens retry rule).
@@ -395,8 +432,8 @@ episode; `settle` waits for the graph to stop growing, not just the episodes.
 
 ## What is not ported yet
 
-The other hosted memory backends (langmem, and notion for
-episodes) — mem0, zep and postgres landed, and a value the selector does not recognise
+Episodic memory (Notion) is not ported — every semantic backend above
+landed, and a value the selector does not recognise
 falls back to sqlite with a line on stderr rather than refusing. And the
 evals. The
 phase list with its

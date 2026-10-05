@@ -163,7 +163,8 @@ proc cosineScore*(a, b: seq[float32]): float =
 ##
 ## Same contract over `langmem_store`: one row per `(prefix, key)` with the
 ## value as JSONB and the vector beside it, upserted on conflict — the shape
-## of the reference `langgraph-store-postgres 0.1.0` implementation, under the
+## of the reference `langgraph-store-postgres 0.1.0` implementation (HNSW
+## cosine index), under the
 ## port's own table name (see `langmemTable`). The port does NOT read
 ## databases written by langgraph's historical `PostgresStore`, whose
 ## migrations this repo never ran; if Python's pins get fixed and interop is
