@@ -660,3 +660,57 @@ suite "which backend holds the facts":
       delEnv("ZEP_API_KEY")
     db.close()
     removeDir(home)
+
+  test "postgres needs a database and an embeddings key":
+    # Either half missing is a half-wired remote store, which is worse than
+    # a local one: sqlite plus a line on stderr, like the other backends.
+    let home = getTempDir() / "waku-store-pg-nokey"
+    if dirExists(home):
+      removeDir(home)
+    let db = connectDb(home)
+    let savedUrl = existsEnv("DATABASE_URL")
+    let savedUrlValue = getEnv("DATABASE_URL")
+    let savedKey = existsEnv("OPENAI_API_KEY")
+    let savedKeyValue = getEnv("OPENAI_API_KEY")
+    delEnv("DATABASE_URL")
+    delEnv("OPENAI_API_KEY")
+    var s = defaultSettings()
+    s.semanticStore = "postgres"
+    check factStoreFor(s, db).name == "sqlite"
+    putEnv("DATABASE_URL", "postgres://u:p@localhost:5432/waku")
+    check factStoreFor(s, db).name == "sqlite"
+    if savedUrl:
+      putEnv("DATABASE_URL", savedUrlValue)
+    else:
+      delEnv("DATABASE_URL")
+    if savedKey:
+      putEnv("OPENAI_API_KEY", savedKeyValue)
+    db.close()
+    removeDir(home)
+
+  test "postgres with both keys builds the pg store (lazily)":
+    # Lazily: building must NOT dial — there is no server in the test env,
+    # and construction only wraps the URL and the key.
+    let home = getTempDir() / "waku-store-pg"
+    if dirExists(home):
+      removeDir(home)
+    let db = connectDb(home)
+    let savedUrl = existsEnv("DATABASE_URL")
+    let savedUrlValue = getEnv("DATABASE_URL")
+    let savedKey = existsEnv("OPENAI_API_KEY")
+    let savedKeyValue = getEnv("OPENAI_API_KEY")
+    putEnv("DATABASE_URL", "postgres://u:p@localhost:5432/waku")
+    putEnv("OPENAI_API_KEY", "sk-test")
+    var s = defaultSettings()
+    s.semanticStore = "postgres"
+    check factStoreFor(s, db).name == "postgres"
+    if savedUrl:
+      putEnv("DATABASE_URL", savedUrlValue)
+    else:
+      delEnv("DATABASE_URL")
+    if savedKey:
+      putEnv("OPENAI_API_KEY", savedKeyValue)
+    else:
+      delEnv("OPENAI_API_KEY")
+    db.close()
+    removeDir(home)

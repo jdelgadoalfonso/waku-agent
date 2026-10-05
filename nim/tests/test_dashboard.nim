@@ -596,6 +596,36 @@ suite "phase 8a /api/data status":
     db.close()
     removeDir(root)
 
+  test "the memory page follows WAKU_SEMANTIC_STORE=postgres when keyed":
+    # factsFor is backend-agnostic, and this pins that it stays that way:
+    # postgres needs no per-request field (no user scoping), so the page
+    # must answer "postgres" with both keys and sqlite without either.
+    let root = freshDir("waku-dash-pgstore")
+    let db = connectDb(root)
+    let savedStore = getEnv("WAKU_SEMANTIC_STORE")
+    let savedUrl = existsEnv("DATABASE_URL")
+    let savedUrlValue = getEnv("DATABASE_URL")
+    let savedKey = existsEnv("OPENAI_API_KEY")
+    let savedKeyValue = getEnv("OPENAI_API_KEY")
+    putEnv("WAKU_SEMANTIC_STORE", "postgres")
+    putEnv("DATABASE_URL", "postgres://u:p@localhost:5432/waku")
+    putEnv("OPENAI_API_KEY", "sk-test")
+    check factsFor(testDeps(root, root), db).name == "postgres"
+    delEnv("OPENAI_API_KEY")
+    check factsFor(testDeps(root, root), db).name == "sqlite"
+    if savedStore.len > 0:
+      putEnv("WAKU_SEMANTIC_STORE", savedStore)
+    else:
+      delEnv("WAKU_SEMANTIC_STORE")
+    if savedUrl:
+      putEnv("DATABASE_URL", savedUrlValue)
+    else:
+      delEnv("DATABASE_URL")
+    if savedKey:
+      putEnv("OPENAI_API_KEY", savedKeyValue)
+    db.close()
+    removeDir(root)
+
   test "sessions group chat rows and resume the fresh dashboard thread":
     let root = freshDir("waku-dash-datasessions")
     createDir(root / "static")

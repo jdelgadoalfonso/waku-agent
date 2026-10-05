@@ -53,6 +53,7 @@ import ./brain
 import ./config
 import ./factstore
 import ./mem0
+import ./pgvector
 import ./zep
 import ./jsondump
 import ./loop
@@ -118,9 +119,11 @@ proc factStoreFor*(settings: Settings, db: DbConn): StoreChoice =
   ##
   ## `MEM0_API_KEY` / `ZEP_API_KEY` are read here, not from `Settings`,
   ## because that is what Python's adapters do: the keys belong to the
-  ## connections registry, not to the settings dataclass. No key means no
-  ## hosted client — the loop then answers from sqlite and says nothing,
-  ## because a half-wired remote store is worse than a local one.
+  ## connections registry, not to the settings dataclass. `DATABASE_URL` and
+  ## `OPENAI_API_KEY` follow the same rule for the `postgres` backend — a
+  ## database address is a secret, not a setting. No key means no hosted
+  ## client — the loop then answers from sqlite and says nothing, because a
+  ## half-wired remote store is worse than a local one.
   case settings.semanticStore
   of "mem0":
     let key = envOrDefault("MEM0_API_KEY", "")
@@ -138,6 +141,17 @@ proc factStoreFor*(settings: Settings, db: DbConn): StoreChoice =
       return (store: zepFactStore(client), name: "zep")
     stderr.writeLine("(memory) WAKU_SEMANTIC_STORE=zep but ZEP_API_KEY is " &
       "empty — falling back to sqlite, which will not show those memories.")
+  of "postgres":
+    let url = envOrDefault("DATABASE_URL", "")
+    let key = envOrDefault("OPENAI_API_KEY", "")
+    if url.len > 0 and key.len > 0:
+      let client = newPgClient(url, key, topK = settings.retrievalTopK,
+        embedModel = envOrDefault("OPENAI_EMBED_MODEL",
+                                  "text-embedding-3-small"))
+      return (store: pgFactStore(client), name: "postgres")
+    stderr.writeLine("(memory) WAKU_SEMANTIC_STORE=postgres but DATABASE_URL " &
+      "or OPENAI_API_KEY is empty — falling back to sqlite, which will " &
+      "not show those memories.")
   else: discard
   (store: sqliteFactStore(db), name: "sqlite")
 
