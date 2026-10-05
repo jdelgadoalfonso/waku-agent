@@ -862,16 +862,17 @@ proc sessionIdleMinutes*(env: Table[string, string]): int =
       discard
   60
 
-proc factsFor(d: DashboardDeps, db: DbConn): StoreChoice =
+proc factsFor*(d: DashboardDeps, db: DbConn): StoreChoice =
   ## The store this page load reads and writes, and which backend it is.
   ##
   ## Built per request because the dashboard opens one connection per call
   ## (like Python's per-`collect()` connect) and the sqlite adapter closes
   ## over that connection. A hosted store is therefore a fresh client per
   ## request, which costs nothing here: the dashboard only lists, updates
-  ## and deletes, and the one thing a mem0 client carries between calls —
-  ## the pending `event_id` — belongs to `settle`, which the memory arena
-  ## asks of its own long-lived store.
+  ## and deletes, and the one thing a hosted client carries between calls —
+  ## mem0's pending `event_id` — belongs to `settle`, which the memory arena
+  ## asks of its own long-lived store. (Zep carries nothing between calls:
+  ## every `add` waits on its own episode before it returns.)
   # `FactStore` is a plain object, so there is no `isNil`: a filled record
   # is recognised by one of its functions, which is the same test the
   # conformance suite uses to catch a backend that forgot a method.
@@ -884,6 +885,7 @@ proc factsFor(d: DashboardDeps, db: DbConn): StoreChoice =
   s.smallModel = d.smallModel
   s.semanticStore = envOrDefault("WAKU_SEMANTIC_STORE", "sqlite")
   s.mem0UserId = envOrDefault("MEM0_USER_ID", "waku")
+  s.zepUserId = envOrDefault("ZEP_USER_ID", "waku")
   factStoreFor(s, db)
 
 proc stateRows*(home: string, facts: FactStore): JsonNode =

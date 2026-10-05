@@ -573,6 +573,29 @@ suite "phase 8a /api/data status":
     assert node["db"]["all_tables"].len >= 4
     removeDir(root)
 
+  test "the memory page follows WAKU_SEMANTIC_STORE=zep when a key exists":
+    # The page builds its store per request through factsFor: with zep named
+    # and keyed it must answer "zep", without the key it falls back to
+    # sqlite rather than a half-wired graph.
+    let root = freshDir("waku-dash-zepstore")
+    let db = connectDb(root)
+    let savedStore = getEnv("WAKU_SEMANTIC_STORE")
+    let savedKey = existsEnv("ZEP_API_KEY")
+    let savedValue = getEnv("ZEP_API_KEY")
+    putEnv("WAKU_SEMANTIC_STORE", "zep")
+    putEnv("ZEP_API_KEY", "zep-test-key")
+    check factsFor(testDeps(root, root), db).name == "zep"
+    delEnv("ZEP_API_KEY")
+    check factsFor(testDeps(root, root), db).name == "sqlite"
+    if savedStore.len > 0:
+      putEnv("WAKU_SEMANTIC_STORE", savedStore)
+    else:
+      delEnv("WAKU_SEMANTIC_STORE")
+    if savedKey:
+      putEnv("ZEP_API_KEY", savedValue)
+    db.close()
+    removeDir(root)
+
   test "sessions group chat rows and resume the fresh dashboard thread":
     let root = freshDir("waku-dash-datasessions")
     createDir(root / "static")
