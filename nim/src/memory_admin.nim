@@ -24,8 +24,8 @@ import std/unicode
 
 import db_connector/db_sqlite
 
+import ./episodes
 import ./factstore
-import ./memory
 import ./messages
 import ./notes
 import ./tools
@@ -76,16 +76,8 @@ proc rawId*(args: JsonNode): string =
   of JInt: $raw.getBiggestInt()
   else: ""
 
-proc episodeId(id: string): int64 =
-  ## An episode id is sqlite's counter, so it is a number; a fact id is
-  ## whatever backend issued it. A non-numeric episode id is a miss, not a
-  ## crash: the same contract rule, on the side that really does count.
-  try:
-    result = parseBiggestInt(id)
-  except ValueError:
-    result = 0
-
-proc manageMemory*(db: DbConn, facts: FactStore, action: string,
+proc manageMemory*(db: DbConn, facts: FactStore, episodes: EpisodeStore,
+                   action: string,
                    kind = "fact", id = "", query = "", content = "",
                    subject = ""): string =
   ## Port of `manage_memory`. Episode search lists + substring-filters
@@ -99,9 +91,9 @@ proc manageMemory*(db: DbConn, facts: FactStore, action: string,
   if act == "search":
     if kind == "episode":
       var hits: seq[string] = @[]
-      for e in listEpisodes(db, 20):
+      for e in episodes.list(20):
         if query.len == 0 or query.toLower() in e.summary.toLower():
-          hits.add("#" & $e.id & " (" & e.happenedAt & ") " & e.summary)
+          hits.add("#" & e.id & " (" & e.happenedAt & ") " & e.summary)
           if hits.len >= 8:
             break
       return if hits.len > 0: hits.join("\n") else: "no episodes"
@@ -119,9 +111,8 @@ proc manageMemory*(db: DbConn, facts: FactStore, action: string,
     return if ok: "Updated fact #" & $id & "." else: "No fact with id " & $id & "."
   if act == "delete":
     if kind == "episode":
-      let row = episodeId(id)
-      return if deleteEpisode(db, row): "Deleted episode #" & $row & "."
-             else: "No episode with id " & $row & "."
+      return if episodes.delete(id): "Deleted episode #" & id & "."
+             else: "No episode with id " & id & "."
     return if facts.delete(id): "Deleted fact #" & id & "."
            else: "No fact with id " & id & "."
   return "action must be one of: search, update, delete"
@@ -214,7 +205,8 @@ proc makeSendMessageTool*(home: string): Tool =
     fn: proc(args: JsonNode): string =
       messages.sendMessage(home, strArg(args, "to"), strArg(args, "body")))
 
-proc makeManageMemoryTool*(db: DbConn, facts: FactStore): Tool =
+proc makeManageMemoryTool*(db: DbConn, facts: FactStore,
+                           episodes: EpisodeStore): Tool =
   Tool(name: "manage_memory",
     description: "Search, correct, or delete the user's long-term memory (facts and episodes). " &
       "ALWAYS search first to get the id, then update or delete that id. " &
@@ -231,7 +223,7 @@ proc makeManageMemoryTool*(db: DbConn, facts: FactStore): Tool =
         "subject": {"type": "string", "description": "optional new subject for a fact update"}},
       "required": ["action"]},
     fn: proc(args: JsonNode): string =
-      manageMemory(db, facts, strArg(args, "action"),
+      manageMemory(db, facts, episodes, strArg(args, "action"),
                    strArg(args, "kind", "fact"), rawId(args),
                    strArg(args, "query"), strArg(args, "content"),
                    strArg(args, "subject")))

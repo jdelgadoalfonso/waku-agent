@@ -51,9 +51,11 @@ import db_connector/db_sqlite
 
 import ./brain
 import ./config
+import ./episodes
 import ./factstore
 import ./langmem
 import ./mem0
+import ./obsidian
 import ./pgvector
 import ./zep
 import ./jsondump
@@ -85,12 +87,15 @@ type
     settings*: Settings
     db*: DbConn
     facts*: FactStore
-      ## Where the facts live — sqlite by default, mem0 when
-      ## `WAKU_SEMANTIC_STORE` names it. Every read and write of a FACT
-      ## goes through this, never through `db`; the episodic side stays on
-      ## sqlite because Python's selector only ever moved the semantic
-      ## store. Holding it here is what keeps one client (and therefore one
-      ## pending `settle` event) per agent instead of one per registry.
+      ## Where the facts live — sqlite by default, whichever backend
+      ## `WAKU_SEMANTIC_STORE` names otherwise. Every read and write of a
+      ## FACT goes through this, never through `db`. Holding it here is what
+      ## keeps one client (and therefore one pending `settle` event) per
+      ## agent instead of one per registry.
+    episodes*: EpisodeStore
+      ## Where the episodes live — sqlite by default, the Obsidian vault
+      ## when `WAKU_EPISODIC_STORE` names it. Every read and write of an
+      ## EPISODE goes through this, never through `db`.
     client*: LlmClient
     tools*: ToolRegistry
     session*: Session
@@ -171,6 +176,33 @@ proc factStoreFor*(settings: Settings, db: DbConn): StoreChoice =
   else: discard
   (store: sqliteFactStore(db), name: "sqlite")
 
+type
+  EpisodeChoice* = tuple[store: EpisodeStore, name: string]
+    ## The episode store AND which backend it is — the episodic twin of
+    ## `StoreChoice`, for the same reason: the status line says where the
+    ## episodes live, a test pins the selector, and a named-but-unconfigured
+    ## backend has to be able to say it fell back.
+
+proc episodeStoreFor*(settings: Settings, db: DbConn): EpisodeChoice =
+  ## Which backend holds the episodes, from `WAKU_EPISODIC_STORE`. `obsidian`
+  ## needs `WAKU_OBSIDIAN_VAULT`; without it, sqlite answers with a line on
+  ## stderr. `notion` is Python-only: it falls back the same way here, and
+  ## the dashboard keeps its explicit error for the action itself — S3
+  ## replaces Notion with Obsidian in this port, it does not resurrect it.
+  case settings.episodicStore
+  of "obsidian":
+    if settings.obsidianVault.len > 0:
+      return (store: obsidianEpisodeStore(
+        newObsidianStore(settings.obsidianVault)), name: "obsidian")
+    stderr.writeLine("(memory) WAKU_EPISODIC_STORE=obsidian but " &
+      "WAKU_OBSIDIAN_VAULT is empty — falling back to sqlite, whose " &
+      "episodes live in state.db instead of your vault.")
+  of "notion":
+    stderr.writeLine("(memory) WAKU_EPISODIC_STORE=notion is not supported " &
+      "in the Nim port (Obsidian took its place) — falling back to sqlite.")
+  else: discard
+  (store: sqliteEpisodeStore(db), name: "sqlite")
+
 proc newWaku*(settings: Settings, client: LlmClient, db: DbConn = nil,
               tools = ToolRegistry(), graphTurn: GraphTurn = nil,
               afterTurn: AfterTurn = nil): Waku =
@@ -181,6 +213,7 @@ proc newWaku*(settings: Settings, client: LlmClient, db: DbConn = nil,
   result.client = client
   result.tools = tools
   result.facts = factStoreFor(settings, db).store
+  result.episodes = episodeStoreFor(settings, db).store
   result.session = newSession(settings, db = db)
   result.tracer = newTracer(settings.home, settings.provider, settings.model,
                            settings.otelEndpoint)

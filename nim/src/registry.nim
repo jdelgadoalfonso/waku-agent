@@ -17,6 +17,7 @@ import db_connector/db_sqlite
 import ./apple
 import ./calendar
 import ./config
+import ./episodes
 import ./experimental
 import ./factstore
 import ./github
@@ -60,7 +61,7 @@ proc mcpRegistryTools*(home: string, env: Table[string, string],
 
 proc buildRegistry*(db: DbConn, home: string, settings: Settings,
     searchFetch: SearchFetchFn, ghRun: GhRunner, pi: PiSeams,
-    apple: AppleSeams, facts: FactStore,
+    apple: AppleSeams, facts: FactStore, episodes: EpisodeStore,
     mcpTools: seq[Tool] = @[]): ToolRegistry =
   ## Port of `build_registry`. Every side effect rides an injected seam
   ## (`searchFetch`, `ghRun`, `pi`, `apple`) plus pre-connected
@@ -72,7 +73,7 @@ proc buildRegistry*(db: DbConn, home: string, settings: Settings,
   result.register(makeSaveNoteTool(db))
   result.register(makeSendMessageTool(home))
   result.register(makeSearchTool(searchFetch))
-  result.register(makeManageMemoryTool(db, facts))
+  result.register(makeManageMemoryTool(db, facts, episodes))
   result.register(makeUpdateSoulTool(home))
   result.register(makeCreateSkillTool(home))
   if settings.experimental:

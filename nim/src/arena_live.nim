@@ -96,7 +96,7 @@ proc contestantAgent*(deps: ArenaDeps, home, provider, model: string,
   let db = connectDb(home)
   var w = newWaku(s, client, db)
   w.tools = buildRegistry(db, home, s, deps.fetch, deps.gh,
-    livePiSeams(home, s.provider, s.model), deps.apple, w.facts,
+    livePiSeams(home, s.provider, s.model), deps.apple, w.facts, w.episodes,
     mcpRegistryTools(home, deps.env, deps.nowUnix, deps.makeExchange,
       deps.httpPost))
   wireMemory(w, s, db, client, bundledSkillDirs())
@@ -488,7 +488,7 @@ proc makeLiveMemoryRun*(deps: ArenaDeps): MemoryRunFn =
           for line in seeding:
             discard w.respond(line, nil, "memory-arena", false)
             emit("seeded", %*{"contestant": backend, "line": line})
-        discard consolidateIfDue(w.db, w.facts, w.client,
+        discard consolidateIfDue(w.db, w.facts, w.episodes, w.client,
           w.settings.smallModel, 1)
         writeFile(home / ".seeded", track & "\n" & model & "\n" &
           $seeding.len & " lines\n")

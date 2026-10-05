@@ -759,3 +759,46 @@ suite "which backend holds the facts":
       delEnv("WAKU_LANGMEM_POSTGRES")
     db.close()
     removeDir(home)
+
+  test "obsidian needs a vault, and says so when it falls back":
+    let home = getTempDir() / "waku-store-ob-nokey"
+    if dirExists(home):
+      removeDir(home)
+    let db = connectDb(home)
+    var s = defaultSettings()
+    s.semanticStore = "sqlite"
+    s.episodicStore = "obsidian"
+    s.obsidianVault = ""
+    check episodeStoreFor(s, db).name == "sqlite"
+    db.close()
+    removeDir(home)
+
+  test "obsidian with a vault builds the vault store":
+    let home = getTempDir() / "waku-store-ob"
+    if dirExists(home):
+      removeDir(home)
+    let db = connectDb(home)
+    var s = defaultSettings()
+    s.episodicStore = "obsidian"
+    s.obsidianVault = home / "vault"
+    let choice = episodeStoreFor(s, db)
+    check choice.name == "obsidian"
+    choice.store.add("sailed around the island", "2026-09-01 10:00")
+    check choice.store.recent(3) == @["(2026-09-01 10:00) sailed around the island"]
+    db.close()
+    removeDir(home)
+
+  test "notion stays unsupported: it falls back, it is not resurrected":
+    # S3 replaces notion with obsidian IN THIS PORT. A stale
+    # WAKU_EPISODIC_STORE=notion answers sqlite with a line — it must never
+    # silently become something else, and the dashboard keeps its explicit
+    # error for the action itself.
+    let home = getTempDir() / "waku-store-notion"
+    if dirExists(home):
+      removeDir(home)
+    let db = connectDb(home)
+    var s = defaultSettings()
+    s.episodicStore = "notion"
+    check episodeStoreFor(s, db).name == "sqlite"
+    db.close()
+    removeDir(home)

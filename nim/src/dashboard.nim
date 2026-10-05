@@ -69,6 +69,7 @@ import db_connector/db_sqlite
 
 import ./app
 import ./apple
+import ./episodes
 import ./arena
 import ./arena_live
 import ./calendar
@@ -88,7 +89,6 @@ import ./github
 import ./http
 import ./integrations
 import ./mcp
-import ./memory
 import ./memory_admin
 import ./judgment_cases
 import ./memory_arena
@@ -888,7 +888,18 @@ proc factsFor*(d: DashboardDeps, db: DbConn): StoreChoice =
   s.zepUserId = envOrDefault("ZEP_USER_ID", "waku")
   factStoreFor(s, db)
 
-proc stateRows*(home: string, facts: FactStore): JsonNode =
+proc episodesFor*(d: DashboardDeps, db: DbConn): EpisodeChoice =
+  ## The episode store this page load reads, and which backend it is. Same
+  ## per-request shape as `factsFor`; unlike facts there is no injected
+  ## seam (no test or route injects episodes), so the env always decides.
+  var s = defaultSettings()
+  s.home = d.home
+  s.episodicStore = envOrDefault("WAKU_EPISODIC_STORE", "sqlite")
+  s.obsidianVault = envOrDefault("WAKU_OBSIDIAN_VAULT", "")
+  episodeStoreFor(s, db)
+
+proc stateRows*(home: string, facts: FactStore, episodes: EpisodeStore,
+               episodesSource = "sqlite"): JsonNode =
   ## Everything in Python `collect()` that reads state.db and the home
   ## files: facts, sqlite episodes, calendar, outbox, SOUL, chat counters
   ## and rows, sessions, db introspection. One open connection per call
@@ -908,14 +919,14 @@ proc stateRows*(home: string, facts: FactStore): JsonNode =
     listed.add(%*{"id": fact.id, "subject": fact.subject,
                   "content": fact.content, "source": fact.source,
                   "created_at": fact.createdAt})
-  # Episodes stay sqlite-only: the port has no Notion store, so the
-  # backend switch Python reads has no seam here — honestly sqlite.
-  var episodes = newJArray()
-  for row in db.getAllRows(sql("SELECT id, happened_at, summary FROM " &
-      "episodes ORDER BY happened_at DESC")):
-    episodes.add(%*{"id": parseInt(rowStr(row, 0)),
-                     "happened_at": rowStr(row, 1),
-                     "summary": rowStr(row, 2)})
+  # Episodes through the contract too, so the memory page shows the same
+  # events a turn would retrieve. The id is the opaque string the contract
+  # defines (sqlite's counter, a vault path on obsidian) and round-trips
+  # through the JS that posts it back verbatim.
+  var episodeRows = newJArray()
+  for e in episodes.list(200):
+    episodeRows.add(%*{"id": e.id, "happened_at": e.happenedAt,
+                     "summary": e.summary})
   var calendar = newJArray()
   for row in db.getAllRows(sql("SELECT title, start, \"end\", attendees, " &
       "created_at FROM calendar_events ORDER BY start")):
@@ -1027,8 +1038,8 @@ proc stateRows*(home: string, facts: FactStore): JsonNode =
       inc n
   let soulPath = home / "SOUL.md"
   let soul = if fileExists(soulPath): readFile(soulPath) else: ""
-  result = %*{"facts": listed, "episodes": episodes,
-    "episodes_source": "sqlite", "episodes_error": "",
+  result = %*{"facts": listed, "episodes": episodeRows,
+    "episodes_source": episodesSource, "episodes_error": "",
     "calendar": calendar, "outbox": outbox, "soul": soul,
     "chat_pending": chatPending, "chat_log": chatRev,
     "sessions": sessions,
@@ -1112,7 +1123,7 @@ proc toolCatalog*(db: DbConn, home: string): JsonNode =
   var tools: seq[Tool] = @[makeCreateEventTool(db, home),
     makeListEventsTool(db), makeSaveNoteTool(db),
     makeSendMessageTool(home), makeUpdateSoulTool(home),
-    makeManageMemoryTool(db, sqliteFactStore(db)),
+    makeManageMemoryTool(db, sqliteFactStore(db), sqliteEpisodeStore(db)),
     makeCreateSkillTool(home)]
   var items: seq[JsonNode] = @[]
   for t in tools:
@@ -1284,7 +1295,8 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
     d.providers)
   let pageDb = connectDb(d.home)
   let pageStore = factsFor(d, pageDb).store
-  let state = stateRows(d.home, pageStore)
+  let pageEpisodes = episodesFor(d, pageDb)
+  let state = stateRows(d.home, pageStore, pageEpisodes.store, pageEpisodes.name)
   pageDb.close()
   let db = connectDb(d.home)
   let idleMin = sessionIdleMinutes(d.env)
@@ -1720,21 +1732,14 @@ proc memoryAction*(d: DashboardDeps, payload: JsonNode): JsonNode =
   if action == "delete_episode" and
       d.env.getOrDefault("WAKU_EPISODIC_STORE", "") == "notion":
     return %*{"error": "notion episodes are not supported in the Nim port"}
-  # The id is opaque for a FACT (sqlite's counter locally, a UUID on a hosted
-  # store) and numeric for an EPISODE, which stays sqlite. Parsing it once
-  # for both is what makes a hosted store unusable from this page: Python
-  # does exactly that and answers "bad id" for a UUID, so the round trip
-  # that `memory.js` performs (post the id back verbatim) cannot work there.
+  # Episode ids are opaque strings (sqlite's counter, a vault path on
+  # obsidian) and travel verbatim — parsing one as an integer is what used
+  # to make a non-sqlite store unusable from this page.
   let factId = rawId(payload)
-  var rid: int64 = 0
-  if action == "delete_episode":
-    try:
-      rid = parseBiggestInt(factId)
-    except ValueError:
-      return %*{"error": "bad id"}
   let db = connectDb(d.home)
   try:
     let facts = factsFor(d, db).store
+    let episodes = episodesFor(d, db).store
     if action == "update_fact":
       # An empty subject means "leave it alone" (Python's `subject or
       # None`); the store's adapter is where each backend absorbs it.
@@ -1743,7 +1748,7 @@ proc memoryAction*(d: DashboardDeps, payload: JsonNode): JsonNode =
     if action == "delete_fact":
       return %*{"ok": facts.delete(factId)}
     if action == "delete_episode":
-      return %*{"ok": db.deleteEpisode(rid)}
+      return %*{"ok": episodes.delete(factId)}
     return %*{"error": "unknown action " & action}
   finally:
     db.close()
@@ -2472,7 +2477,7 @@ proc ensureWaku*(box: WakuBox) =
       liveEnv[k] = v
     box.waku.tools = buildRegistry(db, s.home, s, liveSearchFetch,
       liveGhRun, livePiSeams(s.home, s.provider, s.model),
-      liveAppleSeams(), box.waku.facts,
+      liveAppleSeams(), box.waku.facts, box.waku.episodes,
       mcpRegistryTools(s.home, liveEnv,
         getTime().toUnix(), liveStdioFactory(), liveHttpPostFn()))
     wireMemory(box.waku, s, db, client, bundledSkillDirs())

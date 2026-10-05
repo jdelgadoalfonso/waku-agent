@@ -76,7 +76,7 @@ type
       ## trigger threshold.
     semanticStore*: string
       ## `WAKU_SEMANTIC_STORE`: where facts live. `sqlite` (default, zero
-      ## setup), `mem0` or `zep` (the hosted services). Python reads the same
+      ## setup), `mem0`, `zep`, `postgres` or `langmem`. Python reads the same
       ## var in `config.py` and dispatches in `waku/memory/__init__.py`.
     mem0UserId*: string
       ## `MEM0_USER_ID`: the person mem0 scopes memories to. Defaults to
@@ -88,6 +88,14 @@ type
       ## `ZEP_USER_ID`: the person Zep scopes the graph to. Same empty-means-
       ## default rule as `mem0UserId`: a blank Connections field must fall
       ## back to `waku`, not scope the graph to "".
+    episodicStore*: string
+      ## `WAKU_EPISODIC_STORE`: where episodes live. `sqlite` (default, zero
+      ## setup) or `obsidian` (vault files). Python reads the same var and
+      ## dispatches `sqlite`/`notion`; `notion` stays an honest error here.
+    obsidianVault*: string
+      ## `WAKU_OBSIDIAN_VAULT`: the vault root whose `waku/episodes` folder
+      ## holds the notes. Empty means no vault — the selector then answers
+      ## sqlite rather than a half-wired store.
     otelEndpoint*: string
       ## `OTEL_EXPORTER_OTLP_ENDPOINT`: an OTLP collector as `host:port`
       ## (Python's `Settings.otel_endpoint`). Empty means JSONL traces
@@ -105,7 +113,8 @@ proc defaultSettings*(): Settings =
            graphWorkflows: false, consolidateEvery: 6, retrievalTopK: 4,
            experimental: false, appleTools: false, ghTool: false,
            ghRepo: "", semanticStore: "sqlite", mem0UserId: "waku",
-           zepUserId: "waku", otelEndpoint: "")
+           zepUserId: "waku", episodicStore: "sqlite", obsidianVault: "",
+           otelEndpoint: "")
 
 proc envInt(name: string, default: int): int =
   ## `int(os.getenv(name, default))` with a fallback: a non-numeric value
@@ -153,6 +162,8 @@ proc loadFromEnv*(s: var Settings) =
   s.consolidateEvery = envInt("WAKU_CONSOLIDATE_EVERY", 6)
   s.otelEndpoint = getEnv("OTEL_EXPORTER_OTLP_ENDPOINT")
   s.semanticStore = getEnv("WAKU_SEMANTIC_STORE", "sqlite")
+  s.episodicStore = getEnv("WAKU_EPISODIC_STORE", "sqlite")
+  s.obsidianVault = getEnv("WAKU_OBSIDIAN_VAULT")
   s.mem0UserId = envOrDefault("MEM0_USER_ID", "waku")
   s.zepUserId = envOrDefault("ZEP_USER_ID", "waku")
 

@@ -626,6 +626,45 @@ suite "phase 8a /api/data status":
     db.close()
     removeDir(root)
 
+  test "the memory page reads episodes through the selector":
+    # sqlite ids render as strings now (opaque-id parity with facts); with a
+    # vault configured the same page answers obsidian rows and says so.
+    let root = freshDir("waku-dash-epstore")
+    createDir(root / "static")
+    let db = connectDb(root)
+    db.exec(sql("INSERT INTO episodes (happened_at, summary) VALUES " &
+      "('2026-09-01 10:00', 'a quiet week')"))
+    let savedStore = getEnv("WAKU_EPISODIC_STORE")
+    let savedVault = existsEnv("WAKU_OBSIDIAN_VAULT")
+    let savedVaultValue = getEnv("WAKU_OBSIDIAN_VAULT")
+    delEnv("WAKU_EPISODIC_STORE")
+    delEnv("WAKU_OBSIDIAN_VAULT")
+    var node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    assert node["episodes"].len == 1
+    assert node["episodes"][0]["id"].kind == JString
+    assert node["episodes"][0]["id"].getStr() == "1"
+    assert node["episodes_source"].getStr() == "sqlite"
+    putEnv("WAKU_EPISODIC_STORE", "obsidian")
+    putEnv("WAKU_OBSIDIAN_VAULT", root / "vault")
+    let store = episodesFor(testDeps(root, root / "static"), db).store
+    store.add("seeded in the vault", "2026-10-06 10:00")
+    node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    assert node["episodes"].len == 1
+    assert node["episodes"][0]["summary"].getStr() == "seeded in the vault"
+    assert node["episodes_source"].getStr() == "obsidian"
+    if savedStore.len > 0:
+      putEnv("WAKU_EPISODIC_STORE", savedStore)
+    else:
+      delEnv("WAKU_EPISODIC_STORE")
+    if savedVault:
+      putEnv("WAKU_OBSIDIAN_VAULT", savedVaultValue)
+    else:
+      delEnv("WAKU_OBSIDIAN_VAULT")
+    db.close()
+    removeDir(root)
+
   test "the memory page follows WAKU_SEMANTIC_STORE=langmem when keyed":
     # Memory mode builds a client that only this request would feed — the
     # pin proves dispatch, not persistence (there is none, by design).
@@ -1143,15 +1182,16 @@ suite "phase 8b POST /api/memory":
     var d = testDeps(root, root / "static")
     # A fact id is opaque, so a non-numeric one is a MISS ("no such row"),
     # not a malformed request: answering "bad id" here is what makes a
-    # hosted store unusable from this page. An EPISODE id is sqlite's
-    # counter and still has to be a number.
+    # hosted store unusable from this page. An EPISODE id is opaque too now
+    # (sqlite's counter locally, a vault path on obsidian) — same rule.
     let bad = handlePost(d, "/api/memory",
       """{"action": "delete_fact", "id": "nope"}""")[2]
     assert parseJson(bad)["ok"].getBool() == false
     assert "error" notin parseJson(bad)
     let badEpisode = handlePost(d, "/api/memory",
       """{"action": "delete_episode", "id": "nope"}""")[2]
-    assert parseJson(badEpisode)["error"].getStr() == "bad id"
+    assert parseJson(badEpisode)["ok"].getBool() == false
+    assert "error" notin parseJson(badEpisode)
     let unk = handlePost(d, "/api/memory",
       """{"action": "levitate"}""")[2]
     assert "unknown action" in parseJson(unk)["error"].getStr()

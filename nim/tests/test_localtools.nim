@@ -9,6 +9,7 @@ import std/unittest
 import db_connector/db_sqlite
 
 import ../src/db
+import ../src/episodes
 import ../src/factstore
 import ../src/memory
 import ../src/memory_admin
@@ -53,20 +54,21 @@ suite "phase 2c manage_memory":
   test "fact search, update, delete with exact strings":
     let (home, db) = freshDb("waku-manage")
     let facts = store(db)
+    let episodes = sqliteEpisodeStore(db)
     db.addFact("alex", "likes sailing")
     db.addFact("bob", "hates sailing")
-    assert manageMemory(db, facts, "search", "fact", "0", "sailing") ==
+    assert manageMemory(db, facts, episodes, "search", "fact", "0", "sailing") ==
       "#1 [alex] likes sailing\n#2 [bob] hates sailing"
-    assert manageMemory(db, facts, "SEARCH", "fact", "0", "kayaks") == "no matching facts"
-    assert manageMemory(db, facts, "update", "fact", "1", "", "loves kayaks") ==
+    assert manageMemory(db, facts, episodes, "SEARCH", "fact", "0", "kayaks") == "no matching facts"
+    assert manageMemory(db, facts, episodes, "update", "fact", "1", "", "loves kayaks") ==
       "Updated fact #1."
-    assert manageMemory(db, facts, "update", "episode", "1") ==
+    assert manageMemory(db, facts, episodes, "update", "episode", "1") ==
       "Only facts can be updated (episodes are historical)."
-    assert manageMemory(db, facts, "update", "fact", "999", "", "ghost") ==
+    assert manageMemory(db, facts, episodes, "update", "fact", "999", "", "ghost") ==
       "No fact with id 999."
-    assert manageMemory(db, facts, "delete", "fact", "2") == "Deleted fact #2."
-    assert manageMemory(db, facts, "delete", "fact", "2") == "No fact with id 2."
-    assert manageMemory(db, facts, "dance", "fact") ==
+    assert manageMemory(db, facts, episodes, "delete", "fact", "2") == "Deleted fact #2."
+    assert manageMemory(db, facts, episodes, "delete", "fact", "2") == "No fact with id 2."
+    assert manageMemory(db, facts, episodes, "dance", "fact") ==
       "action must be one of: search, update, delete"
     db.close()
     removeDir(home)
@@ -74,15 +76,16 @@ suite "phase 2c manage_memory":
   test "episode search filters substrings, delete removes by id":
     let (home, db) = freshDb("waku-manage-ep")
     let facts = store(db)
+    let episodes = sqliteEpisodeStore(db)
     db.addEpisode("sailed the island", "2026-09-01")
     db.addEpisode("hiked the ridge", "2026-09-05")
-    assert manageMemory(db, facts, "search", "episode", "0", "SAILED") ==
+    assert manageMemory(db, facts, episodes, "search", "episode", "0", "SAILED") ==
       "#1 (2026-09-01) sailed the island"
-    assert manageMemory(db, facts, "search", "episode") ==
+    assert manageMemory(db, facts, episodes, "search", "episode") ==
       "#2 (2026-09-05) hiked the ridge\n#1 (2026-09-01) sailed the island"
-    assert manageMemory(db, facts, "search", "episode", "0", "zzz") == "no episodes"
-    assert manageMemory(db, facts, "delete", "episode", "1") == "Deleted episode #1."
-    assert manageMemory(db, facts, "delete", "episode", "1") == "No episode with id 1."
+    assert manageMemory(db, facts, episodes, "search", "episode", "0", "zzz") == "no episodes"
+    assert manageMemory(db, facts, episodes, "delete", "episode", "1") == "Deleted episode #1."
+    assert manageMemory(db, facts, episodes, "delete", "episode", "1") == "No episode with id 1."
     db.close()
     removeDir(home)
 
@@ -133,7 +136,7 @@ suite "phase 2c registry wiring":
     var reg: ToolRegistry
     reg.register(makeSaveNoteTool(db))
     reg.register(makeSendMessageTool(home))
-    reg.register(makeManageMemoryTool(db, store(db)))
+    reg.register(makeManageMemoryTool(db, store(db), sqliteEpisodeStore(db)))
     reg.register(makeUpdateSoulTool(home))
     reg.register(makeCreateSkillTool(home))
     assert reg.execute("save_note",

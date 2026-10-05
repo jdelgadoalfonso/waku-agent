@@ -29,9 +29,9 @@ import std/unicode
 import db_connector/db_sqlite
 
 import ./app
+import ./episodes
 import ./factstore
 import ./loop
-import ./memory
 import ./skills
 import ./wire
 
@@ -106,7 +106,8 @@ proc shouldRetrieve*(client: LlmClient, smallModel,
   except CatchableError as exc:
     return (true, message, "gate failed open (" & $exc.name & ")")
 
-proc gatedRetrieve*(db: DbConn, facts: FactStore, client: LlmClient,
+proc gatedRetrieve*(db: DbConn, facts: FactStore, episodes: EpisodeStore,
+    client: LlmClient,
     smallModel: string, topK: int, message: string,
     notify: Observer = nil): string =
   ## Port of `Memory.gated_retrieve`: the gate decides (and is announced
@@ -121,11 +122,11 @@ proc gatedRetrieve*(db: DbConn, facts: FactStore, client: LlmClient,
                        "reason": reason})
   if not retrieve:
     return ""
-  # Facts through the contract, episodes through sqlite: Python's selector
-  # only ever moved the semantic store, and the episodic side has no hosted
-  # option in this port.
+  # Facts and episodes both through their contracts now: the episodic side
+  # grew its own backend (Obsidian), so sqlite-direct reads here would
+  # silently ignore the vault.
   var found = facts.search(query, topK)
-  for e in searchEpisodes(db, query, 3):
+  for e in episodes.search(query, 3):
     found.add(e)
   return found.join("\n")
 
@@ -224,7 +225,8 @@ proc aboutReport*(fact: JsonNode, report: string): bool =
   except RegexError:
     false
 
-proc consolidateIfDue*(db: DbConn, facts: FactStore, client: LlmClient,
+proc consolidateIfDue*(db: DbConn, facts: FactStore, episodes: EpisodeStore,
+    client: LlmClient,
     smallModel: string, everyN: int, notify: Observer = nil,
     reportBody: string = ""): int =
   ## Port of `consolidate_if_due`: fewer than `everyN` exchanges (2 rows
@@ -287,7 +289,7 @@ proc consolidateIfDue*(db: DbConn, facts: FactStore, client: LlmClient,
           inc count
     let episode = distilled.jget("episode").getStr()
     if episode.len > 0:
-      addEpisode(db, episode, format(now(), "yyyy-MM-dd"))
+      episodes.add(episode, format(now(), "yyyy-MM-dd"))
   var ids: seq[string] = @[]
   for r in rows:
     ids.add(r[0])
@@ -330,13 +332,14 @@ proc wireMemory*(w: var Waku, settings: Settings, db: DbConn,
   ## agents straight from `newWaku`.
   let cell = w.reportCell   ## the turn's saved report, read through a ref
   let facts = w.facts       ## ditto: a `var Waku` cannot be captured
+  let episodes = w.episodes ## the episodic twin of the line above
   let home = settings.home
   let smallModel = settings.smallModel
   let topK = settings.retrievalTopK
   let everyN = settings.consolidateEvery
   w.session.retrieve =
     proc(userMessage: string, notify: Observer): string {.closure.} =
-      gatedRetrieve(db, facts, client, smallModel, topK, userMessage,
+      gatedRetrieve(db, facts, episodes, client, smallModel, topK, userMessage,
         notify)
   w.session.skillsFor =
     proc(userMessage: string, notify: Observer): string {.closure.} =
@@ -350,7 +353,7 @@ proc wireMemory*(w: var Waku, settings: Settings, db: DbConn,
       # read through the agent's own cell, which the turn sets just before
       # (spec 009 B).
       let reportBody = if cell.isNil: "" else: cell[]
-      let fresh = consolidateIfDue(db, facts, client, smallModel, everyN,
+      let fresh = consolidateIfDue(db, facts, episodes, client, smallModel, everyN,
         notify, reportBody)
       if fresh > 0 and not notify.isNil:
         notify("consolidation", %*{"new_facts": fresh})
