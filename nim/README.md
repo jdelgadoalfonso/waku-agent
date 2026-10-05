@@ -125,6 +125,32 @@ episode reports `processed`, and `settle` additionally waits until the node
 count holds still — `processed` describes the episode, and the nodes derived
 from it arrive afterwards.
 
+## Facts can live in your own Postgres instead of sqlite
+
+The vector upgrade path, on your own database rather than a service: real
+embeddings and cosine similarity instead of keyword BM25. Any Postgres with
+the `vector` extension works — not just Supabase, whose Python backend this
+replaces with direct SQL (no PostgREST, no `match_chunks` RPC to install).
+
+    createdb waku
+    psql waku < sql/init_postgres.sql   # extension + table + indexes
+    export WAKU_SEMANTIC_STORE=postgres
+    export DATABASE_URL=postgres://user:pass@localhost:5432/waku
+    export OPENAI_API_KEY=sk-...        # embeddings; without either key, sqlite + a line
+    export OPENAI_EMBED_MODEL=text-embedding-3-small  # optional
+
+No SDK and no new dependency: `src/pgvector.nim` speaks SQL through the
+`db_postgres` driver that already ships, and embeddings go over the same HTTP
+helper as every other REST call.
+
+Three honest caveats. Every `add` AND every `search` pays one embeddings call
+(network + latency + dollars) — the trade this backend makes for phrasing
+that diverges from wording ("my business partner" finding "Alex is my
+cofounder"). The `source` column holds the subject, so the dashboard's
+provenance column stays blank on this backend, exactly like Python. And
+`settle` answers immediately: the embedding is computed before the insert,
+so the row is searchable as soon as Postgres commits it.
+
 ## Traces are JSONL; spans need a collector you name
 
 Every turn already writes two files under `WAKU_HOME`: `traces/<date>.jsonl`
@@ -204,6 +230,12 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
   `WAKU_SEMANTIC_STORE=zep` plus `ZEP_API_KEY`, with `ZEP_USER_ID` scoping the
   graph (default `waku`, same empty-means-default rule). `add` blocks on the
 episode; `settle` waits for the graph to stop growing, not just the episodes.
+- `src/pgvector.nim` is the user-hosted backend over direct SQL — same
+  `rag_chunks` table as Python's Supabase store, no PostgREST, no RPC: the
+  cosine goes straight into the query. Opt-in: `WAKU_SEMANTIC_STORE=postgres`
+  plus `DATABASE_URL` and `OPENAI_API_KEY` (`OPENAI_EMBED_MODEL` scopes the
+  model, default `text-embedding-3-small`). `settle` is immediate; every
+  `add` and `search` spends one embedding.
 - `src/wire.nim` bridges the loop's Anthropic-shape messages to OpenAI
   chat.completions (request build, response shaping, thought_signature
   echo, max_tokens retry rule).
@@ -363,8 +395,8 @@ episode; `settle` waits for the graph to stop growing, not just the episodes.
 
 ## What is not ported yet
 
-The other hosted memory backends (supabase/langmem, and notion for
-episodes) — mem0 and zep landed first, and a value the selector does not recognise
+The other hosted memory backends (langmem, and notion for
+episodes) — mem0, zep and postgres landed, and a value the selector does not recognise
 falls back to sqlite with a line on stderr rather than refusing. And the
 evals. The
 phase list with its
