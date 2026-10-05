@@ -97,6 +97,7 @@
 - Next: entrega (push + PRs en cadena por fase) y judge evals (siguen Python-only por diseño).
 
 - Backend de memoria hosted **mem0** (store semántico): T1 `factstore.nim` 7264d0c, T2 `mem0.nim` 3c9d630, T3 cableado 12247b9, T3b dashboard de23749. Spec y Log en `odd/tasks/nim-mem0-store.md`. Decisiones del usuario: REST a mano con cero dependencias, `Fact.id` a string, y la API v3 como la habla el SDK pineado (que eliminó `infer`).
+- Backend de memoria hosted **zep** (grafo temporal): T1 `zep.nim` 0dd96c8, T2 cableado c73fffe, T3 dashboard ac35312. Spec y Log en `odd/tasks/nim-zep-store.md`. Endpoints verificados contra el SDK pineado `zep-cloud 3.29.0` (el listing de nodos es POST, no GET); `settle` con doble evento porque `processed` describe el episodio y los nodos llegan después.
 
 ## Next
 - Entrega: push de `feature/nim-phase0-skeleton` + PRs en cadena por fase. `docs/proposals/nim-port.md` ya cumplió su rol (fases 0-9 commiteadas).

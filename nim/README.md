@@ -102,6 +102,29 @@ a fact's id is now an opaque string (`"1"` locally, a UUID on a hosted store),
 which the dashboard's JSON already carried as a token the JS posts back
 verbatim.
 
+## Facts can also live in a Zep graph instead of sqlite
+
+The temporal-graph alternative to mem0's rows: entities and relationships with
+validity intervals, so a correction supersedes the older edge at a point in
+time rather than merely outranking it.
+
+    export WAKU_SEMANTIC_STORE=zep
+    export ZEP_API_KEY=z_...          # required; without it, sqlite + a line
+    export ZEP_USER_ID=waku           # optional; BLANK falls back to this
+
+No SDK and no new dependency: `src/zep.nim` speaks the API by hand over the
+same HTTP helper, against the generation the pinned `zep-cloud 3.29.0` SDK
+speaks (base `api.getzep.com/api/v2`, header `Api-Key`).
+
+Two honest caveats, both from the product rather than from this port. `add`
+is a graph ingest, not an insert: Zep decides how to decompose the text, so
+`search` returns Zep's rendering of an edge or node, not Waku's sentence —
+answers will read differently from the other backends even when equally
+correct. And ingestion is asynchronous twice over: `add` blocks until the
+episode reports `processed`, and `settle` additionally waits until the node
+count holds still — `processed` describes the episode, and the nodes derived
+from it arrive afterwards.
+
 ## Traces are JSONL; spans need a collector you name
 
 Every turn already writes two files under `WAKU_HOME`: `traces/<date>.jsonl`
@@ -174,6 +197,13 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
   `WAKU_SEMANTIC_STORE=mem0` plus `MEM0_API_KEY`, with `MEM0_USER_ID` scoping
   the person (default `waku`, and a BLANK value falls back to the default —
   the Connections form writes optional fields even when you leave them empty).
+- `src/zep.nim` is the second hosted backend by hand — same helper, no SDK —
+  against the API generation the pinned `zep-cloud` SDK speaks (`POST graph`
+  ingest, `POST graph/search`, `POST graph/node/user/{id}` for listing,
+  per-uuid node/edge get and delete, `POST users`). It is opt-in:
+  `WAKU_SEMANTIC_STORE=zep` plus `ZEP_API_KEY`, with `ZEP_USER_ID` scoping the
+  graph (default `waku`, same empty-means-default rule). `add` blocks on the
+episode; `settle` waits for the graph to stop growing, not just the episodes.
 - `src/wire.nim` bridges the loop's Anthropic-shape messages to OpenAI
   chat.completions (request build, response shaping, thought_signature
   echo, max_tokens retry rule).
@@ -333,8 +363,8 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
 
 ## What is not ported yet
 
-The other hosted memory backends (supabase/zep/langmem, and notion for
-episodes) — mem0 landed first, and a value the selector does not recognise
+The other hosted memory backends (supabase/langmem, and notion for
+episodes) — mem0 and zep landed first, and a value the selector does not recognise
 falls back to sqlite with a line on stderr rather than refusing. And the
 evals. The
 phase list with its
