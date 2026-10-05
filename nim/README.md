@@ -97,10 +97,14 @@ worth remembering will not come back on `search`. What *is* better is
 yet" is a question with an answer instead of a row count watched until it
 stops moving.
 
-Episodic memory stays on sqlite — that is what Python's selector does too. And
+Episodic memory stays on sqlite by default — and since this port, it can
+also live in your Obsidian vault (`WAKU_EPISODIC_STORE=obsidian` plus
+`WAKU_OBSIDIAN_VAULT`), one note per event under `waku/episodes/`. Notion
+stays Python-only: it answers an honest error here, and Obsidian took its
+place. And
 a fact's id is now an opaque string (`"1"` locally, a UUID on a hosted store),
 which the dashboard's JSON already carried as a token the JS posts back
-verbatim.
+verbatim — episode ids made the same trip (a vault path reads as `"waku/episodes/....md"`).
 
 ## Facts can also live in a Zep graph instead of sqlite
 
@@ -248,6 +252,16 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
   to honour, as a record of required function fields, plus the sqlite adapter
   over the procs above. Seven methods; ids are opaque strings; a miss returns
   empty and never raises; `settle()` means searchable rather than written.
+- `src/episodes.nim` is the `EpisodeStore` contract every episodic backend
+  has to honour, as a record of required function fields, plus the sqlite
+  adapter over the procs above. Five methods; ids are opaque strings; a miss
+  returns empty and never raises; an empty query falls back to recent.
+- `src/obsidian.nim` is the episodic backend that is files, not a service:
+  one markdown note per event under `<vault>/waku/episodes/`, frontmatter
+  for the date, keyword scan with Notion parity. Opt-in:
+  `WAKU_EPISODIC_STORE=obsidian` plus `WAKU_OBSIDIAN_VAULT`. Filenames are
+  sanitized and deletes resolve inside the folder, so a hostile summary
+  cannot escape the vault.
 - `src/mem0.nim` is the hosted backend by hand — no SDK, no dependency, over
   `http.nim`'s one helper — against the API generation the pinned `mem0ai`
   SDK speaks (v3 for add/search/get_all, v1 for update/delete). It is opt-in:
@@ -432,8 +446,8 @@ episode; `settle` waits for the graph to stop growing, not just the episodes.
 
 ## What is not ported yet
 
-Episodic memory (Notion) is not ported — every semantic backend above
-landed, and a value the selector does not recognise
+Episodic memory (Notion) is not ported and stays that way — Obsidian took
+its place in this port. A value either selector does not recognise
 falls back to sqlite with a line on stderr rather than refusing. And the
 evals. The
 phase list with its
