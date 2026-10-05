@@ -53,14 +53,24 @@ import std/random
 import std/strutils
 import std/times
 
+import db_connector/db_postgres
+
 import ./factstore
 import ./http
+# Pure, pinned pgvector helpers reused rather than duplicated: the answer
+# shape, `DATABASE_URL` parsing and the vector literal. The drift risk of a
+# second copy beats the coupling cost — both are covered by test_pgvector.
+import ./pgvector
 import ./wire
 
 const
   langmemPrefix* = "waku\x1ffacts"
     ## `ns_to_str(("waku", "facts"))`: namespaces join with the unit
     ## separator, which never appears inside a namespace part.
+  langmemTable* = "langmem_store"
+    ## The port's own table (see the T2 note in the module header once it
+    ## lands below): same default shape as the reference implementation,
+    ## under a name that says whose rows these are.
   reasonLimit* = 160
     ## One line, not a stack trace: these land in stderr inside a turn.
   embedDim* = 1536
@@ -97,6 +107,11 @@ type
     openaiKey*: string
     openaiBase*: string
     rows*: seq[MemRow]
+    pgConn*: string
+      ## "" means memory mode. A non-empty conninfo means every op below
+      ## goes to `langmem_store` instead — same contract, a socket per call.
+    query*: proc(sql: string, args: seq[string],
+                 expectRows: bool): PgAnswer
     embedTexts*: proc(texts: seq[string]): EmbedBatch
 
 proc bounded(text: string): string =
@@ -144,6 +159,64 @@ proc cosineScore*(a, b: seq[float32]): float =
   if na == 0.0 or nb == 0.0: 0.0
   else: dot / (sqrt(na) * sqrt(nb))
 
+## ## T2: the Postgres twin
+##
+## Same contract over `langmem_store`: one row per `(prefix, key)` with the
+## value as JSONB and the vector beside it, upserted on conflict — the shape
+## of the reference `langgraph-store-postgres 0.1.0` implementation, under the
+## port's own table name (see `langmemTable`). The port does NOT read
+## databases written by langgraph's historical `PostgresStore`, whose
+## migrations this repo never ran; if Python's pins get fixed and interop is
+## wanted, the table name is one constant. Connections are per operation
+## (open, run, close) like `pgvector.nim`: nothing holds a socket, and a
+## server that went away reads as `false` on the next call.
+
+const
+  pgUpsertSql* = "INSERT INTO " & langmemTable & " (prefix, key, value, " &
+    "created_at, updated_at, embedding) VALUES ($1,$2,$3::jsonb,$4,$5," &
+    "$6::vector) ON CONFLICT (prefix, key) DO UPDATE SET value=" &
+    "EXCLUDED.value, updated_at=EXCLUDED.updated_at, embedding=" &
+    "EXCLUDED.embedding"
+  pgGetSql* = "SELECT key, value, created_at FROM " & langmemTable &
+    " WHERE prefix=$1 AND key=$2 LIMIT 1"
+  pgScanSql* = "SELECT key, value, created_at FROM " & langmemTable &
+    " WHERE prefix LIKE $1 ORDER BY created_at DESC LIMIT $2"
+  pgSearchSql* = "SELECT key, value, created_at FROM " & langmemTable &
+    " WHERE prefix=$1 AND embedding IS NOT NULL ORDER BY embedding " &
+    "<=> $2::vector LIMIT $3"
+  pgDeleteSql* = "DELETE FROM " & langmemTable &
+    " WHERE prefix=$1 AND key=$2"
+
+proc likeEscape*(text: string): string =
+  ## `%`, `_` and the escape itself, neutralized for a LIKE pattern — the
+  ## reference `_escape_like`, without which a namespace part could match
+  ## rows it never named. (The fixed prefix carries none of them today; the
+  ## escaping is for the day a part does.)
+  text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+proc livePgQuery(conninfo, sql: string, args: seq[string],
+                 expectRows: bool): PgAnswer =
+  ## The one real round trip: open, run, close. Anything — refused socket,
+  ## missing table, missing extension — is `ok: false` with a short reason.
+  var db: DbConn = nil
+  try:
+    db = db_postgres.open("", "", "", conninfo)
+  except CatchableError as exc:
+    return PgAnswer(ok: false, detail: bounded(exc.msg))
+  try:
+    if expectRows:
+      PgAnswer(ok: true, rows: db.getAllRows(sql(sql), args))
+    else:
+      PgAnswer(ok: true, affected: db.execAffectedRows(sql(sql), args))
+  except CatchableError as exc:
+    PgAnswer(ok: false, detail: bounded(exc.msg))
+  finally:
+    # Bare, like every other backend: the repo gate forbids catching inside
+    # a finally, and `PQfinish` does not raise — the nil guard is the whole
+    # safety story.
+    if db != nil:
+      db.close()
+
 proc liveEmbedTexts(c: LangMemClient, texts: seq[string]): EmbedBatch =
   ## `POST {base}/v1/embeddings` by hand, batched: one call per `add`, one
   ## per `search`. No openai dependency, the same helper the other backends
@@ -182,21 +255,45 @@ proc liveEmbedTexts(c: LangMemClient, texts: seq[string]): EmbedBatch =
 proc newLangMemClient*(openaiKey: string, topK = 4,
                        embedModel = "openai:text-embedding-3-small",
                        openaiBase = "https://api.openai.com",
+                       pgDsn = "",
+                       query: proc(sql: string, args: seq[string],
+                                   expectRows: bool): PgAnswer = nil,
                        embedTexts: proc(texts: seq[string]): EmbedBatch = nil
                        ): LangMemClient =
-  ## `openaiKey` is `OPENAI_API_KEY`, already checked by the caller — an empty
-  ## key means the selector never builds this client. The model keeps its
-  ## `openai:` prefix until the wire, where it is stripped.
+  ## `openaiKey` is `OPENAI_API_KEY`, already checked by the caller. `pgDsn`
+  ## is `WAKU_LANGMEM_POSTGRES` verbatim — "" means memory mode, anything
+  ## else means every op below goes to `langmem_store` instead. Building
+  ## never dials in either mode: the database is opened per call.
   randomize()
   let client = LangMemClient(prefix: langmemPrefix, topK: topK,
     embedModel: parseEmbedModel(embedModel), openaiKey: openaiKey,
-    openaiBase: openaiBase)
+    openaiBase: openaiBase,
+    pgConn: if pgDsn.len > 0: conninfoOf(pgDsn) else: "")
+  if query != nil:
+    client.query = query
+  else:
+    client.query = proc(sql: string, args: seq[string],
+                        expectRows: bool): PgAnswer =
+      livePgQuery(client.pgConn, sql, args, expectRows)
   if embedTexts != nil:
     client.embedTexts = embedTexts
   else:
     client.embedTexts = proc(texts: seq[string]): EmbedBatch =
       liveEmbedTexts(client, texts)
   client
+
+proc isPg*(c: LangMemClient): bool =
+  ## Which twin answers: a conninfo means Postgres, "" means this process.
+  c.pgConn.len > 0
+
+proc tryQuery(c: LangMemClient, sql: string, args: seq[string],
+              expectRows: bool): PgAnswer =
+  ## The seam, with the contract's first rule applied ONCE: a raising seam
+  ## is a dead server, which reads as `false` rather than as a crash.
+  try:
+    result = c.query(sql, args, expectRows)
+  except CatchableError as exc:
+    result = PgAnswer(ok: false, detail: bounded(exc.msg))
 
 proc tryEmbed(c: LangMemClient, texts: seq[string]): EmbedBatch =
   ## The seam, with the contract's first rule applied ONCE: a raising embedder
@@ -209,6 +306,73 @@ proc tryEmbed(c: LangMemClient, texts: seq[string]): EmbedBatch =
     else: EmbedBatch(ok: false, detail: "embeddings: shapeless answer")
   except CatchableError as exc:
     EmbedBatch(ok: false, detail: bounded(exc.msg))
+
+proc parseRow(key, valueJson, createdAt: string): tuple[ok: bool, row: MemRow] =
+  ## A `langmem_store` row back into a `MemRow`. Malformed JSON is a skipped
+  ## row, never a crash — a turn must not die on one bad value.
+  var parsed: JsonNode
+  try:
+    parsed = parseJson(valueJson)
+  except JsonParsingError:
+    return (false, MemRow())
+  if parsed.kind != JObject:
+    return (false, MemRow())
+  let strOf = proc(k: string): string =
+    let found = parsed.jget(k)
+    if found.kind == JString: found.getStr() else: ""
+  (true, MemRow(key: key, subject: strOf("subject"), content: strOf("content"),
+                  source: strOf("source"), createdAt: createdAt, updatedAt: "",
+                  vec: @[]))
+
+proc pgGetRow(c: LangMemClient, key: string): tuple[found: bool, row: MemRow] =
+  let answer = c.tryQuery(pgGetSql, @[c.prefix, key], true)
+  if not answer.ok or answer.rows.len == 0 or answer.rows[0].len < 3:
+    return (false, MemRow())
+  let (ok, row) = parseRow(answer.rows[0][0], answer.rows[0][1],
+                           answer.rows[0][2])
+  if ok: (true, row) else: (false, MemRow())
+
+proc pgPutRow(c: LangMemClient, key, subject, content, source: string,
+              vec: seq[float32]): bool =
+  ## Upsert preserving `created_at`, like the reference `_op_put`: a blind
+  ## upsert would mint a fresh birth on every correction.
+  let (found, existing) = c.pgGetRow(key)
+  let stamp = nowIso()
+  let born = if found: existing.createdAt else: stamp
+  let done = c.tryQuery(pgUpsertSql,
+    @[c.prefix, key, valueJson(subject, content, source), born, stamp,
+      vecLit(vec)], false)
+  done.ok
+
+proc pgScanRows(c: LangMemClient, limit: int): seq[MemRow] =
+  let answer = c.tryQuery(pgScanSql,
+    @[likeEscape(c.prefix) & "%", $limit], true)
+  result = @[]
+  if not answer.ok:
+    return result
+  for r in answer.rows:
+    if r.len < 3:
+      continue
+    let (ok, row) = parseRow(r[0], r[1], r[2])
+    if ok:
+      result.add(row)
+
+proc pgSearchRows(c: LangMemClient, query: string, topK: int): seq[MemRow] =
+  let embedded = c.tryEmbed(@[query])
+  if not embedded.ok:
+    return @[]
+  let limit = if topK > 0: topK else: c.topK
+  let answer = c.tryQuery(pgSearchSql,
+    @[c.prefix, vecLit(embedded.vecs[0]), $limit], true)
+  result = @[]
+  if not answer.ok:
+    return result
+  for r in answer.rows:
+    if r.len < 3:
+      continue
+    let (ok, row) = parseRow(r[0], r[1], r[2])
+    if ok:
+      result.add(row)
 
 proc findRow(c: LangMemClient, key: string): int =
   ## Index of the row, or -1. Linear: namespaces here are hundreds of facts,
@@ -225,6 +389,8 @@ proc putRow(c: LangMemClient, key, subject, content, source: string): bool =
   let embedded = c.tryEmbed(@[valueJson(subject, content, source)])
   if not embedded.ok:
     return false
+  if c.isPg:
+    return c.pgPutRow(key, subject, content, source, embedded.vecs[0])
   let stamp = nowIso()
   let at = c.findRow(key)
   if at >= 0:
@@ -246,6 +412,8 @@ proc add*(c: LangMemClient, subject, content, source: string): bool =
   c.putRow(freshFactKey(), subject.toLowerAscii().strip(), content, source)
 
 proc get*(c: LangMemClient, key: string): tuple[found: bool, row: MemRow] =
+  if c.isPg:
+    return c.pgGetRow(key)
   let at = c.findRow(key)
   if at < 0: (false, MemRow())
   else: (true, c.rows[at])
@@ -264,6 +432,12 @@ proc update*(c: LangMemClient, key, content, subject: string): bool =
 proc delete*(c: LangMemClient, key: string): bool =
   ## Check-then-remove: deleting blind would report success on a key that was
   ## never there, and the conformance suite exists for exactly that lie.
+  if c.isPg:
+    let (found, _) = c.pgGetRow(key)
+    if not found:
+      return false
+    let done = c.tryQuery(pgDeleteSql, @[c.prefix, key], false)
+    return done.ok and done.affected > 0
   let at = c.findRow(key)
   if at < 0:
     return false
@@ -273,6 +447,8 @@ proc delete*(c: LangMemClient, key: string): bool =
 proc listRows*(c: LangMemClient, limit = 200): seq[MemRow] =
   ## Newest-first by `created_at` (the contract's rule — see the module
   ## header for why this differs from upstream's key order).
+  if c.isPg:
+    return c.pgScanRows(limit)
   var ordered = c.rows
   ordered.sort(proc(a, b: MemRow): int = cmp(b.createdAt, a.createdAt))
   if ordered.len > limit: ordered[0 ..< limit] else: ordered
@@ -285,6 +461,8 @@ proc searchRows*(c: LangMemClient, query: string, topK = -1): seq[MemRow] =
   let embedded = c.tryEmbed(@[query])
   if not embedded.ok:
     return @[]
+  if c.isPg:
+    return c.pgSearchRows(query, topK)
   let limit = if topK > 0: topK else: c.topK
   var scored: seq[(float, MemRow)] = @[]
   for row in c.rows:

@@ -14,11 +14,12 @@
 ## exact, never hash-luck.
 
 import std/json
+import std/os
 import std/strutils
 import std/unittest
 
 import ../src/langmem
-import factstore_fakes
+import ../src/pgvector
 
 var embedTextsSeen: seq[seq[string]] = @[]
 var embedCalls = 0
@@ -170,3 +171,128 @@ suite "failures answer, they never raise":
     let hits = store.search("qq", 8)
     assert hits.len == 2
     assert "[alex] sailing" in hits and "just words" in hits
+
+type
+  PgCall = tuple[sql: string, args: seq[string], expectRows: bool]
+
+var seenPg: seq[PgCall] = @[]
+var pgRows: seq[seq[string]] = @[]
+var pgAffected = 1i64
+
+proc pgRecording(sql: string, args: seq[string],
+                 expectRows: bool): PgAnswer =
+  seenPg.add((sql, args, expectRows))
+  PgAnswer(ok: true, rows: pgRows, affected: pgAffected)
+
+proc pgTestClient(): LangMemClient =
+  seenPg = @[]
+  pgRows = @[]
+  pgAffected = 1
+  embedTextsSeen = @[]
+  embedCalls = 0
+  newLangMemClient("sk-test", pgDsn = "postgres://u:p@localhost:5432/waku",
+    query = pgRecording,
+    embedTexts = proc(texts: seq[string]): EmbedBatch =
+      embedTextsSeen.add(texts)
+      cannedTable(texts))
+
+suite "the Postgres twin":
+  test "a DSN means Postgres, and the URL is parsed once at build":
+    assert testClient().isPg == false
+    let c = pgTestClient()
+    assert c.isPg
+    assert "host=localhost" in c.pgConn
+    assert "dbname=waku" in c.pgConn
+
+  test "put over a key preserves birth across the socket":
+    let c = pgTestClient()
+    pgRows = @[@["fact-k",
+      """{"content":"old","source":"user","subject":"alex"}""",
+      "2026-05-01T00:00:00Z"]]
+    assert c.update("fact-k", "new", "")
+    assert seenPg[0].sql.startsWith("SELECT key")
+    assert "ON CONFLICT (prefix, key)" in seenPg[^1].sql
+    assert seenPg[0].args[1] == seenPg[^1].args[1], "same key read and written"
+    assert seenPg[^1].args[3] == "2026-05-01T00:00:00Z",
+      "birth comes from the stored row, not from now"
+
+  test "put on a missing key mints birth, and update-missing embeds nothing":
+    let c = pgTestClient()
+    pgRows = @[]
+    assert c.add("alex", "sailing", "user")
+    assert seenPg[^1].args[3].len == 20, "fixed-width UTC stamp"
+    let d = pgTestClient()
+    pgRows = @[]
+    assert d.update("fact-nope", "new", "alex") == false
+    assert embedCalls == 0
+    assert seenPg.len == 1, "one lookup, no write"
+
+  test "scan pages the prefix newest-first":
+    let c = pgTestClient()
+    pgRows = @[@["fact-2", """{"content":"b","source":"u","subject":"t"}""",
+                        "2026-01-02T00:00:00Z"]]
+    discard c.listRows(50)
+    assert "WHERE prefix LIKE $1" in seenPg[0].sql
+    assert "ORDER BY created_at DESC" in seenPg[0].sql
+    assert seenPg[0].args[0] == likeEscape(c.prefix) & "%"
+    assert seenPg[0].args[1] == "50"
+
+  test "search ranks server-side over embedded rows only":
+    let c = pgTestClient()
+    discard c.searchRows("qq", 3)
+    assert "embedding IS NOT NULL" in seenPg[0].sql
+    assert "<=> $2::vector" in seenPg[0].sql
+    assert "LIMIT $3" in seenPg[0].sql
+    assert seenPg[0].args[0] == c.prefix
+    assert seenPg[0].args[2] == "3"
+
+  test "delete checks first, and affected rows decide":
+    let c = pgTestClient()
+    pgRows = @[]
+    assert c.delete("fact-nope") == false
+    assert seenPg.len == 1, "lookup only"
+    pgRows = @[@["fact-1", """{"content":"x","source":"u","subject":"t"}""",
+                        "2026-01-01T00:00:00Z"]]
+    assert c.delete("fact-1") == true
+    assert "DELETE FROM " & langmemTable in seenPg[^1].sql
+    pgAffected = 0
+    assert c.delete("fact-1") == false
+
+  test "malformed values are skipped, never fatal":
+    let c = pgTestClient()
+    pgRows = @[@["fact-9", "not json at all", "2026-01-01T00:00:00Z"]]
+    assert c.listRows(10) == @[]
+    assert c.searchRows("qq", 8) == @[]
+
+  test "keys and prefixes travel as parameters, LIKE metacharacters die":
+    assert likeEscape("a%b_c\\d") == "a\\%b\\_c\\\\d"
+    let c = pgTestClient()
+    pgRows = @[@["fact-1", """{"content":"x","source":"u","subject":"t"}""",
+                        "2026-01-01T00:00:00Z"]]
+    discard c.get("fact-1'; DROP TABLE langmem_store; --")
+    for call in seenPg:
+      assert "DROP TABLE" notin call.sql
+      assert "fact-1';" notin call.sql,
+        "a key interpolated into SQL is an injection: " & call.sql
+
+suite "live gate, opt-in":
+  test "round-trips its own keys and deletes them afterwards":
+    if getEnv("WAKU_TEST_LANGMEM_PG") != "1" or
+       getEnv("DATABASE_URL").len == 0 or
+       getEnv("OPENAI_API_KEY").len == 0:
+      echo "SKIP live langmem-pg: set WAKU_TEST_LANGMEM_PG=1, DATABASE_URL, OPENAI_API_KEY"
+    else:
+      let c = newLangMemClient(getEnv("OPENAI_API_KEY"),
+        pgDsn = getEnv("DATABASE_URL"))
+      let ext = c.query(
+        "SELECT 1 FROM pg_extension WHERE extname='vector'", @[], true)
+      if not ext.ok or ext.rows.len == 0:
+        echo "SKIP live langmem-pg: extension \"vector\" is not installed"
+      else:
+        let store = langmemFactStore(c)
+        store.add("waku-test", "the launch moved to wednesday", "user")
+        assert store.settle(1000) == true
+        let found = store.searchWithIds("waku-test launch wednesday", 8)
+        assert found.len > 0, "seeded a fact and could not find it"
+        assert store.delete(found[0].id) == true
+        assert store.searchWithIds("waku-test launch wednesday", 8) == @[]
