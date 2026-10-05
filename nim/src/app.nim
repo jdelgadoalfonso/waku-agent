@@ -52,6 +52,7 @@ import db_connector/db_sqlite
 import ./brain
 import ./config
 import ./factstore
+import ./langmem
 import ./mem0
 import ./pgvector
 import ./zep
@@ -121,7 +122,9 @@ proc factStoreFor*(settings: Settings, db: DbConn): StoreChoice =
   ## because that is what Python's adapters do: the keys belong to the
   ## connections registry, not to the settings dataclass. `DATABASE_URL` and
   ## `OPENAI_API_KEY` follow the same rule for the `postgres` backend — a
-  ## database address is a secret, not a setting. No key means no hosted
+  ## database address is a secret, not a setting. `OPENAI_API_KEY` likewise
+  ## gates `langmem` (embeddings are billed), whose `WAKU_LANGMEM_POSTGRES`
+  ## switches memory mode to its Postgres twin. No key means no hosted
   ## client — the loop then answers from sqlite and says nothing, because a
   ## half-wired remote store is worse than a local one.
   case settings.semanticStore
@@ -152,6 +155,19 @@ proc factStoreFor*(settings: Settings, db: DbConn): StoreChoice =
     stderr.writeLine("(memory) WAKU_SEMANTIC_STORE=postgres but DATABASE_URL " &
       "or OPENAI_API_KEY is empty — falling back to sqlite, which will " &
       "not show those memories.")
+  of "langmem":
+    let key = envOrDefault("OPENAI_API_KEY", "")
+    if key.len > 0:
+      let dsn = envOrDefault("WAKU_LANGMEM_POSTGRES", "")
+      let client = newLangMemClient(key, topK = settings.retrievalTopK,
+        embedModel = envOrDefault("OPENAI_EMBED_MODEL",
+                                  "openai:text-embedding-3-small"),
+        pgDsn = dsn)
+      if dsn.len > 0:
+        return (store: langmemFactStore(client), name: "langmem-pg")
+      return (store: langmemFactStore(client), name: "langmem")
+    stderr.writeLine("(memory) WAKU_SEMANTIC_STORE=langmem but OPENAI_API_KEY " &
+      "is empty — falling back to sqlite, which will not show those memories.")
   else: discard
   (store: sqliteFactStore(db), name: "sqlite")
 

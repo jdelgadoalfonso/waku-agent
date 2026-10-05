@@ -626,6 +626,37 @@ suite "phase 8a /api/data status":
     db.close()
     removeDir(root)
 
+  test "the memory page follows WAKU_SEMANTIC_STORE=langmem when keyed":
+    # Memory mode builds a client that only this request would feed — the
+    # pin proves dispatch, not persistence (there is none, by design).
+    let root = freshDir("waku-dash-lmstore")
+    let db = connectDb(root)
+    let savedStore = getEnv("WAKU_SEMANTIC_STORE")
+    let savedKey = existsEnv("OPENAI_API_KEY")
+    let savedKeyValue = getEnv("OPENAI_API_KEY")
+    let savedDsn = existsEnv("WAKU_LANGMEM_POSTGRES")
+    let savedDsnValue = getEnv("WAKU_LANGMEM_POSTGRES")
+    putEnv("WAKU_SEMANTIC_STORE", "langmem")
+    putEnv("OPENAI_API_KEY", "sk-test")
+    delEnv("WAKU_LANGMEM_POSTGRES")
+    check factsFor(testDeps(root, root), db).name == "langmem"
+    putEnv("WAKU_LANGMEM_POSTGRES", "postgres://u:p@localhost:5432/waku")
+    check factsFor(testDeps(root, root), db).name == "langmem-pg"
+    delEnv("OPENAI_API_KEY")
+    check factsFor(testDeps(root, root), db).name == "sqlite"
+    if savedStore.len > 0:
+      putEnv("WAKU_SEMANTIC_STORE", savedStore)
+    else:
+      delEnv("WAKU_SEMANTIC_STORE")
+    if savedKey:
+      putEnv("OPENAI_API_KEY", savedKeyValue)
+    if savedDsn:
+      putEnv("WAKU_LANGMEM_POSTGRES", savedDsnValue)
+    else:
+      delEnv("WAKU_LANGMEM_POSTGRES")
+    db.close()
+    removeDir(root)
+
   test "sessions group chat rows and resume the fresh dashboard thread":
     let root = freshDir("waku-dash-datasessions")
     createDir(root / "static")

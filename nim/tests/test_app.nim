@@ -714,3 +714,48 @@ suite "which backend holds the facts":
       delEnv("OPENAI_API_KEY")
     db.close()
     removeDir(home)
+
+  test "langmem needs an embeddings key, either mode":
+    let home = getTempDir() / "waku-store-lm-nokey"
+    if dirExists(home):
+      removeDir(home)
+    let db = connectDb(home)
+    let savedKey = existsEnv("OPENAI_API_KEY")
+    let savedKeyValue = getEnv("OPENAI_API_KEY")
+    delEnv("OPENAI_API_KEY")
+    var s = defaultSettings()
+    s.semanticStore = "langmem"
+    check factStoreFor(s, db).name == "sqlite"
+    if savedKey:
+      putEnv("OPENAI_API_KEY", savedKeyValue)
+    db.close()
+    removeDir(home)
+
+  test "langmem with a key builds the memory store, with a DSN the pg twin":
+    # Building never dials in either mode: memory keeps rows in the client
+    # and Postgres opens per call — so no server is needed to assert this.
+    let home = getTempDir() / "waku-store-lm"
+    if dirExists(home):
+      removeDir(home)
+    let db = connectDb(home)
+    let savedKey = existsEnv("OPENAI_API_KEY")
+    let savedKeyValue = getEnv("OPENAI_API_KEY")
+    let savedDsn = existsEnv("WAKU_LANGMEM_POSTGRES")
+    let savedDsnValue = getEnv("WAKU_LANGMEM_POSTGRES")
+    putEnv("OPENAI_API_KEY", "sk-test")
+    delEnv("WAKU_LANGMEM_POSTGRES")
+    var s = defaultSettings()
+    s.semanticStore = "langmem"
+    check factStoreFor(s, db).name == "langmem"
+    putEnv("WAKU_LANGMEM_POSTGRES", "postgres://u:p@localhost:5432/waku")
+    check factStoreFor(s, db).name == "langmem-pg"
+    if savedKey:
+      putEnv("OPENAI_API_KEY", savedKeyValue)
+    else:
+      delEnv("OPENAI_API_KEY")
+    if savedDsn:
+      putEnv("WAKU_LANGMEM_POSTGRES", savedDsnValue)
+    else:
+      delEnv("WAKU_LANGMEM_POSTGRES")
+    db.close()
+    removeDir(home)
