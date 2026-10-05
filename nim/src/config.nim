@@ -76,14 +76,18 @@ type
       ## trigger threshold.
     semanticStore*: string
       ## `WAKU_SEMANTIC_STORE`: where facts live. `sqlite` (default, zero
-      ## setup) or `mem0` (the hosted service). Python reads the same var in
-      ## `config.py` and dispatches in `waku/memory/__init__.py`.
+      ## setup), `mem0` or `zep` (the hosted services). Python reads the same
+      ## var in `config.py` and dispatches in `waku/memory/__init__.py`.
     mem0UserId*: string
       ## `MEM0_USER_ID`: the person mem0 scopes memories to. Defaults to
       ## `waku`, and an EMPTY value falls back to the default rather than
       ## scoping the memory to "" — the Connections form writes optional
       ## fields even when you leave them blank, so `getenv(name, default)`
       ## is wrong here and Python's `env_or` is the port.
+    zepUserId*: string
+      ## `ZEP_USER_ID`: the person Zep scopes the graph to. Same empty-means-
+      ## default rule as `mem0UserId`: a blank Connections field must fall
+      ## back to `waku`, not scope the graph to "".
     otelEndpoint*: string
       ## `OTEL_EXPORTER_OTLP_ENDPOINT`: an OTLP collector as `host:port`
       ## (Python's `Settings.otel_endpoint`). Empty means JSONL traces
@@ -101,7 +105,7 @@ proc defaultSettings*(): Settings =
            graphWorkflows: false, consolidateEvery: 6, retrievalTopK: 4,
            experimental: false, appleTools: false, ghTool: false,
            ghRepo: "", semanticStore: "sqlite", mem0UserId: "waku",
-           otelEndpoint: "")
+           zepUserId: "waku", otelEndpoint: "")
 
 proc envInt(name: string, default: int): int =
   ## `int(os.getenv(name, default))` with a fallback: a non-numeric value
@@ -150,6 +154,7 @@ proc loadFromEnv*(s: var Settings) =
   s.otelEndpoint = getEnv("OTEL_EXPORTER_OTLP_ENDPOINT")
   s.semanticStore = getEnv("WAKU_SEMANTIC_STORE", "sqlite")
   s.mem0UserId = envOrDefault("MEM0_USER_ID", "waku")
+  s.zepUserId = envOrDefault("ZEP_USER_ID", "waku")
 
 proc loadSettings*(): Settings =
   ## Port of `waku/config.py` `load_settings`: read the env vars once

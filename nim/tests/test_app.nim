@@ -625,3 +625,38 @@ suite "which backend holds the facts":
       delEnv("MEM0_API_KEY")
     db.close()
     removeDir(home)
+
+  test "zep needs a key, and says so when it falls back":
+    let home = getTempDir() / "waku-store-zep-nokey"
+    if dirExists(home):
+      removeDir(home)
+    let db = connectDb(home)
+    let savedKey = existsEnv("ZEP_API_KEY")
+    let savedValue = getEnv("ZEP_API_KEY")
+    delEnv("ZEP_API_KEY")
+    var s = defaultSettings()
+    s.semanticStore = "zep"
+    check factStoreFor(s, db).name == "sqlite"
+    if savedKey:
+      putEnv("ZEP_API_KEY", savedValue)
+    db.close()
+    removeDir(home)
+
+  test "zep with a key builds the hosted store":
+    let home = getTempDir() / "waku-store-zep"
+    if dirExists(home):
+      removeDir(home)
+    let db = connectDb(home)
+    let savedKey = existsEnv("ZEP_API_KEY")
+    let savedValue = getEnv("ZEP_API_KEY")
+    putEnv("ZEP_API_KEY", "zep-test-key")
+    var s = defaultSettings()
+    s.semanticStore = "zep"
+    s.zepUserId = "someone"
+    check factStoreFor(s, db).name == "zep"
+    if savedKey:
+      putEnv("ZEP_API_KEY", savedValue)
+    else:
+      delEnv("ZEP_API_KEY")
+    db.close()
+    removeDir(home)

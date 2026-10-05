@@ -53,6 +53,7 @@ import ./brain
 import ./config
 import ./factstore
 import ./mem0
+import ./zep
 import ./jsondump
 import ./loop
 import ./memory
@@ -115,11 +116,11 @@ proc factStoreFor*(settings: Settings, db: DbConn): StoreChoice =
   ## answers with sqlite rather than refusing, which is what Python does and
   ## what keeps a typo from taking a turn down.
   ##
-  ## `MEM0_API_KEY` is read here, not from `Settings`, because that is what
-  ## Python's adapter does: the key belongs to the connections registry, not
-  ## to the settings dataclass. No key means no mem0 client — the loop then
-  ## answers from sqlite and says nothing, because a half-wired remote store
-  ## is worse than a local one.
+  ## `MEM0_API_KEY` / `ZEP_API_KEY` are read here, not from `Settings`,
+  ## because that is what Python's adapters do: the keys belong to the
+  ## connections registry, not to the settings dataclass. No key means no
+  ## hosted client — the loop then answers from sqlite and says nothing,
+  ## because a half-wired remote store is worse than a local one.
   case settings.semanticStore
   of "mem0":
     let key = envOrDefault("MEM0_API_KEY", "")
@@ -128,6 +129,14 @@ proc factStoreFor*(settings: Settings, db: DbConn): StoreChoice =
                                  topK = settings.retrievalTopK)
       return (store: mem0FactStore(client), name: "mem0")
     stderr.writeLine("(memory) WAKU_SEMANTIC_STORE=mem0 but MEM0_API_KEY is " &
+      "empty — falling back to sqlite, which will not show those memories.")
+  of "zep":
+    let key = envOrDefault("ZEP_API_KEY", "")
+    if key.len > 0:
+      let client = newZepClient(key, settings.zepUserId,
+                                topK = settings.retrievalTopK)
+      return (store: zepFactStore(client), name: "zep")
+    stderr.writeLine("(memory) WAKU_SEMANTIC_STORE=zep but ZEP_API_KEY is " &
       "empty — falling back to sqlite, which will not show those memories.")
   else: discard
   (store: sqliteFactStore(db), name: "sqlite")
