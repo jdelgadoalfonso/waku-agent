@@ -19,9 +19,10 @@ import db_connector/db_sqlite
 
 import ../src/db
 import ../src/episodes
+import ../src/obsidian
 
 const
-  backends = ["sqlite"]
+  backends = ["sqlite", "obsidian"]
     ## Every backend in this build. Adding one means adding its factory in
     ## `freshStore` below; the suite itself never grows a conditional.
 
@@ -44,6 +45,8 @@ proc freshStore(name, tag: string): tuple[store: EpisodeStore, db: DbConn,
   case name
   of "sqlite":
     result.store = sqliteEpisodeStore(result.db)
+  of "obsidian":
+    result.store = obsidianEpisodeStore(newObsidianStore(result.home / "vault"))
   else:
     raise newException(ValueError, "no episode backend: " & name)
 
