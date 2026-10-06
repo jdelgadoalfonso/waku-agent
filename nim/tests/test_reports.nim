@@ -158,3 +158,61 @@ suite "the 009 B cap":
     let prompt = reportRule.replace("{report}", "the report body")
     assert "at most 2" in prompt
     assert "the report body" in prompt
+suite "digest":
+  test "title, summary and key numbers fit the cap":
+    let body = reportMarker & "\n\n# mem0 competitors\n\n## Summary\n- mem0 charges per seat\n- zep is enterprise-only\n\n```waku-metrics\n[{\"label\": \"Seats\", \"value\": \"$20\", \"note\": \"per month\"}]\n```\n"
+    let d = digest(body)
+    assert "mem0 competitors" in d
+    assert "- mem0 charges per seat" in d
+    assert "Numbers: Seats: $20 (per month)" in d
+    assert d.len <= DIGEST_CHARS
+
+  test "a run-cost tile never becomes a key number":
+    let body = reportMarker & "\n\n# t\n\n## Summary\n- one\n\n```waku-metrics\n[{\"label\": \"cost of this run\", \"value\": \"$1.33\"}, {\"label\": \"Seats\", \"value\": \"$20\"}]\n```\n"
+    let d = digest(body)
+    assert "Seats: $20" in d
+    assert "cost of this run" notin d
+
+  test "a long digest is cut with an ellipsis":
+    let body = reportMarker & "\n\n# t\n\n## Summary\n- " & "n".repeat(2000) & "\n"
+    let d = digest(body)
+    assert d.len <= DIGEST_CHARS + 2
+    assert d.endsWith("…")
+
+suite "shrink_read":
+  test "a whole report read earlier becomes its digest":
+    let report = reportMarker & "\n\n# mem0 competitors\n\n## Summary\n- mem0 charges per seat\n\nFindings " & "x".repeat(4000) & "\n"
+    let answer = $(%*{"memory": {"id": "m1", "kind": "semantic", "scope": "global", "created_at": "2026-10-05", "body": report, "extra": "drop me"}})
+    var messages = @[%*{"role": "user", "content": [%*{"type": "tool_result", "tool_use_id": "t1", "content": answer}]},
+      %*{"role": "user", "content": "newest"}]
+    shrinkRead(messages)
+    let short = messages[0]["content"][0]["content"].getStr()
+    assert reportMarker notin short
+    assert "mem0 competitors" in short
+    assert TRIMMED in short
+    let back = parseJson(short)
+    assert back["memory"]["id"].getStr() == "m1"
+    assert back["memory"]["kind"].getStr() == "semantic"
+    assert not back["memory"].hasKey("extra")
+
+  test "short, markerless, newest and invalid answers stay whole":
+    let shortReport = reportMarker & "\n\n# t\n\n## Summary\n- one\n"
+    let shortAns = $(%*{"memory": {"id": "m2", "body": shortReport}})
+    var m1 = @[%*{"role": "user", "content": [%*{"type": "tool_result", "tool_use_id": "t1", "content": shortAns}]},
+      %*{"role": "user", "content": "new"}]
+    shrinkRead(m1)
+    assert m1[0]["content"][0]["content"].getStr() == shortAns
+    let noMark = $(%*{"memory": {"id": "m3", "body": "x".repeat(4000)}})
+    var m2 = @[%*{"role": "user", "content": [%*{"type": "tool_result", "tool_use_id": "t1", "content": noMark}]},
+      %*{"role": "user", "content": "new"}]
+    shrinkRead(m2)
+    assert m2[0]["content"][0]["content"].getStr() == noMark
+    let big = $(%*{"memory": {"id": "m4", "body": shortReport & "y".repeat(4000)}})
+    var m3 = @[%*{"role": "user", "content": "first"},
+      %*{"role": "user", "content": [%*{"type": "tool_result", "tool_use_id": "t1", "content": big}]}]
+    shrinkRead(m3)
+    assert m3[1]["content"][0]["content"].getStr() == big
+    var m4 = @[%*{"role": "user", "content": [%*{"type": "tool_result", "tool_use_id": "t1", "content": "not json"}]},
+      %*{"role": "user", "content": "new"}]
+    shrinkRead(m4)
+    assert m4[0]["content"][0]["content"].getStr() == "not json"

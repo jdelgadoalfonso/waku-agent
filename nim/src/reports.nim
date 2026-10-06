@@ -123,6 +123,150 @@ proc chatReply*(report: Report): string =
   let saved = "Report saved: " & report.title & "."
   if lead.len > 0: lead & "\n\n" & saved else: saved
 
+const
+  DIGEST_CHARS* = 1500
+    ## What one earlier report may put in a prompt: title, Summary,
+    ## key numbers.
+
+  TRIMMED* = "[The rest of this report was cut from the context after you read it; waku_memory_memory_get returns it whole again.]"
+    ## The note a digest carries: the whole report is one `memory_get`
+    ## away.
+
+proc strOf*(node: JsonNode): string =
+  ## Python's `str(value)` for a tile field: strings travel whole,
+  ## numbers and booleans read as their JSON text, anything else as "".
+  case node.kind
+  of JString: node.getStr()
+  of JInt: $node.getBiggestInt()
+  of JFloat: $node.getFloat()
+  of JBool: $node.getBool()
+  else: ""
+
+proc isRunCost*(label: string): bool =
+  ## Port of `_RUN_COST`: `cost of (this|the) (run|turn|report|research)`
+  ## case-insensitive with word boundaries — a tile stating what a run
+  ## cost is never a key number (the model cannot see its own token cost).
+  let lower = label.toLowerAscii()
+  for det in ["this", "the"]:
+    for noun in ["run", "turn", "report", "research"]:
+      let phrase = "cost of " & det & " " & noun
+      var at = lower.find(phrase)
+      while at >= 0:
+        let beforeOk = at == 0 or lower[at - 1] notin {'a' .. 'z', '0' .. '9', '_', 'A' .. 'Z'}
+        let afterIx = at + phrase.len
+        let afterOk = afterIx >= lower.len or lower[afterIx] notin {'a' .. 'z', '0' .. '9', '_', 'A' .. 'Z'}
+        if beforeOk and afterOk:
+          return true
+        at = lower.find(phrase, at + 1)
+  false
+
+proc metricsTiles*(body: string): seq[JsonNode] =
+  ## Every `waku-metrics` tile list in `body`, in order. A fence opens
+  ## only at a line start (`^```waku-metrics`, MULTILINE) and closes at
+  ## the next `\n``` (non-greedy DOTALL); unparsable or non-list
+  ## payloads contribute nothing, like Python's `except ValueError`.
+  var i = 0
+  let fence = "```waku-metrics\n"
+  while true:
+    let at = body.find(fence, i)
+    if at < 0:
+      break
+    if at != 0 and body[at - 1] != '\n':
+      i = at + 1
+      continue
+    let inner0 = at + fence.len
+    let closeAt = body.find("\n```", inner0)
+    if closeAt < 0:
+      break
+    let raw = body[inner0 ..< closeAt]
+    i = closeAt + 1
+    var parsed: JsonNode
+    try:
+      parsed = parseJson(raw)
+    except JsonParsingError:
+      continue
+    if parsed.kind != JArray:
+      continue
+    for tile in parsed:
+      result.add(tile)
+
+proc digest*(body: string, limit: int = DIGEST_CHARS): string =
+  ## An earlier report in at most `limit` characters: its title, its
+  ## Summary bullets and its waku-metrics tiles ("key numbers").
+  var report: Report
+  if not findReport(body, report):
+    report = Report(preface: "", body: if body.len > 0: body else: "",
+      title: "Research report", summary: @[])
+  var lines = @[report.title]
+  for b in report.summary:
+    lines.add("- " & b)
+  var numbers: seq[string] = @[]
+  for tile in metricsTiles(report.body):
+    if tile.kind != JObject:
+      continue
+    let label = strOf(tile.jget("label"))
+    if label.len == 0 or isRunCost(label):
+      continue
+    let value = strOf(tile.jget("value"))
+    let note = strOf(tile.jget("note"))
+    numbers.add(label & ": " & value & (if note.len > 0: " (" & note & ")" else: ""))
+  if numbers.len > 0:
+    lines.add("Numbers: " & numbers.join("; "))
+  let text = lines.join("\n")
+  if text.len <= limit: text else: text[0 ..< limit - 1] & "\xe2\x80\xa6"
+
+proc tryShrinkReport*(text: string, short: var string): bool =
+  ## Port of `_shrunk`: the digest form of a `memory.get` answer holding
+  ## a report, or false when `text` is not one (invalid JSON, no report).
+  var answer: JsonNode
+  try:
+    answer = parseJson(text)
+  except JsonParsingError:
+    return false
+  if answer.kind != JObject:
+    return false
+  let memory = if answer.hasKey("memory") and answer["memory"].kind == JObject:
+    answer["memory"] else: answer
+  let body = memory.jget("body")
+  if body.kind != JString or reportMarker notin body.getStr():
+    return false
+  var kept = newJObject()
+  for k in ["id", "kind", "scope", "created_at"]:
+    if memory.hasKey(k):
+      kept[k] = memory[k]
+  kept["body"] = %(digest(body.getStr()) & "\n\n" & TRIMMED)
+  short = $(%*{"memory": kept})
+  true
+
+proc shrinkRead*(messages: var seq[JsonNode]) =
+  ## Cut each whole report the model already read to its digest.
+  ## Every tool result in `messages` except the newest (which the model
+  ## has not read yet) that is a memory.get answer holding a report
+  ## longer than twice DIGEST_CHARS keeps the memory's id, kind, scope
+  ## and date, and its body becomes the digest plus a note that
+  ## memory_get returns it whole again.
+  if messages.len == 0:
+    return
+  for i in 0 ..< messages.len - 1:
+    let message = messages[i]
+    if message.kind != JObject or message.jget("role").getStr() != "user":
+      continue
+    let content = message.jget("content")
+    if content.kind != JArray:
+      continue
+    for blk in content:
+      if blk.kind != JObject or blk.jget("type").getStr() != "tool_result":
+        continue
+      let text = blk.jget("content")
+      if text.kind != JString:
+        continue
+      let s = text.getStr()
+      if reportMarker notin s or s.len <= 2 * DIGEST_CHARS:
+        continue
+      var short = ""
+      if tryShrinkReport(s, short):
+        blk["content"] = %short
+
 proc isCompanyResearch*(client: LlmClient, smallModel: string,
     report: Report, notify: Observer = nil): bool =
   ## The company/personal decision for one report, asked of the small
