@@ -337,9 +337,12 @@ def gate_metric():
              "no previous turns, and it did not see the Retrieval Context."),
             ("Decide, from the Input's wording alone, whether it sounds personal "
              "or refers to the user's life, people, plans, possessions or "
-             "history. Count a short or ambiguous follow-up such as 'can you "
-             "make it earlier?' as personal-sounding, because the gate has no "
-             "way to rule that out."),
+             "history. Count an elliptical follow-up with an unresolved "
+             "referent, such as 'can you make it earlier?', as "
+             "personal-sounding, because the gate has no way to rule that "
+             "out. A complete social reaction such as 'that's awesome lol' "
+             "is NOT one of those: its referent is the immediately preceding "
+             "turn, which needs no memory, so it stays small talk."),
             ("If the previous step was yes, an Actual Output of 'retrieve' is "
              "correct and scores high, and 'do not retrieve' scores low."),
             ("If the previous step was no — greetings, thanks, small talk, "
