@@ -88,6 +88,7 @@ import ./gateway
 import ./github
 import ./http
 import ./integrations
+import ./observability
 import ./mcp
 import ./memory_admin
 import ./judgment_cases
@@ -482,68 +483,6 @@ proc readTraceEvents*(home: string): (seq[JsonNode], seq[string]) =
         continue
       events.add(ev)
   result = (events, files)
-
-proc parseTsMs*(raw: string): (bool, int64) =
-  ## `"2026-10-01T12:00:01.123+00:00"` → unix millis. The tracer always
-  ## writes `+00:00`, but any numeric `Z`/`±HH:MM` offset is honored, and
-  ## the `T` may be a space (SQLite `datetime('now')` stamps) — Python's
-  ## `fromisoformat` reads both. Anything else fails closed to
-  ## `(false, 0)` — Python's `fromisoformat` → `None` path — so one bad
-  ## stamp blanks a latency, never the page.
-  let s = raw.strip()
-  if s.len < 19 or (s[10] != 'T' and s[10] != ' ') or s[4] != '-' or
-      s[7] != '-' or s[13] != ':' or s[16] != ':':
-    return (false, 0)
-  var nums: array[6, int]
-  try:
-    nums = [parseInt(s[0 .. 3]), parseInt(s[5 .. 6]), parseInt(s[8 .. 9]),
-            parseInt(s[11 .. 12]), parseInt(s[14 .. 15]),
-            parseInt(s[17 .. 18])]
-  except ValueError:
-    return (false, 0)
-  if nums[1] notin 1 .. 12 or nums[2] notin 1 .. 31 or
-      nums[3] notin 0 .. 23 or nums[4] notin 0 .. 59 or
-      nums[5] notin 0 .. 60:
-    return (false, 0)
-  var rest = if s.len > 19: s[19 .. ^1] else: ""
-  var millis = 0
-  if rest.startsWith("."):
-    var k = 1
-    var digits = ""
-    while k < rest.len and rest[k] in {'0' .. '9'}:
-      if digits.len < 3:
-        digits.add(rest[k])
-      inc k
-    if digits.len == 0:
-      return (false, 0)
-    while digits.len < 3:
-      digits.add('0')
-    try:
-      millis = parseInt(digits)
-    except ValueError:
-      return (false, 0)
-    rest = if k < rest.len: rest[k .. ^1] else: ""
-  var offsetMin = 0
-  if rest == "" or rest == "Z":
-    discard
-  elif (rest[0] == '+' or rest[0] == '-') and rest.len == 6 and
-      rest[3] == ':':
-    try:
-      offsetMin = parseInt(rest[1 .. 2]) * 60 + parseInt(rest[4 .. 5])
-      if rest[0] == '-':
-        offsetMin = -offsetMin
-    except ValueError:
-      return (false, 0)
-  else:
-    return (false, 0)
-  try:
-    let dt = dateTime(nums[0], Month(nums[1]), MonthdayRange(nums[2]),
-                      HourRange(nums[3]), MinuteRange(nums[4]),
-                      SecondRange(nums[5]), zone = utc())
-    return (true, toUnix(toTime(dt)) * 1000 + millis.int64 -
-      offsetMin.int64 * 60000)
-  except CatchableError:
-    return (false, 0)
 
 proc safeInt(n: JsonNode): int =
   ## Ledger numbers default to 0 when missing or mistyped, like Python's
