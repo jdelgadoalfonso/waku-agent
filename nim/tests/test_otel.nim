@@ -162,11 +162,18 @@ proc expectedTreeA(rootEnd: uint64): seq[Span] =
       @[("openinference.span.kind", "LLM"),
         ("waku.provider", "\"anthropic\""),
         ("waku.model", "\"claude-sonnet-4-5\""),
-        ("waku.usage", "{\"in\": 10, \"out\": 3}")]),
+        ("waku.usage", "{\"in\": 10, \"out\": 3}"),
+        ("gen_ai.provider.name", "\"anthropic\""),
+        ("gen_ai.request.model", "\"claude-sonnet-4-5\""),
+        ("gen_ai.usage.input_tokens", "10"),
+        ("gen_ai.usage.output_tokens", "3"),
+        ("gen_ai.operation.name", "\"chat\"")]),
     expectSpan(traceA, childB, rootA, "tool.search", 3000, 3000,
       @[("openinference.span.kind", "TOOL"),
         ("waku.tool", "\"search\""),
-        ("waku.query", "\"tokyo weather\"")]),
+        ("waku.query", "\"tokyo weather\""),
+        ("gen_ai.tool.name", "\"search\""),
+        ("gen_ai.memory.query.text", "\"tokyo weather\"")]),
     expectSpan(traceA, childC, rootA, "gate.keep", 4000, 4000,
       @[("openinference.span.kind", "CHAIN"),
         ("waku.decision", "\"keep\"")]),
@@ -378,11 +385,11 @@ suite "the turn's span tree, mirrored from tracing.py":
     # `gate` with no fields at all still carries its kind and nothing else
     check ex.spans[3].attributes.len == 1
 
-  test "every field is waku.<field> holding the JSON TEXT of its value":
-    # Python: `{f"waku.{k}": json.dumps(v, default=str) ...}` — so a
-    # number is "10", not 10, and `usage` arrives as Python-shaped JSON
-    # text rather than as a nested message. `jsondump` is what makes the
-    # bytes identical; `$node` would not.
+  test "waku fields stay waku, semconv fields map":
+    # Python: `{f"waku.{k}": json.dumps(v, default=str) ...}` for Waku's
+    # own keys — so a number is "10", not 10 — plus the GENAI table for
+    # the semconv names (usage tokens, chat operation). `jsondump` is
+    # what makes the bytes identical; `$node` would not.
     let rec = Recorder()
     let mint = scriptedIds(@[traceA, rootA, childA, childB, childC])
     let stamps = @[1'u64, 2, 3]
@@ -398,7 +405,10 @@ suite "the turn's span tree, mirrored from tracing.py":
       ("waku.usage", "{\"in\": 10, \"out\": 3}"),
       ("waku.ok", "true"),
       ("waku.nothing", "null"),
-      ("waku.top", "[1]")]
+      ("waku.top", "[1]"),
+      ("gen_ai.usage.input_tokens", "10"),
+      ("gen_ai.usage.output_tokens", "3"),
+      ("gen_ai.operation.name", "\"chat\"")]
 
   test "no waku.type and no waku.ts — those are the JSONL row's own":
     # Python's span attributes come from the EVENT, not from the record
@@ -490,7 +500,8 @@ suite "one POST per turn":
         @[("openinference.span.kind", "AGENT"),
           ("waku.user_message", "second")]),
       expectSpan(traceB, childD, rootB, "tool.fetch", 7000, 7000,
-        @[("openinference.span.kind", "TOOL"), ("waku.tool", "\"fetch\"")])]
+        @[("openinference.span.kind", "TOOL"), ("waku.tool", "\"fetch\""),
+          ("gen_ai.tool.name", "\"fetch\"")])]
     check bodyBytes(rec.calls[1].body) == buildRequest(second)
     check bodyBytes(rec.calls[0].body) == buildRequest(expectedTreeA(5000))
 
@@ -728,10 +739,17 @@ suite "the POST, for real, on loopback":
       expectSpan(traceA, childA, rootA, "llm", 2000, 2000,
         @[("openinference.span.kind", "LLM"),
           ("waku.provider", "\"anthropic\""), ("waku.model", "\"m\""),
-          ("waku.usage", "{\"in\": 10, \"out\": 3}")]),
+          ("waku.usage", "{\"in\": 10, \"out\": 3}"),
+          ("gen_ai.provider.name", "\"anthropic\""),
+          ("gen_ai.request.model", "\"m\""),
+          ("gen_ai.usage.input_tokens", "10"),
+          ("gen_ai.usage.output_tokens", "3"),
+          ("gen_ai.operation.name", "\"chat\"")]),
       expectSpan(traceA, childB, rootA, "tool.search", 3000, 3000,
         @[("openinference.span.kind", "TOOL"), ("waku.tool", "\"search\""),
-          ("waku.query", "\"tokyo weather\"")])]
+          ("waku.query", "\"tokyo weather\""),
+          ("gen_ai.tool.name", "\"search\""),
+          ("gen_ai.memory.query.text", "\"tokyo weather\"")])]
     check bodyBytes(captured.body) == buildRequest(expected)
     # the first byte is `ExportTraceServiceRequest.resourceSpans` (field 1,
     # wire type 2) = 0x0A: the byte a truncated or text-mangled body loses
@@ -802,3 +820,52 @@ suite "what the exporter writes down":
     check minted.len == 16 and minted == minted.toLowerAscii()
     for c in minted:
       check c in {'0' .. '9', 'a' .. 'f'}
+suite "spec 012 span attributes":
+  test "semconv names ride along, waku keeps its own":
+    let rec = Recorder()
+    let mint = scriptedIds(@[traceA, rootA, childA])
+    let stamps = @[1'u64, 2, 3]
+    let ex = newSpanExporter("localhost:6006", clock = scriptedClock(stamps),
+                  mintTraceId = mint, mintSpanId = mint,
+                  send = recordingSend(rec))
+    ex.turn("q")
+    ex.event("llm", %*{"provider": "anthropic", "model": "m",
+      "usage": {"in": 10, "out": 2}, "stop_reason": "end_turn",
+      "turn_id": "t_1", "cost_usd": 0.05, "span": "llm",
+      "gen_ai.operation.name": "chat"})
+    let child = ex.spans[1]
+    assert child.attributes[0] == ("openinference.span.kind", "LLM")
+    assert ("gen_ai.provider.name", "\"anthropic\"") in child.attributes
+    assert ("gen_ai.request.model", "\"m\"") in child.attributes
+    assert ("gen_ai.usage.input_tokens", "10") in child.attributes
+    assert ("gen_ai.operation.name", "\"chat\"") in child.attributes
+    assert ("gen_ai.response.finish_reasons", "[\"end_turn\"]") in child.attributes
+    assert ("waku.cost.usd", "0.05") in child.attributes
+    assert ("waku.turn_id", "\"t_1\"") in child.attributes
+    assert ("waku.span", "\"llm\"") in child.attributes
+    for (key, _) in child.attributes:
+      assert key != "waku.cost_usd", "cost travels as waku.cost.usd"
+      assert not key.startsWith("waku.gen_ai."),
+        "semconv keys are never waku-prefixed"
+
+  test "a tool span maps the call id and the operation":
+    let rec = Recorder()
+    let mint = scriptedIds(@[traceA, rootA, childA])
+    let stamps = @[1'u64, 2, 3]
+    let ex = newSpanExporter("localhost:6006", clock = scriptedClock(stamps),
+                  mintTraceId = mint, mintSpanId = mint,
+                  send = recordingSend(rec))
+    ex.turn("q")
+    ex.event("tool", %*{"tool": "echo", "source": "local", "span": "tool",
+      "ok": true, "duration_ms": 4, "call_id": "t1",
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.type": "function"})
+    let child = ex.spans[1]
+    assert child.name == "tool.echo"
+    assert ("gen_ai.tool.call.id", "\"t1\"") in child.attributes
+    assert ("waku.call_id", "\"t1\"") in child.attributes,
+      "the span mirrors its event; the stamped payload already dropped it"
+    assert ("gen_ai.tool.type", "\"function\"") in child.attributes
+    assert ("gen_ai.operation.name", "\"execute_tool\"") in child.attributes
+    for (key, _) in child.attributes:
+      assert not key.startsWith("waku.gen_ai.")

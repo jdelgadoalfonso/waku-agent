@@ -50,6 +50,7 @@ import std/times
 
 import ./http
 import ./jsondump
+import ./observe
 import ./otelproto
 
 # ── the seams, and what an export outcome is ──────────────────────────
@@ -343,7 +344,14 @@ proc event*(t: SpanExporter, kind: string, ev: JsonNode) =
     @[("openinference.span.kind", spanKindName(kind))]
   if ev.kind == JObject:
     for key, value in pairs(ev):
+      # Spec 012: the OTel GenAI names, mapped in one place. Semconv
+      # keys and the cost travel under their mapped names, never as
+      # `waku.gen_ai.*` or `waku.cost_usd`.
+      if key.startsWith("gen_ai.") or key == "cost_usd":
+        continue
       attributes.add(("waku." & key, jsonDumps(value)))
+    for key, value in pairs(genaiAttributes(kind, ev)):
+      attributes.add((key, jsonDumps(value)))
   t.spans.add(Span(traceId: root.traceId, spanId: t.mintSpanId(),
                    parentSpanId: root.spanId,
                    name: childSpanName(kind, ev), kind: skInternal,
