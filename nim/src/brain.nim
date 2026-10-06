@@ -204,7 +204,7 @@ proc brainEntries*(text: string): seq[JsonNode] =
       let body = curLines.join("\n")
       result.add(%*{"id": curId, "title": curTitle,
         "text": entryText(body), "created_at": %"", "kind": curKind,
-        "report": startsMarker(body)})
+        "report": startsMarker(body) or curKind == reportType})
       curId = ""
       curTitle = ""
       curKind = ""
@@ -305,11 +305,14 @@ proc reportDigest*(backend: BrainBackend, id: string): string =
 
 proc readFirst*(message: string,
     backend: BrainBackend): tuple[calls: seq[JsonNode],
-    used: seq[JsonNode], context: string] =
+    used: seq[JsonNode], context: string, digests: JsonNode] =
   ## Both searches, what they found, and the prompt block. Empty when
   ## the backend is disconnected and when nothing was found — and a
-  ## failed search is skipped, never fatal.
-  result = (calls: @[], used: @[], context: "")
+  ## failed search is skipped, never fatal. With a `get` and a `digest`
+  ## on the backend (S1), each earlier report found is read once, at
+  ## most `reportReadLimit`, and kept as its digest; a failed read keeps
+  ## its search snippet.
+  result = (calls: @[], used: @[], context: "", digests: newJObject())
   if not brainConnected(backend):
     return result
   let about = subject(message)
@@ -338,17 +341,30 @@ proc readFirst*(message: string,
     except CatchableError:
       continue
     result.calls.add(%*{"tool": brainSearchTool, "args": args,
-                        "output": text})
+                        "output": text, "read_first": true})
     for e in brainEntries(text):
       if e["id"].getStr() in seen:
         continue
       seen.add(e["id"].getStr())
-      result.used.add(%*{"id": e["id"], "text": e["text"],
-        "created_at": e["created_at"], "kind": e["kind"],
-        "report": e["report"]})
+      let stamped = e["created_at"].getStr()
+      result.used.add(%*{"id": e["id"], "title": e["title"],
+        "text": e["text"],
+        "created_at": %(stamped[0 ..< min(10, stamped.len)]),
+        "kind": e["kind"], "report": e["report"]})
       blocks.add("- " & e["title"].getStr() & " (" &
         e["id"].getStr() & "): " & e["text"].getStr())
   if blocks.len == 0:
     return result
+  if digestReady(backend):
+    var read = 0
+    for u in result.used:
+      if not u["report"].getBool():
+        continue
+      if read >= reportReadLimit:
+        break
+      inc read
+      let found = reportDigest(backend, u["id"].getStr())
+      if found.len > 0:
+        result.digests[u["id"].getStr()] = %found
   result.context = brainHeading & ":\n" &
     blocks.join("\n")

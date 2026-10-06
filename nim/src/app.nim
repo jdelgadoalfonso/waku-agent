@@ -274,7 +274,8 @@ proc runFullTurn*(w: var Waku, userMessage: string, notify: Observer,
   # a memory server (or without the skill) this whole block is a no-op.
   var knownCalls: seq[JsonNode] = @[]
   var knownUsed: seq[JsonNode] = @[]
-  let backend = brainBackendFor(w.tools)
+  var backend = brainBackendFor(w.tools)
+  backend.digest = proc(body: string): string = reports.digest(body)
   if brainConnected(backend) and not w.session.researchNames.isNil and
       isResearch(w.session.researchNames(userMessage)):
     let known = readFirst(userMessage, backend)

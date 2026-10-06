@@ -9,6 +9,7 @@ import std/unittest
 
 import ../src/brain
 import ../src/tools
+import ../src/wire
 
 proc stubBackend(failSecond: bool,
     texts: varargs[string]): BrainBackend =
@@ -64,14 +65,15 @@ suite "engram entries":
 
 suite "read first":
   test "a disconnected backend reads nothing":
-    let (calls, used, context) = readFirst("research mem0",
+    let (calls, used, context, digests) = readFirst("research mem0",
       BrainBackend())
     assert calls.len == 0 and used.len == 0 and context == ""
+    assert digests.len == 0
 
   test "two searches shape the Used list and the block":
     var seen: seq[string] = @[]
     let backend = stubBackend(false, hits, hits)
-    let (calls, used, context) = readFirst("research mem0", backend)
+    let (calls, used, context, digests) = readFirst("research mem0", backend)
     assert calls.len == 2
     assert calls[0]["tool"].getStr() == brainSearchTool
     assert calls[0]["args"]["limit"].getInt() == subjectLimit
@@ -91,7 +93,7 @@ suite "read first":
 
   test "a failed search is skipped, never fatal":
     let backend = stubBackend(true, hits, "unused")
-    let (calls, used, context) = readFirst("research mem0", backend)
+    let (calls, used, context, digests) = readFirst("research mem0", backend)
     assert calls.len == 1
     assert used.len == 1
     assert brainHeading in context
@@ -190,3 +192,79 @@ suite "get lookup":
       inputSchema: %*{"type": "object"},
       fn: proc(args: JsonNode): string {.closure.} = "none"))
     assert brainBackendFor(bare).get.isNil
+
+const bigReport = reportMarkerOf & """
+
+# Rival map
+
+## Summary
+- rival A ships fast
+
+## Findings
+""" & "x".repeat(4000)
+
+proc digestBackend(searchAnswers: seq[string], getAnswer: string,
+    failGet = false): BrainBackend =
+  var i = 0
+  var gets = 0
+  BrainBackend(
+    search: proc(args: JsonNode): string {.closure.} =
+      let text = searchAnswers[i]
+      inc i
+      text,
+    get: proc(args: JsonNode): string {.closure.} =
+      inc gets
+      if failGet:
+        raise newException(IOError, "down")
+      getAnswer,
+    digest: stubDigest)
+
+suite "read first with get":
+  test "a report hit is read once and kept as its digest":
+    let doc = $(%*{"entries": [{"id": "7",
+      "body": bigReport, "kind": "semantic", "created_at": "2026-10-05T12:00:00"}]})
+    let backend = digestBackend(@[doc, """{"entries": []}"""],
+      $(%*{"memory": {"id": "7", "body": bigReport}}))
+    let (calls, used, context, digests) = readFirst("research rivals", backend)
+    assert used.len == 1
+    assert used[0]["report"].getBool()
+    assert used[0]["title"].getStr() == "Rival map"
+    assert used[0]["created_at"].getStr() == "2026-10-05"
+    assert digests.jget("7").getStr().startsWith("DIGEST:")
+    assert calls[0].jget("read_first").getBool()
+    assert brainHeading in context
+
+  test "a failing get keeps the snippet and no digest":
+    let doc = $(%*{"entries": [{"id": "7",
+      "body": bigReport, "kind": "semantic", "created_at": "2026-10-05"}]})
+    let backend = digestBackend(@[doc, """{"entries": []}"""], "", true)
+    let (calls, used, context, digests) = readFirst("research rivals", backend)
+    assert used.len == 1
+    assert digests.len == 0
+    assert "Rival map" in used[0]["text"].getStr() or "rival" in used[0]["text"].getStr()
+    assert brainHeading in context
+    assert calls.len == 2
+
+  test "facts are never read and reports stop at three":
+    let fact = $(%*{"entries": [{"id": "9", "body": "Alex prefers mornings"}]})
+    let three = $(%*{"entries": [
+      {"id": "1", "body": bigReport, "kind": "semantic"},
+      {"id": "2", "body": bigReport, "kind": "semantic"},
+      {"id": "3", "body": bigReport, "kind": "semantic"},
+      {"id": "4", "body": bigReport, "kind": "semantic"}]})
+    var gets = 0
+    let backend = BrainBackend(
+      search: proc(args: JsonNode): string {.closure.} = three,
+      get: proc(args: JsonNode): string {.closure.} =
+        inc gets
+        $(%*{"result": bigReport}),
+      digest: stubDigest)
+    let (calls, used, context, digests) = readFirst("research rivals", backend)
+    assert gets == 3, "at most three reports are read whole"
+    assert digests.len == 3
+    assert "4" notin digests
+    let plain = digestBackend(@[fact, """{"entries": []}"""], "")
+    let (_, used2, _, digests2) = readFirst("research mornings", plain)
+    assert used2.len == 1 and not used2[0]["report"].getBool()
+    assert digests2.len == 0
+    assert calls.len == 2 and context.len > 0
