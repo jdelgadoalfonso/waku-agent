@@ -230,3 +230,26 @@ suite "trim hook":
     let res2 = runLoop(scriptedClient(script), "m", "sys", plain, echoRegistry())
     assert res2.reply == "ok"
     assert plain[0]["content"].getStr() == "go"
+
+suite "spec 012 tool stamps":
+  test "every tool event carries its call id and how long it took":
+    let script = Script(items: @[toolResp("t1", "echo", %*{"text": "x"}), textResp("done")])
+    var messages = @[%*{"role": "user", "content": "go"}]
+    var toolEvents: seq[JsonNode] = @[]
+    let res = runLoop(scriptedClient(script), "m", "sys", messages,
+                      echoRegistry(), 10, 2048,
+                      proc(kind: string, ev: JsonNode) =
+                        if kind == "tool": toolEvents.add(ev))
+    assert res.toolCalls[0]["call_id"].getStr() == "t1"
+    assert res.toolCalls[0]["duration_ms"].getInt() >= 0
+    assert toolEvents.len == 1
+    assert toolEvents[0]["call_id"].getStr() == "t1"
+    assert toolEvents[0]["duration_ms"].getInt() >= 0
+
+  test "an unknown tool is stamped too, not just the happy path":
+    let script = Script(items: @[toolResp("t9", "nope", %*{}), textResp("ok")])
+    var messages = @[%*{"role": "user", "content": "go"}]
+    let res = runLoop(scriptedClient(script), "m", "sys", messages,
+                      echoRegistry())
+    assert res.toolCalls[0]["call_id"].getStr() == "t9"
+    assert res.toolCalls[0]["duration_ms"].getInt() >= 0

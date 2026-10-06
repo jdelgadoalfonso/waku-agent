@@ -11,6 +11,7 @@
 ## falls back to one plain call.
 
 import std/json
+import std/times
 
 import ./tools
 import ./trim
@@ -148,10 +149,16 @@ proc runLoop*(client: LlmClient, model, system: string,
     for call in toolUses:
       # `notify` passthrough for `wantsNotify` tools is deferred with those
       # tools (none registered yet); the registry contract carries the flag.
+      let started = epochTime()
       let output = tools.execute(call["name"].getStr(),
                                  call.jget("input"))
+      # Spec 012: how long the call took, for the trace — stamped on the
+      # event the turn keeps AND the one observers see (same node, both).
       let event = %*{"tool": call["name"].getStr(),
-        "args": call.jget("input"), "output": output}
+        "args": call.jget("input"), "output": output,
+        "call_id": call.jget("id").getStr(),
+        "duration_ms": max(0,
+          int((epochTime() - started) * 1000))}
       result.toolCalls.add(event)
       notify("tool", event)
       toolResults.add(%*{"type": "tool_result",
