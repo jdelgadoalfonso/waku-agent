@@ -303,6 +303,67 @@ proc reportDigest*(backend: BrainBackend, id: string): string =
     return ""
   backend.digest(body)
 
+proc brainContext*(used: seq[JsonNode],
+    digests: JsonNode = newJObject()): string =
+  ## The block the model reads before it researches. Reports first,
+  ## since a report is the thing to start from, then everything else,
+  ## newest first. Port of Python's `context`: a report renders its
+  ## digest (indented) when one was read, else its search snippet, and
+  ## names the get tool the model can call for the whole report — here
+  ## `brainGetTool`, the name it carries in this agent's registry.
+  if used.len == 0:
+    return ""
+  var byDate = used
+  for i in 1 ..< byDate.len:
+    let key = byDate[i]
+    var j = i - 1
+    while j >= 0 and byDate[j]["created_at"].getStr() <
+        key["created_at"].getStr():
+      byDate[j + 1] = byDate[j]
+      dec j
+    byDate[j + 1] = key
+  var ordered: seq[JsonNode] = @[]
+  for u in byDate:
+    if u["report"].getBool():
+      ordered.add(u)
+  for u in byDate:
+    if not u["report"].getBool():
+      ordered.add(u)
+  var lines = @["\n" & brainHeading & " (from Waku Memory, searched " &
+    "before this turn; each item has the date it was saved):"]
+  for u in ordered:
+    let id = u["id"].getStr()
+    let stamp = u["created_at"].getStr()
+    let savedOn = if stamp.len > 0: stamp else: "date unknown"
+    if u["report"].getBool():
+      let title = u["title"].getStr()
+      let name = if title.len > 0: "\"" & title & "\""
+        else: "an earlier report"
+      let summary = digests.jget(id).getStr()
+      let text = if summary.len > 0:
+        "its summary:\n  " & summary.replace("\n", "\n  ")
+      else:
+        u["text"].getStr()
+      lines.add("- Report " & name & ", saved " & savedOn &
+        " (memory " & id & "): " & text)
+    else:
+      lines.add("- " & savedOn & ": " & u["text"].getStr() &
+        " (memory " & id & ")")
+  lines.add("Start from this. Name an earlier report and its date when " &
+    "you use it, and research only what is missing here or older " &
+    "than 30 days.")
+  var hasReport = false
+  for u in used:
+    if u["report"].getBool():
+      hasReport = true
+      break
+  if hasReport:
+    lines.add("A report's summary here is enough to start from. Call " &
+      brainGetTool &
+      " for a whole earlier report only when the person asks to compare " &
+      "details with it.")
+  lines.join("\n")
+
 proc readFirst*(message: string,
     backend: BrainBackend): tuple[calls: seq[JsonNode],
     used: seq[JsonNode], context: string, digests: JsonNode] =
@@ -333,7 +394,6 @@ proc readFirst*(message: string,
        "type": reportType, "limit": companyLimit,
        "match_mode": "all"}]
   var seen: seq[string] = @[]
-  var blocks: seq[string] = @[]
   for args in asks:
     var text = ""
     try:
@@ -351,9 +411,7 @@ proc readFirst*(message: string,
         "text": e["text"],
         "created_at": %(stamped[0 ..< min(10, stamped.len)]),
         "kind": e["kind"], "report": e["report"]})
-      blocks.add("- " & e["title"].getStr() & " (" &
-        e["id"].getStr() & "): " & e["text"].getStr())
-  if blocks.len == 0:
+  if result.used.len == 0:
     return result
   if digestReady(backend):
     var read = 0
@@ -366,5 +424,4 @@ proc readFirst*(message: string,
       let found = reportDigest(backend, u["id"].getStr())
       if found.len > 0:
         result.digests[u["id"].getStr()] = %found
-  result.context = brainHeading & ":\n" &
-    blocks.join("\n")
+  result.context = brainContext(result.used, result.digests)

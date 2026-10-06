@@ -87,8 +87,9 @@ suite "read first":
     assert used.len == 1, "same hit twice dedupes by id"
     assert used[0]["id"].getStr() == "#12"
     assert used[0]["report"].getBool() == false
-    assert context.startsWith(brainHeading)
-    assert "Pick mem0" in context
+    assert context.startsWith("\n" & brainHeading)
+    assert "long tail" in context
+    assert "Start from this." in context
     assert seen.len == 0
 
   test "a failed search is skipped, never fatal":
@@ -268,3 +269,49 @@ suite "read first with get":
     assert used2.len == 1 and not used2[0]["report"].getBool()
     assert digests2.len == 0
     assert calls.len == 2 and context.len > 0
+
+proc usedEntry(id, title, text, created: string, report: bool): JsonNode =
+  %*{"id": id, "title": title, "text": text, "created_at": created,
+      "kind": "semantic", "report": report}
+
+suite "brain context":
+  test "empty stays empty":
+    assert brainContext(@[], newJObject()) == ""
+
+  test "reports come first even when older, newest first inside groups":
+    let used = @[
+      usedEntry("9", "", "Alex prefers mornings", "2026-10-05", false),
+      usedEntry("7", "Rival map", "snippet here", "2026-01-01", true),
+      usedEntry("8", "", "older fact", "2026-09-01", false)]
+    let ctx = brainContext(used, newJObject())
+    assert ctx.startsWith("\n" & brainHeading)
+    let r = ctx.find("Rival map")
+    let f1 = ctx.find("2026-10-05")
+    let f2 = ctx.find("2026-09-01")
+    assert r >= 0 and r < f1 and f1 < f2
+    assert "date unknown" notin ctx
+    assert "memory 7" in ctx and "memory 9" in ctx
+
+  test "a digest renders indented, a missing one falls back to the snippet":
+    let used = @[usedEntry("7", "Rival map", "snippet here", "2026-01-01", true)]
+    let ctx = brainContext(used, %*{"7": "line1\nline2"})
+    assert "its summary:\n  line1\n  line2" in ctx
+    let bare = brainContext(used, newJObject())
+    assert "snippet here" in bare
+    assert "its summary" notin bare
+
+  test "nameless reports and missing dates read honestly":
+    let used = @[usedEntry("7", "", "snippet", "", true)]
+    let ctx = brainContext(used, newJObject())
+    assert "an earlier report" in ctx
+    assert "date unknown" in ctx
+
+  test "footers close the block, the get note only with reports":
+    let withReport = brainContext(
+      @[usedEntry("7", "Rival map", "s", "2026-01-01", true)], newJObject())
+    assert "Start from this." in withReport
+    assert brainGetTool in withReport
+    let factsOnly = brainContext(
+      @[usedEntry("9", "", "fact text", "2026-10-05", false)], newJObject())
+    assert "Start from this." in factsOnly
+    assert brainGetTool notin factsOnly
