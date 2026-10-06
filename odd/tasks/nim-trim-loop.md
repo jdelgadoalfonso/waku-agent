@@ -85,4 +85,10 @@ result grande viaja en cada iteración posterior a la que lo produjo
   `JsonNode` (mensajes Anthropic-shape del loop); `digest/shrinkRead` en
   `reports.nim` espejando `_shrunk`; `runLoop` toma `trim` opcional nil por
   defecto para no romper llamadas actuales; `runFullTurn` encadena
-  `shrinkRead` primero como upstream.
+  `shrinkRead` primero como upstream. `shrinkSeen`/`shrinkRead` son procs
+  planos y `varargs[Trim]` no los re-envuelve solo: el call site usa
+  `toTrim` una vez, explícito.
+- **L4** (cierre, T1-T3): suite completa **1324 OK, 0 FAILED** (+11 sobre
+  recalled: 5 de trim — 3 shrink_seen + 1 chain + 1 toTrim — , 5 de reports
+  — 3 digest + 2 shrink_read — , 1 hook del loop). T4 documenta la fuente
+  y el límite en los módulos y el aterrizaje en `nim-port.md`.
