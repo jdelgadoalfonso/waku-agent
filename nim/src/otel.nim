@@ -321,8 +321,11 @@ proc turn*(t: SpanExporter, userMessage: string) =
 proc event*(t: SpanExporter, kind: string, ev: JsonNode) =
   ## One loop event as a child span, in call order: same trace as the
   ## turn, the root as parent, the openinference kind as an attribute,
-  ## and every field of `ev` as `waku.<field>` holding the JSON TEXT of
-  ## its value.
+  ## Waku's own fields as `waku.<field>` holding the JSON TEXT of their
+  ## value, and the semconv names from the GENAI table (`observe.nim`,
+  ## spec 012 — the one mapping). `gen_ai.*` keys and `cost_usd` never
+  ## ride as `waku.*`: they travel mapped (`gen_ai.tool.name`,
+  ## `waku.cost.usd`).
   ##
   ## `ev` is the ALREADY-STAMPED payload the loop hands the tracer, the
   ## same `JsonNode` `trace.nim` writes its JSONL row from: `provider`

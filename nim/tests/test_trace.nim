@@ -157,10 +157,11 @@ suite "the tracer wired to a collector":
       assert key != "waku.ts", "the record's ts is not telemetry"
     removeDir(home)
 
-  test "no endpoint means no exporter and byte-identical JSONL":
-    # The opt-in guarantee: the default port writes exactly what it
-    # wrote before the exporter existed. The three pins in `turn ids`
-    # above, all built with three arguments, are that evidence too.
+  test "no endpoint means no exporter":
+    # The opt-in guarantee: the default port builds no exporter and the
+    # JSONL trace still lands whole. (The lines themselves are schema
+    # v: 2 since spec 012; this test pins the absence of spans, not the
+    # row shape — that is the stamped-lines suite above.)
     let home = freshHome("waku-trace-noendpoint")
     var t = newTracer(home, "openrouter", "m")
     assert t.otel.isNil

@@ -97,5 +97,10 @@ el tracer sella cada línea y el export mapea a GenAI en un solo lugar.
   `receipt.toolCost` ya existen y se reutilizan.
 - **L3** (decisión de implementador): `observe.nim` nuevo solo-núcleo
   (la página queda para rutas dashboard); servers desde `mcp.json`
-  tolerante como upstream; `duration_ms` con monotonía del stdlib;
-  `toolCost` sin tocar.
+  tolerante como upstream; `duration_ms` con `epochTime` (mismo
+  contrato entero ≥ 0); `toolCost` exportado sin tocar su lógica.
+- **L4** (cierre, T1-T4): suite completa **1356 OK, 0 FAILED** (+21 sobre
+  brain: 2 loop + 14 observe + 3 trace + 2 otel). T5 documenta la fuente
+  y el límite en los módulos y el aterrizaje en `nim-port.md`.
+  Fixtures dorados del exporter actualizados al v2 (el cambio de schema
+  los hacía falsos); `waku.call_id` sí viaja en el span (como upstream).

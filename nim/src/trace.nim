@@ -1,9 +1,10 @@
 ## Trace — port of `waku/ops/tracing.py`: JSONL, the spend ledger, and OTLP
 ## spans. Three outputs from the same events (same contract as Python):
 ##
-## 1. JSONL, always on: every turn appends lines to
-##    `<home>/traces/<date>.jsonl` (`turn_start`, the loop's events,
-##    `turn_end`). Records render with `$` (raw UTF-8), exactly like
+## 1. JSONL, always on (schema `v: 2`, spec 012): every turn appends
+##    lines to `<home>/traces/<date>.jsonl` (`turn_start`, the loop's
+##    events, `turn_end`). An `llm` line joins its turn and names its
+##    cost; a `tool` line is the redacted v2 record. Records render with `$` (raw UTF-8), exactly like
 ##    Python's `ensure_ascii=False` — open the file and read.
 ## 2. The spend ledger `<home>/usage.jsonl`: one line per LLM call
 ##    (`{provider, model, kind, in, out}`) rendered with `jsonDumps`
