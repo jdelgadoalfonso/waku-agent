@@ -9,6 +9,7 @@ import std/times
 import std/unittest
 
 import ../src/observability
+import ../src/observe
 
 proc freshHome(name: string): string =
   result = getTempDir() / name
@@ -89,3 +90,77 @@ suite "windows":
     assert not inWindow(tsOf(nowMs - 8 * 86400 * 1000), "7d", nowMs)
     assert inWindow("2020-01-01T00:00:00.000+00:00", "all", nowMs)
     assert not inWindow("not-a-ts", "7d", nowMs)
+
+proc stepEv(kind: string): JsonNode =
+  %*{"type": kind, "ts": "2026-10-05T10:00:00.000+00:00"}
+
+suite "waterfall rows":
+  test "each kind draws, graph bookkeeping does not":
+    assert stepRow(%*{"type": "gate", "decision": "retrieve",
+      "reason": "x"})["kind"].getStr() == "gate"
+    let llm = stepRow(%*{"type": "llm", "usage": {"in": 10, "out": 2},
+      "stop_reason": "end_turn"})
+    assert llm["kind"].getStr() == "llm"
+    assert llm["call"].getStr() == "loop"
+    assert llm["in"].getInt() == 10
+    assert llm["final_answer"].getBool() == false
+    let tool = stepRow(%*{"type": "tool", "tool": "echo",
+      "args": %*{"x": 1}, "output": "hi",
+      "call_id": "t1", "duration_ms": 4})
+    assert tool["kind"].getStr() == "tool"
+    assert tool["source"].getStr() == "local"
+    assert tool["duration_ms"].getInt() == 4
+    assert tool["read_first"].getBool() == false
+    let mem = stepRow(%*{"type": "tool", "tool": "waku_memory_memory_search",
+      "args": %*{"query": "q"}, "output": $(%*{"entries": []})})
+    assert mem["kind"].getStr() == "memory"
+    assert mem["span"].getStr() == "retrieval"
+    assert stepRow(%*{"type": "graph_start"}).kind == JNull
+    assert stepRow(%*{"type": "score"}).kind == JNull
+    assert stepRow(%*{"type": "node_start"}).kind == JNull
+
+  test "an llm without a cost estimates, a receipt keeps its total":
+    let llm = stepRow(%*{"type": "llm", "usage": {"in": 10, "out": 2}})
+    assert llm["usd"].getFloat() ==
+      llmCost("", "", %*{"in": 10, "out": 2})
+    let rec = stepRow(%*{"type": "receipt", "total_usd": 0.5})
+    assert rec["total_usd"].getFloat() == 0.5
+
+suite "stored scores":
+  test "scores join by turn, newest wins per source and name":
+    let turn = %*{"turn_id": "t_1", "events": [
+      {"type": "score", "turn_id": "t_1", "source": "judge",
+       "name": "overall", "value": 7,
+       "ts": "2026-10-05T10:00:00.000+00:00"},
+      {"type": "score", "turn_id": "t_1", "source": "judge",
+       "name": "overall", "value": 9,
+       "ts": "2026-10-05T11:00:00.000+00:00"},
+      {"type": "score", "turn_id": "t_9", "source": "judge",
+       "name": "overall", "value": 1}]}
+    let scores = storedScores(turn, @[])
+    assert scores.len == 1
+    assert scores[0]["value"].getInt() == 9
+    assert storedScores(%*{"turn_id": "t_1", "events": []},
+      @[%*{"type": "score", "source": "human", "name": "x",
+           "value": 1}]).len == 1
+
+suite "built turns":
+  test "steps, dollars, loops, story and errors":
+    let turn = %*{"turn_id": "t_1", "ts": "2026-10-05T10:00:00.000+00:00",
+      "user_message": "hi", "events": [
+        {"type": "gate", "decision": "skip", "ts": "2026-10-05T10:00:00.000+00:00"},
+        {"type": "llm", "usage": {"in": 10, "out": 2},
+         "stop_reason": "end_turn", "ts": "2026-10-05T10:00:01.000+00:00"},
+        {"type": "tool", "tool": "bad", "output": "failed boom",
+         "ts": "2026-10-05T10:00:03.000+00:00"}]}
+    let built = buildTurn(turn, @[], "", "")
+    assert built["gate"].getStr() == "skip"
+    assert built["tool_calls"].getInt() == 1
+    assert built["loops"].getInt() == 1
+    assert built["latency_ms"].getInt() == 3000
+    assert built["tokens_in"].getInt() == 10
+    assert built["errors"].len == 1
+    assert built["errors"][0]["tool"].getStr() == "bad"
+    assert built["hotspots"]["slowest"].getInt() == 2
+    assert built["story"][0]["part"].getStr() == "question"
+    assert built["scores"].kind == JArray
