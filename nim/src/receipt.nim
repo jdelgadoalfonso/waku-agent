@@ -147,7 +147,7 @@ proc round6(x: float): float =
   ## `round(x, 6)` like Python: dollars in a receipt carry six decimals.
   round(x * 1e6) / 1e6
 
-proc toolCost(ev: JsonNode): tuple[usd: float, provider: string,
+proc toolCost*(ev: JsonNode): tuple[usd: float, provider: string,
                                    known: bool] =
   ## (dollars, provider) when a tool's answer names what it cost, as
   ## treg's call does through the hosted relay too, else nothing: Python's
