@@ -66,6 +66,7 @@ import ./reports
 import ./session
 import ./tools
 import ./trace
+import ./trim
 import ./wire
 
 export config
@@ -284,7 +285,8 @@ proc runFullTurn*(w: var Waku, userMessage: string, notify: Observer,
     if known.context.len > 0:
       system = system & "\n" & known.context
   var res = runLoop(w.client, w.settings.model, system, messages, w.tools,
-          w.settings.maxIterations, w.settings.maxTokens, notify, stream)
+          w.settings.maxIterations, w.settings.maxTokens, notify, stream,
+          chainTrim(toTrim(shrinkRead), toTrim(shrinkSeen)))
   res.readFirst = knownCalls
   res.used = knownUsed
   return res

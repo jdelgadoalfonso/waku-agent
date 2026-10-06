@@ -53,3 +53,14 @@ suite "chain":
     var messages: seq[JsonNode] = @[]
     run(messages)
     assert order == @["a", "b"]
+
+suite "toTrim":
+  test "a top-level step chains like a closure":
+    let big = "q".repeat(5000)
+    var messages = @[%*{"role": "user", "content": [%*{"type": "tool_result",
+      "tool_use_id": "t1", "content": big}]},
+      %*{"role": "user", "content": "newest"}]
+    let run = chainTrim(toTrim(shrinkSeen))
+    run(messages)
+    assert "Cut from 5,000 characters" in messages[0]["content"][0]["content"].getStr()
+    assert messages[1]["content"].getStr() == "newest"

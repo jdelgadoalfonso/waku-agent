@@ -85,3 +85,13 @@ proc chainTrim*(steps: varargs[Trim]): Trim =
   result = proc(messages: var seq[JsonNode]) {.closure.} =
     for step in run:
       step(messages)
+
+proc toTrim*(step: proc(messages: var seq[JsonNode]) {.nimcall.}): Trim =
+  ## A top-level `trim` step as a `Trim`: `shrinkSeen`/`shrinkRead` are
+  ## plain procs (no closure environment), and `varargs[Trim]` does not
+  ## re-wrap them the way a single closure slot does — so the call
+  ## site wraps once, explicitly, instead of every `chainTrim` caller
+  ## repeating the two-line closure.
+  let s = step
+  result = proc(messages: var seq[JsonNode]) {.closure.} =
+    s(messages)

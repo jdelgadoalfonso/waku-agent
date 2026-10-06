@@ -1,10 +1,12 @@
 ## Phase 3d tests: the loop against scripted clients. Pure and offline.
 
 import std/json
+import std/strutils
 import std/unittest
 
 import ../src/loop
 import ../src/tools
+import ../src/trim
 
 proc textResp(text: string): JsonNode =
   %*{"stop_reason": "end_turn", "usage": {"in": 1, "out": 1},
@@ -198,3 +200,33 @@ suite "metered side clients":
     let gated = meteredClient(inner, "consolidation", "mini", obs)
     discard gated.create(%*{"model": "mini"})
     assert kinds == @["llm"]
+
+suite "trim hook":
+  test "trim runs before the second call and nil leaves messages as they are":
+    let big = "x".repeat(5000)
+    var seen: seq[int] = @[]
+    var secondReq: JsonNode = nil
+    var calls = 0
+    let client = LlmClient(create: proc(req: JsonNode): JsonNode {.closure.} =
+      inc calls
+      if calls == 1:
+        return toolResp("t1", "echo", %*{"text": "hi"})
+      secondReq = req["messages"]
+      textResp("done"))
+    var messages = @[%*{"role": "user", "content": "go"}]
+    let reg = echoRegistry()
+    let hook: Trim = proc(msgs: var seq[JsonNode]) {.closure.} =
+      seen.add(msgs.len)
+      for m in msgs.mitems:
+        if m.kind == JObject and m.hasKey("content") and m["content"].kind == JString and m["content"].getStr() == "go":
+          m["content"] = %"go-trimmed"
+      discard big
+    let res = runLoop(client, "m", "sys", messages, reg, 10, 2048, nil, false, hook)
+    assert res.reply == "done"
+    assert seen == @[3], "trim runs once, before iteration 2"
+    assert secondReq[0]["content"].getStr() == "go-trimmed"
+    var plain = @[%*{"role": "user", "content": "go"}]
+    let script = Script(items: @[toolResp("t1", "echo", %*{"text": "x"}), textResp("ok")])
+    let res2 = runLoop(scriptedClient(script), "m", "sys", plain, echoRegistry())
+    assert res2.reply == "ok"
+    assert plain[0]["content"].getStr() == "go"

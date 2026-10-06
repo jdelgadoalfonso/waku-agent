@@ -13,6 +13,7 @@
 import std/json
 
 import ./tools
+import ./trim
 import ./wire
 
 type
@@ -95,9 +96,12 @@ proc textReply*(content: JsonNode): string =
 proc runLoop*(client: LlmClient, model, system: string,
               messages: var seq[JsonNode], tools: ToolRegistry,
               maxIter = 10, maxTok = 2048, observer: Observer = nil,
-              stream = false): LoopResult =
+              stream = false, trim: Trim = nil): LoopResult =
   ## Run one agent turn. `messages` is mutated in place — after the call it
   ## holds the full working memory of the turn. Port of `run_loop`.
+  ## `trim`, when given, may shorten tool results the model has already
+  ## read before each later call, so one large result is not re-sent on
+  ## every iteration after it; nil leaves `messages` as they are.
   let notify: Observer = if observer.isNil:
     proc(kind: string, ev: JsonNode) = discard
   else:
@@ -105,6 +109,8 @@ proc runLoop*(client: LlmClient, model, system: string,
   let canStream = stream and not client.stream.isNil
   for iteration in 1 .. maxIter:
     result.iterations = iteration
+    if not trim.isNil and iteration > 1:
+      trim(messages)
     var req = %*{"model": model, "system": system,
                  "max_tokens": maxTok}
     req["messages"] = %messages
