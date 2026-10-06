@@ -133,3 +133,60 @@ suite "backend answer shapes":
     let doc = $(%*{"entries": [{"id": "m1",
       "body": reportMarkerOf & "\n\n# Rival map\n\nbody here"}]})
     assert brainEntries(doc)[0]["text"].getStr() == "# Rival map body here"
+
+let stubDigest: proc(body: string): string {.closure.} =
+  proc(body: string): string =
+    "DIGEST:" & body[0 ..< min(20, body.len)]
+
+proc getBackend(answer: string, fail = false): BrainBackend =
+  BrainBackend(
+    search: proc(args: JsonNode): string {.closure.} = hits,
+    get: proc(args: JsonNode): string {.closure.} =
+      if fail:
+        raise newException(IOError, "down")
+      answer,
+    digest: stubDigest)
+
+suite "report digest":
+  test "waku and engram answer shapes digest, anything else is empty":
+    let marked = reportMarkerOf & "\n\n# Rival map\n\n- one\n"
+    let waku = getBackend($( %*{"memory": {"id": "7", "body": marked}}))
+    assert reportDigest(waku, "7") == "DIGEST:" & marked[0 ..< 20]
+    let engram = getBackend($( %*{"result": marked}))
+    assert reportDigest(engram, "#12") == "DIGEST:" & marked[0 ..< 20]
+    assert reportDigest(getBackend("not json"), "7") == ""
+    assert reportDigest(getBackend($( %*{"memory": {"body": "no marker here"}})), "7") == ""
+    assert reportDigest(getBackend("boom", true), "7") == "",
+      "a failing get reads as no digest, the snippet stands in"
+    assert reportDigest(BrainBackend(), "7") == "",
+      "no get means no digest"
+
+  test "the tool is asked once with the numeric id":
+    var asked: seq[JsonNode] = @[]
+    let backend = BrainBackend(
+      get: proc(args: JsonNode): string {.closure.} =
+        asked.add(args)
+        $( %*{"result": reportMarkerOf & "\n\n# t\n"}),
+      digest: stubDigest)
+    discard reportDigest(backend, "#12")
+    assert asked == @[%*{"id": 12}]
+    discard reportDigest(backend, "abc")
+    assert asked.len == 1, "a non-numeric id never calls"
+
+suite "get lookup":
+  test "the registry get tool connects, absence disconnects":
+    var reg: ToolRegistry
+    reg.register(Tool(name: "engram_mem_search", description: "s",
+      inputSchema: %*{"type": "object"},
+      fn: proc(args: JsonNode): string {.closure.} = "none"))
+    reg.register(Tool(name: "engram_mem_get_observation", description: "g",
+      inputSchema: %*{"type": "object"},
+      fn: proc(args: JsonNode): string {.closure.} = "one"))
+    let backend = brainBackendFor(reg)
+    assert brainConnected(backend)
+    assert not backend.get.isNil
+    var bare: ToolRegistry
+    bare.register(Tool(name: "engram_mem_search", description: "s",
+      inputSchema: %*{"type": "object"},
+      fn: proc(args: JsonNode): string {.closure.} = "none"))
+    assert brainBackendFor(bare).get.isNil

@@ -53,6 +53,10 @@ const
   brainSearchTool* = "engram_mem_search"
     ## The tool name the model would call for the same search, and the
     ## name the read path notifies its searches under.
+  brainGetTool* = "engram_mem_get_observation"
+    ## The tool that reads one memory whole by id (`mem_get_observation`
+    ## on the Engram server, verified live). The read-first digest path
+    ## calls it once per earlier report it found.
   companyScope* = "global"
     ## Where company/market research lives (Python's `COMPANY_PROJECT`,
 ## which is a project; Engram's scopes are project/personal/global, so
@@ -64,6 +68,10 @@ const
     ## Engram's `type` for a research report (Python's `kind: semantic`).
   subjectLimit* = 6
   companyLimit* = 3
+  reportReadLimit* = 3
+    ## At most this many earlier reports are read whole for their digest
+    ## (Python's `REPORT_LIMIT`, which also caps the second search — here
+    ## that cap is `companyLimit`).
   textChars* = 600
 
   fillerWords = ["a", "an", "the", "of", "for", "on", "about",
@@ -79,9 +87,18 @@ const
 type
   BrainBackend* = object
     ## A connected memory to read first: `search` runs one query and
-    ## answers text. The zero value (nil `search`) is disconnected — the
-    ## read path is off, like Python's `search=None`.
+    ## answers text, `get` reads one memory whole by id. The zero value
+    ## (nil `search`) is disconnected — the read path is off, like
+    ## Python's `search=None`. A nil `get` (or nil `digest`) leaves the
+    ## digest path off: reports keep their search snippet, like Python
+    ## with `get=None`.
+    ##
+    ## `digest` is injected (it lives in `reports.nim`, which imports
+    ## this module, so naming it here would circle the imports): the
+    ## wiring passes the real one, tests pass a stub or none.
     search*: proc(args: JsonNode): string {.closure.}
+    get*: proc(args: JsonNode): string {.closure.}
+    digest*: proc(body: string): string {.closure.}
 
 proc brainConnected*(b: BrainBackend): bool =
   ## There is a memory to read first.
@@ -89,12 +106,13 @@ proc brainConnected*(b: BrainBackend): bool =
 
 proc brainBackendFor*(tools: ToolRegistry): BrainBackend =
   ## The read-first backend in an already-built registry: the memory
-  ## search tool by its model name. Nothing found, nothing connected.
+  ## search tool and the get-one tool, each by its model name. Nothing
+  ## found, nothing connected — each side independently.
   for t in tools.tools:
     if t.name == brainSearchTool:
-      let fn = t.fn
-      return BrainBackend(search: fn)
-  BrainBackend()
+      result.search = t.fn
+    elif t.name == brainGetTool:
+      result.get = t.fn
 
 proc isResearch*(skillNames: seq[string]): bool =
   ## The trigger skill fired.
@@ -213,6 +231,77 @@ proc brainEntries*(text: string): seq[JsonNode] =
     if curId.len > 0 and s.len > 0:
       curLines.add(s)
   flushEntry()
+
+proc digestReady*(b: BrainBackend): bool =
+  ## The digest path is on: a `get` to read with and a `digest` to
+  ## shrink with. Either nil leaves reports on their search snippet.
+  not b.get.isNil and not b.digest.isNil
+
+proc parseGetId*(id: string, n: var int): bool =
+  ## An entry id as the get tool's integer: `"#12"` and `"12"` read
+  ## `12`; anything else is not callable (the snippet stands in without
+  ## spending a failed call).
+  var s = id.strip()
+  if s.startsWith("#"):
+    s = s[1 .. ^1]
+  if s.len == 0:
+    return false
+  for c in s:
+    if c notin {'0' .. '9'}:
+      return false
+  try:
+    n = parseInt(s)
+    true
+  except ValueError:
+    false
+
+proc reportBody*(text: string): string =
+  ## The full report body in a get answer, or "" when it holds none.
+  ## Two shapes: Waku Memory's (`{"memory": {...}}` with `body`, else
+  ## the dict itself) and Engram's (`{"result": text}`, verified live).
+  ## Only a body opening with the marker counts — anything else is a
+  ## fact or a note, and the snippet already covers it.
+  var answer: JsonNode
+  try:
+    answer = parseJson(text)
+  except JsonParsingError:
+    return ""
+  if answer.kind != JObject:
+    return ""
+  var candidate = ""
+  let mem = answer.jget("memory")
+  if mem.kind == JObject:
+    candidate = mem.jget("body").getStr()
+    if candidate.len == 0:
+      candidate = mem.jget("content").getStr()
+  elif answer.jget("result").kind == JString:
+    candidate = answer.jget("result").getStr()
+  elif answer.jget("body").kind == JString:
+    candidate = answer.jget("body").getStr()
+  if candidate.strip(leading = true, trailing = false)
+      .startsWith(reportMarkerOf):
+    return candidate
+  ""
+
+proc reportDigest*(backend: BrainBackend, id: string): string =
+  ## One earlier report's digest, read with the backend's get, or ""
+  ## when the read failed or the memory is not a report. Port of
+  ## Python's `_report_digest` (which catches everything: the snippet
+  ## stands in and the turn goes on).
+  if not digestReady(backend):
+    return ""
+  var n = 0
+  if not parseGetId(id, n):
+    return ""
+  var text = ""
+  try:
+    text = backend.get(%*{"id": n})
+  except CatchableError:
+    return ""
+  let body = reportBody(text)
+  if body.len == 0:
+    return ""
+  backend.digest(body)
 
 proc readFirst*(message: string,
     backend: BrainBackend): tuple[calls: seq[JsonNode],
