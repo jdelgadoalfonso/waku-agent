@@ -312,6 +312,31 @@ proc genaiAttributes*(kind: string, event: JsonNode): JsonNode =
     result["waku.cost.usd"] = copy(cost)
   return result
 
+proc traceRecord*(event: JsonNode, turnId: string,
+    servers: openArray[string] = []): JsonNode =
+  ## The v2 `tool` line the tracer writes: the event as it came, with
+  ## its arguments redacted and trimmed and what `describe()` reads
+  ## added. The raw `args` and `call_id` leave; the stamped names stay.
+  result = newJObject()
+  if event.kind == JObject:
+    for key, val in pairs(event):
+      if key != "args" and key != "call_id":
+        result[key] = copy(val)
+  result["v"] = %schemaVersion
+  if turnId.len > 0:
+    result["turn_id"] = %turnId
+  result["args"] = traceArgs(event.jget("args"))
+  let desc = describe(event, servers)
+  for key, val in pairs(desc):
+    result[key] = copy(val)
+  result["gen_ai.operation.name"] = %operationFor(
+    result.jget("span").getStr())
+  result["gen_ai.tool.type"] = %toolType(result.jget("source").getStr())
+  let callId = event.jget("call_id")
+  if callId.kind == JString and callId.getStr().len > 0:
+    result["gen_ai.tool.call.id"] = copy(callId)
+  return result
+
 proc llmCost*(provider, model: string, usage: JsonNode): float =
   ## The pricing estimate for one model call's tokens, six decimals.
   let (pIn, pOut) = priceFor(if provider.len > 0: provider else: "",

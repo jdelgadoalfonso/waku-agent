@@ -12,6 +12,7 @@ import std/unittest
 
 import ../src/otel
 import ../src/otelproto
+import ../src/observe
 import ../src/trace
 
 proc freshHome(name: string): string =
@@ -182,4 +183,59 @@ suite "the tracer wired to a collector":
     assert lines.len == 2
     assert lines[0]["type"].getStr() == "turn_start"
     assert lines[1]["type"].getStr() == "turn_end"
+    removeDir(home)
+
+suite "spec 012 stamped lines":
+  test "an llm line joins its turn and says what it cost":
+    let home = freshHome("waku-trace-llmline")
+    var t = newTracer(home, "openrouter", "m")
+    t.turn("hi")
+    let id = t.turnId
+    t.event("llm", %*{"usage": {"in": 10, "out": 2}})
+    t.endTurn("yo", 1)
+    let lines = readLines(t.path)
+    assert lines[1]["turn_id"].getStr() == id
+    assert lines[1]["span"].getStr() == "llm"
+    assert lines[1]["gen_ai.operation.name"].getStr() == "chat"
+    assert lines[1]["cost_usd"].getFloat() ==
+      llmCost("openrouter", "m", %*{"in": 10, "out": 2})
+    removeDir(home)
+
+  test "a tool line is a v2 record with redacted args":
+    let home = freshHome("waku-trace-toolline")
+    var t = newTracer(home, "openrouter", "m")
+    t.turn("hi")
+    let id = t.turnId
+    t.event("tool", %*{"tool": "echo", "args": %*{"token": "abc", "x": 1},
+      "output": "echo:hi", "call_id": "t1", "duration_ms": 4})
+    t.endTurn("yo", 1)
+    let lines = readLines(t.path)
+    let row = lines[1]
+    assert row["v"].getInt() == 2
+    assert row["turn_id"].getStr() == id
+    assert row["source"].getStr() == "local"
+    assert row["span"].getStr() == "tool"
+    assert row["ok"].getBool()
+    assert row["args"]["token"].getStr() == "***"
+    assert row["args"]["x"].getInt() == 1
+    assert row["output"].getStr() == "echo:hi"
+    assert row["duration_ms"].getInt() == 4
+    assert row["gen_ai.tool.call.id"].getStr() == "t1"
+    assert row["gen_ai.operation.name"].getStr() == "execute_tool"
+    assert not row.hasKey("call_id"), "the raw id leaves with the args"
+    removeDir(home)
+
+  test "servers come from mcp.json, tolerantly":
+    let home = freshHome("waku-trace-servers")
+    writeFile(home / "mcp.json",
+      """{"servers": [{"name": "engram"}]}""")
+    var t = newTracer(home, "openrouter", "m")
+    assert t.servers == @["engram"]
+    t.turn("hi")
+    t.event("tool", %*{"tool": "engram_mem_search",
+      "args": %*{"query": "x"}, "output": "none",
+      "call_id": "t2", "duration_ms": 1})
+    t.endTurn("yo", 1)
+    let row = readLines(t.path)[1]
+    assert row["source"].getStr() == "mcp:engram"
     removeDir(home)

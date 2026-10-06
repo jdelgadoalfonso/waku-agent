@@ -39,6 +39,7 @@ import std/times
 
 import ./jsondump
 import ./loop
+import ./observe
 import ./otel
 import ./wire
 
@@ -51,6 +52,9 @@ type
     model*: string
     path*: string  ## today's trace file (fixed at construction, like Python)
     turnId*: string  ## current turn, "" outside one (reset by `endTurn`)
+    servers*: seq[string]
+      ## The `mcp.json` server names longest-first (read tolerantly at
+      ## construction, like Python): what sorts a tool into `mcp:<server>`.
     otel*: SpanExporter
       ## The OTLP exporter, or nil when no endpoint is configured. Every
       ## call below is nil-safe, so an unconfigured port pays one branch
@@ -76,6 +80,7 @@ proc newTracer*(home, provider, model: string,
   ## this runs while the agent is starting.
   Tracer(home: home, provider: provider, model: model,
          path: home / "traces" / format(now(), "yyyy-MM-dd") & ".jsonl",
+         servers: mcpServerNames(home),
          otel: newSpanExporter(otelEndpoint))
 
 proc writeLine(t: Tracer, line: string) =
@@ -136,6 +141,15 @@ proc event*(t: Tracer, kind: string, ev: JsonNode) =
     if ev.kind == JObject:
       for key, value in pairs(ev):
         outp[key] = copy(value)
+    # Spec 012: join the call to its turn and say what it cost. The
+    # stamp lands after the merge, so it wins — and the ledger above
+    # already read the raw event, like Python records usage first.
+    outp["turn_id"] = %t.turnId
+    outp["cost_usd"] = %llmCost(t.provider, t.model, ev.jget("usage"))
+    outp["span"] = %"llm"
+    outp["gen_ai.operation.name"] = %"chat"
+  elif kind == "tool":
+    outp = traceRecord(ev, t.turnId, t.servers)
   t.writeRecord(kind, outp)
   # Python builds the span from the STAMPED event too (`event` is
   # reassigned before both `_write` and `start_as_current_span`), and from
