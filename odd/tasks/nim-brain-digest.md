@@ -106,3 +106,7 @@ como bala plana con el texto recortado a 600.
   (como `search`), así `app.nim` no cambia; `digest` se reutiliza de
   `reports.nim` (portado en trim); fila `(discovery)` = reporte;
   `duration_ms` queda para la unidad de trazas.
+- **L4** (cierre, T1-T3): suite completa **1335 OK, 0 FAILED** (+11 sobre
+  trim: 2 digest + 1 lookup + 3 readFirst + 5 context). T4 documenta la
+  fuente y el límite en el módulo y el aterrizaje en `nim-port.md`.
+  Forma del get verificada viva contra `engram mcp` (id 440).

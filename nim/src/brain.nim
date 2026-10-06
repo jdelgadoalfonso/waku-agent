@@ -4,11 +4,15 @@
 ## nothing, repeating whole searches instead of starting from the first
 ## report. When a turn is research (the `research-report` skill matched)
 ## and a memory backend is connected, this module runs the searches BEFORE
-## the model's first call, hands back what they found as the turn's Used
-## list (plus one tool event per search, the shape the loop emits for a
-## model's own calls), and writes the "What the company brain already
-## knows" block for the system prompt. A search that fails is skipped: a
-## turn never waits on one or fails for it.
+## the model's first call, reads each earlier report it found ONCE through
+## the backend's `get` (at most `reportReadLimit`) and keeps only its
+## digest, hands back what they found as the turn's Used list (plus one
+## tool event per search, the shape the loop emits for a model's own
+## calls, marked `read_first`), and writes the "What the company brain
+## already knows" block for the system prompt — reports first, then the
+## rest, newest first, each report as its indented digest. A search or a
+## get that fails is skipped: a turn never waits on one or fails for it,
+## and a report without a digest keeps its search snippet.
 ##
 ## BACKEND. Python reads Waku Memory (hosted) through an injected search
 ## callable and never sees the transport; this port does the same, and

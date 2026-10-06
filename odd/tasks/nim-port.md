@@ -103,6 +103,7 @@
 - Backend episódico **obsidian** (vault local en lugar de Notion): T1 `episodes.nim` d86d768, T2 `obsidian.nim` 4ff9b3c, T3 cableado df3f244. Spec y Log en `odd/tasks/nim-obsidian-episodes.md`. Una nota por episodio en `waku/episodes`, frontmatter tolerante, scan con paridad Notion, deletes confinados al vault; ids de episodio a string opaco.
 - Consolidación con `recalled` (#298): T1 regla `restates` 3f728e1, T2 plomería c4f3514. Spec y Log en `odd/tasks/nim-consolidation-recalled.md`. El gate retiene su texto, la consolidación dropea lo re-leído; vacío = comportamiento anterior.
 - Trim del loop (resultados ya leídos se cortan antes de cada llamada posterior): T1 `trim.nim` 2b34bbd, T2 digest + `shrinkRead` 9e26d14, T3 plomería `runLoop` + cadena en `runFullTurn` f9f86fb. Spec y Log en `odd/tasks/nim-trim-loop.md`. `shrinkRead` primero (el reporte se vuelve digest), `shrinkSeen` después; `nil` = comportamiento anterior y la traza guarda todo entero.
+- Read-first con digests (spec 009 A: el reporte anterior entra como resumen, no entero): T1 `get` + `reportDigest` a958f1e, T2 `readFirst` lee 3 como máximo 5bc5430, T3 contexto con reportes primero 47a59a7. Spec y Log en `odd/tasks/nim-brain-digest.md`. El `get` es `engram_mem_get_observation` (verificado vivo) y el digest se inyecta en el backend para no circular `brain`/`reports`; fila `(discovery)` = reporte; sin `get` = snippet como antes.
 
 ## Next
 - Entrega: push de `feature/nim-phase0-skeleton` + PRs en cadena por fase. `docs/proposals/nim-port.md` ya cumplió su rol (fases 0-9 commiteadas).
