@@ -164,3 +164,146 @@ suite "built turns":
     assert built["hotspots"]["slowest"].getInt() == 2
     assert built["story"][0]["part"].getStr() == "question"
     assert built["scores"].kind == JArray
+
+proc toolEv(tool, output, ts: string): JsonNode =
+  %*{"type": "tool", "tool": tool, "args": %*{"query": "q"},
+      "output": output, "ts": ts, "call_id": "t1", "duration_ms": 3}
+
+suite "tool stats":
+  test "sources sort out and windows filter":
+    let events = @[
+      toolEv("treg_call", $(%*{"cost_usd": 0.007, "provider": "tomba",
+        "endpoint_id": "tomba.email.find"}), "2026-10-05T10:00:00.000+00:00"),
+      toolEv("waku_memory_memory_search",
+        $(%*{"entries": [{"id": "a"}], "retrieval_trace_id": "rt1"}),
+        "2026-10-05T10:00:00.000+00:00"),
+      toolEv("echo", "hi", "2026-10-05T10:00:00.000+00:00"),
+      toolEv("echo", "old", "2020-01-01T00:00:00.000+00:00")]
+    let (okN, nowMs) = parseTsMs("2026-10-06T00:00:00.000+00:00")
+    assert okN
+    let stats = toolStats(events, @[], "7d", nowMs)
+    assert stats["treg"]["calls"].getInt() == 1
+    assert stats["treg"]["usd"].getFloat() == 0.007
+    assert stats["treg"]["endpoints"][0]["endpoint_id"].getStr() ==
+      "tomba.email.find"
+    assert stats["waku_memory"]["calls"].getInt() == 1
+    assert stats["waku_memory"]["recent_queries"][0]["query"].getStr() == "q"
+    assert stats["other"]["tools"][0]["tool"].getStr() == "echo"
+    assert stats["other"]["tools"][0]["calls"].getInt() == 1,
+      "the 2020 call falls outside 7d"
+    assert stats["other"]["tools"][0]["usd"].kind == JNull,
+      "unpriced tools read null, never zero"
+
+suite "spend":
+  test "estimates, exact receipts and tool dollars add up":
+    let home = freshHome("obs-spend")
+    writeFile(home / "usage.jsonl",
+      $(%*{"ts": "2026-10-05T10:00:00.000+00:00", "provider": "p",
+           "model": "m", "kind": "loop", "turn_id": "t_1",
+           "in": 10, "out": 2}) & "\n")
+    let receipt = %*{"type": "receipt", "turn_id": "t_1",
+      "ts": "2026-10-05T10:00:00.000+00:00",
+      "model": {"estimate": false, "usd": 0.5}, "total_usd": 0.6}
+    let items = spendItems(home, @[receipt], @[])
+    assert items.len == 1, "the exact receipt replaces the ledger row"
+    assert items[0]["usd"].getFloat() == 0.5
+    assert items[0]["charged"].getBool()
+    let totals = spendTotals(items, -1, @[receipt])
+    assert totals["model_usd"].getFloat() == 0.5
+    assert totals["total_usd"].getFloat() == 0.5
+    assert totals["charged_usd"].getFloat() == 0.5
+    assert totals["charged_turns"].getInt() == 1
+    let bare = spendTotals(@[], -1, @[])
+    assert bare["charged_usd"].kind == JNull
+    assert bare["estimated_usd"].getFloat() == 0.0
+    removeDir(home)
+
+suite "summary":
+  test "four cards from turns, tools, ledger and spend":
+    let home = freshHome("obs-summary")
+    let turn = %*{"turn_id": "t_1", "ts": "2026-10-05T10:00:00.000+00:00",
+      "user_message": "hi", "loops": 2, "gate": "retrieve", "kept": 1,
+      "usd": 0.1, "steps": []}
+    let tools = %*{"treg": {"tools": []},
+      "waku_memory": {"tools": [
+        {"tool": "memory_search", "calls": 2, "errors": 0,
+         "span": "retrieval", "avg_results": 3.0},
+        {"tool": "memory_remember", "calls": 1, "errors": 0,
+         "span": "memory_write"}]},
+      "other": {"tools": []}}
+    let (okN, nowMs) = parseTsMs("2026-10-06T00:00:00.000+00:00")
+    assert okN
+    let s = summary(home, @[], @[turn], tools, "7d", nowMs, @[])
+    assert s["turns"]["count"].getInt() == 1
+    assert s["turns"]["avg_loops"].getFloat() == 2.0
+    assert s["memory"]["retrievals"].getInt() == 2
+    assert s["memory"]["writes"].getInt() == 1
+    assert s["memory"]["gate_retrieve"].getInt() == 1
+    removeDir(home)
+
+suite "your turns":
+  test "checks read stored scores, judge row counts verdicts":
+    let turns = @[%*{"turn_id": "t_1", "ts": "2026-10-05T10:00:00.000+00:00",
+      "user_message": "hi",
+      "scores": [%*{"source": "code", "name": "spend_claim", "value": 1,
+                    "note": "ok"},
+                 %*{"source": "judge", "name": "overall", "value": 0.8,
+                    "note": "fine"}]}]
+    let (okN, nowMs) = parseTsMs("2026-10-06T00:00:00.000+00:00")
+    assert okN
+    let yt = yourTurns(turns, "7d", nowMs)
+    proc checkRow(name: string): JsonNode =
+      for c in yt["checks"]:
+        if c["name"].getStr() == name:
+          return c
+      newJNull()
+    assert yt["turns"].getInt() == 1
+    assert checkRow("spend_claim")["passed"].getInt() == 1
+    assert checkRow("one_report")["na"].getInt() == 1
+    assert yt["judge"]["passed"].getInt() == 1
+
+suite "evals info":
+  test "no checkout says so, a checkout counts":
+    let home = freshHome("obs-evals")
+    let bare = evalsInfo(home, "")
+    assert bare["deterministic"].kind == JNull
+    assert bare["judge_suites"].kind == JNull
+    let repo = getTempDir() / "obs-repo"
+    if dirExists(repo):
+      removeDir(repo)
+    createDir(repo / "evals" / "deterministic")
+    createDir(repo / "evals" / "judge")
+    writeFile(repo / "evals" / "deterministic" / "test_a.py",
+      "def test_one():\n    pass\n")
+    writeFile(repo / "evals" / "judge" / "test_b.py", "x = 1\n")
+    let full = evalsInfo(home, repo)
+    assert full["deterministic"]["files"].getInt() == 1
+    assert full["deterministic"]["tests"].getInt() == 1
+    assert full["judge_suites"] == %*["b"]
+    removeDir(home)
+    removeDir(repo)
+
+suite "payload":
+  test "every key lands, turns newest first":
+    let home = freshHome("obs-payload")
+    writeTrace(home, "t.jsonl", @[
+      $(%*{"type": "turn_start", "turn_id": "t_1",
+           "ts": "2026-10-05T10:00:00.000+00:00", "user_message": "hi"}),
+      $(%*{"type": "llm", "turn_id": "t_1",
+           "ts": "2026-10-05T10:00:01.000+00:00",
+           "usage": {"in": 10, "out": 2}, "stop_reason": "end_turn"}),
+      $(%*{"type": "turn_end", "turn_id": "t_1",
+           "ts": "2026-10-05T10:00:02.000+00:00", "reply": "yo",
+           "iterations": 1})])
+    let (okN, nowMs) = parseTsMs("2026-10-06T00:00:00.000+00:00")
+    assert okN
+    let p = payload(home, "p", "m", "7d", nowMs, @[], "")
+    for key in ["generated_at", "summary", "spend_by_day", "trace_files",
+        "trace_file", "trace_errors", "turns", "tools", "memory", "spend",
+        "evals"]:
+      assert p.hasKey(key), "payload carries " & key
+    assert p["turns"].len == 1
+    assert p["turns"][0]["turn_id"].getStr() == "t_1"
+    assert p["turns"][0]["judge_offer"].kind == JNull
+    assert "your_turns" in p["evals"]
+    removeDir(home)

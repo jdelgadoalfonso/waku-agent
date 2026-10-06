@@ -16,9 +16,11 @@ import std/json
 import std/math
 import std/os
 import std/strutils
+import std/syncio
 import std/times
 
 import ./observe
+import ./pricing
 import ./wire
 
 proc parseTsMs*(raw: string): (bool, int64) =
@@ -99,19 +101,30 @@ proc localMidnightMs*(nowMs: int64): int64 =
   toUnix(toTime(dateTime(lt.year, lt.month, lt.monthday,
                          0, 0, 0, 0, lt.timezone))) * 1000
 
+proc windowStartMs*(window: string, nowMs: int64): int64 =
+  ## When a window starts, in unix millis: local midnight for "today",
+  ## 168 hours back for "7d", -1 (the beginning) for "all".
+  case validWindow(window)
+  of "today":
+    localMidnightMs(nowMs)
+  of "7d":
+    nowMs - 7 * 86400 * 1000
+  else:
+    -1
+
+proc inStartMs*(ts: string, startMs: int64): bool =
+  ## Whether one stamp falls at or after `startMs` (-1 matches all).
+  ## Unparsable stamps never match — the `_ts` → None path.
+  if startMs < 0:
+    return true
+  let (ok, ms) = parseTsMs(ts)
+  ok and ms >= startMs
+
 proc inWindow*(ts: string, window: string, nowMs: int64): bool =
   ## Whether one `ts` stamp falls in `window` at `nowMs`. Unparsable
   ## stamps never match (except under "all") — Python's `_ts` → None
   ## path, which fails the `>= start` comparison the same way.
-  case validWindow(window)
-  of "today":
-    let (ok, ms) = parseTsMs(ts)
-    ok and ms >= localMidnightMs(nowMs)
-  of "7d":
-    let (ok, ms) = parseTsMs(ts)
-    ok and ms >= nowMs - 7 * 86400 * 1000
-  else:
-    true
+  inStartMs(ts, windowStartMs(window, nowMs))
 
 proc readEvents*(home: string): tuple[events: seq[JsonNode],
     errors: seq[JsonNode], files: seq[string]] =
@@ -713,3 +726,827 @@ proc buildTurn*(turn: JsonNode, servers: openArray[string] = [],
   result["user_message"] = %(trimText(turn.jget("user_message").getStr(), 200))
   result["story"] = %storyOf(result)
   return result
+
+const maxTurns* = 50
+  ## At most this many turns ride a payload, newest first.
+
+
+proc toolStats*(events: seq[JsonNode], servers: openArray[string] = [],
+    window: string = "all", nowMs: int64 = 0): JsonNode =
+  ## Tool calls in a window, grouped by source: treg (per tool and per
+  ## endpoint), Waku Memory (per tool, with recent queries), and the rest.
+  let startMs = windowStartMs(window, nowMs)
+  var treg = newJObject()
+  var endpoints = newJObject()
+  var memory = newJObject()
+  var other = newJObject()
+  var otherSource = newJObject()
+  var memorySpan = newJObject()
+  var queries = newJArray()
+  proc bucketOf(buckets: JsonNode, name: string): JsonNode =
+    if not buckets.hasKey(name):
+      buckets[name] = %*{"calls": 0, "errors": 0, "usd": 0.0,
+        "priced": 0, "ms_total": 0, "ms_n": 0,
+        "results_total": 0, "results_n": 0}
+    buckets[name]
+  for ev in events:
+    if ev.kind != JObject or ev.jget("type").getStr() != "tool" or
+        not inStartMs(ev.jget("ts").getStr(), startMs):
+      continue
+    let name = ev.jget("tool").getStr()
+    let info = describe(ev, servers)
+    let source = info.jget("source").getStr()
+    let short = if source == "waku_memory" and
+        name.len > wakuMemoryPrefix.len:
+      name[wakuMemoryPrefix.len .. ^1] else: name
+    let b = if source == "treg": bucketOf(treg, name)
+            elif source == "waku_memory": bucketOf(memory, short)
+            else: bucketOf(other, name)
+    b["calls"] = %(b.jget("calls").getInt() + 1)
+    if not info.jget("ok").getBool(true):
+      b["errors"] = %(b.jget("errors").getInt() + 1)
+    let cost = info.jget("cost_usd")
+    if cost.kind == JInt or cost.kind == JFloat:
+      let usd = if cost.kind == JFloat: cost.getFloat()
+                else: float(cost.getBiggestInt())
+      b["usd"] = %(b.jget("usd").getFloat() + usd)
+      b["priced"] = %(b.jget("priced").getInt() + 1)
+    let ms = ev.jget("duration_ms")
+    if ms.kind == JInt and ms.getBiggestInt() >= 0:
+      b["ms_total"] = %(b.jget("ms_total").getInt() +
+        int(ms.getBiggestInt()))
+      b["ms_n"] = %(b.jget("ms_n").getInt() + 1)
+    let res = info.jget("results")
+    if res.kind == JInt:
+      b["results_total"] = %(b.jget("results_total").getInt() +
+        int(res.getBiggestInt()))
+      b["results_n"] = %(b.jget("results_n").getInt() + 1)
+    if source == "treg":
+      if info.hasKey("endpoint_id") and runsEndpoint(name):
+        let eid = info.jget("endpoint_id").getStr()
+        let eb = bucketOf(endpoints, eid)
+        eb["calls"] = %(eb.jget("calls").getInt() + 1)
+        eb["provider"] = copy(info.jget("provider"))
+        if cost.kind == JInt or cost.kind == JFloat:
+          let usd = if cost.kind == JFloat: cost.getFloat()
+                    else: float(cost.getBiggestInt())
+          eb["usd"] = %(eb.jget("usd").getFloat() + usd)
+          eb["priced"] = %(eb.jget("priced").getInt() + 1)
+        if ms.kind == JInt and ms.getBiggestInt() >= 0:
+          eb["ms_total"] = %(eb.jget("ms_total").getInt() +
+            int(ms.getBiggestInt()))
+          eb["ms_n"] = %(eb.jget("ms_n").getInt() + 1)
+    elif source == "waku_memory":
+      memorySpan[short] = copy(info.jget("span"))
+      if info.hasKey("query"):
+        queries.add(%*{"tool": short,
+          "query": info.jget("query"), "results": info.jget("results"),
+          "retrieval_trace_id": info.jget("retrieval_trace_id"),
+          "ok": info.jget("ok"), "ts": ev.jget("ts")})
+    else:
+      otherSource[name] = %source
+  proc row(name: string, b: JsonNode): JsonNode =
+    let priced = b.jget("priced").getInt() > 0
+    let msN = b.jget("ms_n").getInt()
+    let resN = b.jget("results_n").getInt()
+    let usd = if priced: round(b.jget("usd").getFloat() * 1e6) / 1e6
+              else: 0.0
+    let avgMs = if msN > 0: int(round(b.jget("ms_total").getFloat() /
+      msN.float)) else: -1
+    let avgRes = if resN > 0:
+      round(b.jget("results_total").getFloat() / resN.float * 10) / 10
+    else: -1.0
+    %*{"tool": name, "calls": b.jget("calls"),
+      "errors": b.jget("errors"),
+      "usd": (if priced: %usd else: newJNull()),
+      "avg_ms": (if msN > 0: %avgMs else: newJNull()),
+      "avg_results": (if resN > 0: %avgRes else: newJNull())}
+  proc rowsOf(buckets: JsonNode): seq[JsonNode] =
+    for name, b in pairs(buckets):
+      if name == "":
+        continue
+      result.add(row(name, b))
+    result.sort(proc(x, y: JsonNode): int =
+      let c = cmp(y.jget("calls").getInt(), x.jget("calls").getInt())
+      if c != 0: c else: cmp(x.jget("tool").getStr(),
+                             y.jget("tool").getStr()))
+  var endpointRows: seq[JsonNode] = @[]
+  for eid, b in pairs(endpoints):
+    var r = row(eid, b)
+    r["endpoint_id"] = %eid
+    r["provider"] = copy(b.jget("provider"))
+    endpointRows.add(r)
+  endpointRows.sort(proc(x, y: JsonNode): int =
+    let xu = if x.jget("usd").kind == JNull: 0.0
+             else: x.jget("usd").getFloat()
+    let yu = if y.jget("usd").kind == JNull: 0.0
+             else: y.jget("usd").getFloat()
+    let c = cmp(yu, xu)
+    if c != 0: c
+    else:
+      let d = cmp(y.jget("calls").getInt(), x.jget("calls").getInt())
+      if d != 0: d
+      else: cmp(x.jget("endpoint_id").getStr(),
+                y.jget("endpoint_id").getStr()))
+  var tregRows: seq[JsonNode] = @[]
+  for r in rowsOf(treg):
+    r["span"] = %"tool"
+    tregRows.add(r)
+  var memoryRows: seq[JsonNode] = @[]
+  for r in rowsOf(memory):
+    r["span"] = copy(memorySpan.jget(r.jget("tool").getStr()))
+    memoryRows.add(r)
+  var otherRows: seq[JsonNode] = @[]
+  for r in rowsOf(other):
+    r["source"] = copy(otherSource.jget(r.jget("tool").getStr()))
+    r["span"] = %"tool"
+    otherRows.add(r)
+  var recent: seq[JsonNode] = @[]
+  for i in countdown(queries.len - 1, max(0, queries.len - 5)):
+    recent.add(copy(queries[i]))
+  proc callsOf(rows: seq[JsonNode]): int =
+    for r in rows:
+      result += r.jget("calls").getInt()
+  proc usdOf(rows: seq[JsonNode]): float =
+    for r in rows:
+      let u = r.jget("usd")
+      if u.kind == JFloat:
+        result += u.getFloat()
+      elif u.kind == JInt:
+        result += float(u.getBiggestInt())
+  %*{"window": window,
+    "treg": {"tools": %tregRows, "endpoints": %endpointRows,
+      "calls": callsOf(tregRows), "usd": round(usdOf(tregRows) * 1e6) / 1e6},
+    "waku_memory": {"tools": %memoryRows, "recent_queries": %recent,
+      "calls": callsOf(memoryRows)},
+    "other": {"tools": %otherRows, "calls": callsOf(otherRows)}}
+
+proc safeNum(node: JsonNode): int =
+  ## An int out of a ledger number, or 0 when it is anything else.
+  if node.kind == JInt: max(int(node.getBiggestInt()), 0) else: 0
+
+proc chargedReceipts*(events: seq[JsonNode]): JsonNode =
+  ## turn_id -> the receipt of every turn the metering proxy priced
+  ## exactly. A receipt that names no turn takes the turn it sits in.
+  result = newJObject()
+  var current = ""
+  for n, ev in pairs(events):
+    if ev.kind != JObject:
+      continue
+    let kind = ev.jget("type").getStr()
+    if kind == "turn_start":
+      current = ev.jget("turn_id").getStr()
+    elif kind == "receipt":
+      let m = ev.jget("model")
+      if m.kind == JObject and m.jget("estimate").kind == JBool and
+          not m.jget("estimate").getBool():
+        let key = ev.jget("turn_id").getStr()
+        result[if key.len > 0: key
+               elif current.len > 0: current
+               else: "receipt-" & $n] = copy(ev)
+  return result
+
+proc receiptModelUsd*(receipt: JsonNode): float =
+  ## The exact model dollars on a charged receipt: its own model figure,
+  ## or its total less the tools it priced when an old receipt has none.
+  let usd = receipt.jget("model").jget("usd")
+  if usd.kind == JFloat:
+    return usd.getFloat()
+  if usd.kind == JInt:
+    return float(usd.getBiggestInt())
+  var tools = 0.0
+  let arr = receipt.jget("tools")
+  if arr.kind == JArray:
+    for t in arr:
+      if t.kind == JObject:
+        let u = t.jget("usd")
+        if u.kind == JFloat:
+          tools += u.getFloat()
+        elif u.kind == JInt:
+          tools += float(u.getBiggestInt())
+  let total = receipt.jget("total_usd")
+  let tot = if total.kind == JFloat: total.getFloat()
+            elif total.kind == JInt: float(total.getBiggestInt())
+            else: 0.0
+  max(tot - tools, 0.0)
+
+proc ledgerRows*(home: string): seq[JsonNode] =
+  ## Every row of the spend ledger, oldest first; bad lines skipped.
+  try:
+    for line in lines(home / "usage.jsonl"):
+      try:
+        let row = parseJson(line)
+        if row.kind == JObject:
+          result.add(row)
+      except JsonParsingError:
+        discard
+  except IOError, OSError:
+    discard
+
+proc rowCost*(row: JsonNode): float =
+  ## One ledger row at list price.
+  llmCost(row.jget("provider").getStr(), row.jget("model").getStr(),
+    %*{"in": safeNum(row.jget("in")), "out": safeNum(row.jget("out"))})
+
+proc spendItems*(home: string, events: seq[JsonNode],
+    servers: openArray[string] = []): seq[JsonNode] =
+  ## Every dollar this home spent, once: charged receipts at their exact
+  ## figure, other ledger rows estimated, tool dollars from their answers.
+  let charged = chargedReceipts(events)
+  for _, ev in pairs(charged):
+    result.add(%*{"ts": ev.jget("ts").getStr(), "bucket": "model",
+      "usd": receiptModelUsd(ev), "charged": true})
+  for row in ledgerRows(home):
+    let tid = row.jget("turn_id").getStr()
+    if tid.len > 0 and charged.hasKey(tid):
+      continue
+    result.add(%*{"ts": row.jget("ts").getStr(), "bucket": "model",
+      "usd": rowCost(row), "charged": false})
+  var current = ""
+  for ev in events:
+    if ev.kind != JObject:
+      continue
+    if ev.jget("type").getStr() == "turn_start":
+      current = ev.jget("turn_id").getStr()
+    if ev.jget("type").getStr() != "tool":
+      continue
+    let info = describe(ev, servers)
+    let cost = info.jget("cost_usd")
+    if cost.kind != JInt and cost.kind != JFloat:
+      continue
+    let usd = if cost.kind == JFloat: cost.getFloat()
+              else: float(cost.getBiggestInt())
+    let src = info.jget("source").getStr()
+    let bucket = if src == "treg": "treg"
+                 elif src == "waku_memory": "memory" else: "other"
+    let tid = ev.jget("turn_id").getStr()
+    result.add(%*{"ts": ev.jget("ts").getStr(), "bucket": bucket,
+      "usd": usd,
+      "charged": charged.hasKey(if tid.len > 0: tid else: current)})
+  return result
+
+proc spendTotals*(items: seq[JsonNode], startMs: int64 = -1,
+    events: seq[JsonNode] = @[]): JsonNode =
+  ## The window's dollars: by bucket, and as charged plus estimated.
+  ## Both splits sum to `total_usd`.
+  var modelUsd, tregUsd, memoryUsd, otherUsd, chargedUsd = 0.0
+  for i in items:
+    if not inStartMs(i.jget("ts").getStr(), startMs):
+      continue
+    let usd = i.jget("usd").getFloat(0.0)
+    case i.jget("bucket").getStr()
+    of "model": modelUsd += usd
+    of "treg": tregUsd += usd
+    of "memory": memoryUsd += usd
+    of "other": otherUsd += usd
+    else: discard
+    if i.jget("charged").getBool():
+      chargedUsd += usd
+  let total = modelUsd + tregUsd + memoryUsd + otherUsd
+  let charged = chargedReceipts(events)
+  var inWin = 0
+  for _, ev in pairs(charged):
+    if inStartMs(ev.jget("ts").getStr(), startMs):
+      inc inWin
+  var credits = 0
+  var hasCredits = false
+  for _, ev in pairs(charged):
+    if not inStartMs(ev.jget("ts").getStr(), startMs):
+      continue
+    let c = ev.jget("credits")
+    if c.kind == JInt:
+      credits += int(c.getBiggestInt())
+      hasCredits = true
+  proc r6(x: float): float =
+    round(x * 1e6) / 1e6
+  %*{"model_usd": r6(modelUsd), "treg_usd": r6(tregUsd),
+    "memory_usd": r6(memoryUsd), "other_usd": r6(otherUsd),
+    "total_usd": r6(total),
+    "charged_usd": (if inWin > 0: %r6(chargedUsd) else: newJNull()),
+    "estimated_usd": r6(total - (if inWin > 0: chargedUsd else: 0.0)),
+    "charged_turns": inWin,
+    "credits": (if hasCredits: %credits else: newJNull())}
+
+proc byModel*(home: string): seq[JsonNode] =
+  ## All-time model calls, tokens and estimated dollars per provider
+  ## and model, most expensive first.
+  var acc = newJObject()
+  for row in ledgerRows(home):
+    let prov = row.jget("provider").getStr()
+    let provider = if prov.len > 0: prov else: "?"
+    let modl = row.jget("model").getStr()
+    let key = provider & "\x00" & modl
+    if not acc.hasKey(key):
+      acc[key] = %*{"provider": provider, "model": modl,
+        "calls": 0, "in": 0, "out": 0, "usd": 0.0}
+    let b = acc[key]
+    b["calls"] = %(b.jget("calls").getInt() + 1)
+    b["in"] = %(b.jget("in").getInt() + safeNum(row.jget("in")))
+    b["out"] = %(b.jget("out").getInt() + safeNum(row.jget("out")))
+    b["usd"] = %(b.jget("usd").getFloat(0.0) + rowCost(row))
+  for _, b in pairs(acc):
+    b["usd"] = %(round(b.jget("usd").getFloat(0.0) * 1e6) / 1e6)
+    result.add(b)
+  result.sort(proc(x, y: JsonNode): int =
+    let c = cmp(y.jget("usd").getFloat(0.0), x.jget("usd").getFloat(0.0))
+    if c != 0: c
+    else:
+      let d = cmp(y.jget("calls").getInt(), x.jget("calls").getInt())
+      if d != 0: d
+      else: cmp(x.jget("model").getStr(), y.jget("model").getStr()))
+  return result
+
+proc spendHome*(home: string, events: seq[JsonNode],
+    servers: openArray[string] = []): JsonNode =
+  ## All-time spend under the one rule `spendItems` keeps, with the
+  ## ledger's tokens and the list-price estimate per model.
+  let totals = spendTotals(spendItems(home, events, servers), -1, events)
+  let ledger = usageSummary(home)
+  result = copy(totals)
+  result["ledger"] = %*{"calls": ledger.calls, "total_in": ledger.totalIn,
+    "total_out": ledger.totalOut, "total_cost": ledger.totalCost,
+    "by_day": ledger.byDay, "by_provider": ledger.byProvider}
+  result["by_model"] = %byModel(home)
+  return result
+
+proc spendByDay*(home: string, events: seq[JsonNode], days: int = 14,
+    servers: openArray[string] = []): seq[JsonNode] =
+  ## Newest first, one row per day: the dollars `spendItems` counts, by
+  ## bucket and as charged, with the ledger's tokens.
+  var byDay = newJObject()
+  proc day(key: string): JsonNode =
+    if not byDay.hasKey(key):
+      byDay[key] = %*{"date": key, "model": 0.0, "treg": 0.0,
+        "memory": 0.0, "other": 0.0, "charged": 0.0, "in": 0, "out": 0}
+    byDay[key]
+  for row in ledgerRows(home):
+    let key = row.jget("ts").getStr()[0 ..< min(10,
+      row.jget("ts").getStr().len)]
+    if key.len == 0:
+      continue
+    let d = day(key)
+    d["in"] = %(d.jget("in").getInt() + safeNum(row.jget("in")))
+    d["out"] = %(d.jget("out").getInt() + safeNum(row.jget("out")))
+  for item in spendItems(home, events, servers):
+    let key = item.jget("ts").getStr()[0 ..< min(10,
+      item.jget("ts").getStr().len)]
+    if key.len == 0:
+      continue
+    let d = day(key)
+    let bucket = item.jget("bucket").getStr()
+    if bucket in ["model", "treg", "memory", "other"]:
+      d[bucket] = %(d.jget(bucket).getFloat(0.0) +
+        item.jget("usd").getFloat(0.0))
+    if item.jget("charged").getBool():
+      d["charged"] = %(d.jget("charged").getFloat(0.0) +
+        item.jget("usd").getFloat(0.0))
+  var rows: seq[JsonNode] = @[]
+  for _, d in pairs(byDay):
+    for k in ["model", "treg", "memory", "other", "charged"]:
+      d[k] = %(round(d.jget(k).getFloat(0.0) * 1e6) / 1e6)
+    d["total"] = %(round((d.jget("model").getFloat(0.0) +
+      d.jget("treg").getFloat(0.0) + d.jget("memory").getFloat(0.0) +
+      d.jget("other").getFloat(0.0)) * 1e6) / 1e6)
+    rows.add(d)
+  rows.sort(proc(x, y: JsonNode): int =
+    cmp(y.jget("date").getStr(), x.jget("date").getStr()))
+  if rows.len > days:
+    rows = rows[0 ..< days]
+  return rows
+
+proc summary*(home: string, events: seq[JsonNode], turns: seq[JsonNode],
+    tools: JsonNode, window: string = "7d", nowMs: int64 = 0,
+    servers: openArray[string] = []): JsonNode =
+  ## The four cards at the top of the page, for one window, in the order
+  ## of the tabs below them.
+  let startMs = windowStartMs(window, nowMs)
+  var ledgerIn, ledgerOut, ledgerCalls = 0
+  for r in ledgerRows(home):
+    if not inStartMs(r.jget("ts").getStr(), startMs):
+      continue
+    ledgerIn += safeNum(r.jget("in"))
+    ledgerOut += safeNum(r.jget("out"))
+    inc ledgerCalls
+  var inWin: seq[JsonNode] = @[]
+  for t in turns:
+    if inStartMs(t.jget("ts").getStr(), startMs):
+      inWin.add(t)
+  var loops: seq[int] = @[]
+  for t in inWin:
+    if t.jget("loops").getInt(0) > 0:
+      loops.add(t.jget("loops").getInt(0))
+  let memTools = tools.jget("waku_memory").jget("tools")
+  var reads, writes: seq[JsonNode] = @[]
+  if memTools.kind == JArray:
+    for r in memTools:
+      if r.jget("span").getStr() == "retrieval":
+        reads.add(r)
+      elif r.jget("span").getStr() == "memory_write":
+        writes.add(r)
+  var weighted = 0.0
+  var returned = 0
+  for r in reads:
+    let avg = r.jget("avg_results")
+    if avg.kind == JFloat or avg.kind == JInt:
+      let a = if avg.kind == JFloat: avg.getFloat()
+              else: float(avg.getBiggestInt())
+      weighted += a * r.jget("calls").getInt(0).float
+      returned += r.jget("calls").getInt(0)
+  proc callsOf(group: string): JsonNode =
+    var calls, errors = 0
+    let arr = tools.jget(group).jget("tools")
+    if arr.kind == JArray:
+      for r in arr:
+        calls += r.jget("calls").getInt(0)
+        errors += r.jget("errors").getInt(0)
+    %*{"calls": calls, "errors": errors}
+  var loopsSum = 0
+  for n in loops:
+    loopsSum += n
+  var keptSum = 0
+  var gateRetrieve, gateSkip = 0
+  for t in inWin:
+    keptSum += t.jget("kept").getInt(0)
+    if t.jget("gate").getStr() == "retrieve":
+      inc gateRetrieve
+    elif t.jget("gate").getStr() == "skip":
+      inc gateSkip
+  %*{"window": window,
+    "spend": spendTotals(spendItems(home, events, servers), startMs,
+      events),
+    "tokens": {"in": ledgerIn, "out": ledgerOut, "calls": ledgerCalls},
+    "tools": {"treg": callsOf("treg"),
+      "waku_memory": callsOf("waku_memory"), "other": callsOf("other")},
+    "turns": {"count": inWin.len,
+      "avg_loops": (if loops.len > 0:
+        %(round(loopsSum.float / loops.len.float * 10) / 10)
+      else: newJNull())},
+    "memory": {"retrievals": block:
+        var n = 0
+        for r in reads: n += r.jget("calls").getInt(0)
+        n,
+      "avg_results": (if returned > 0:
+        %(round(weighted / returned.float * 10) / 10) else: newJNull()),
+      "writes": block:
+        var n = 0
+        for r in writes: n += r.jget("calls").getInt(0)
+        n,
+      "kept": keptSum, "gate_retrieve": gateRetrieve,
+      "gate_skip": gateSkip}}
+
+proc memoryPerTurn*(turns: seq[JsonNode]): seq[JsonNode] =
+  ## Per turn, in order: the gate, memories used and facts kept.
+  for t in turns:
+    var localOnly = newJNull()
+    var searches = 0
+    let steps = t.jget("steps")
+    if steps.kind == JArray:
+      for s in steps:
+        if s.kind != JObject:
+          continue
+        if s.jget("kind").getStr() == "consolidation" and
+            localOnly.kind == JNull:
+          localOnly = copy(s.jget("local_only"))
+        if s.jget("kind").getStr() == "memory":
+          inc searches
+    result.add(%*{"turn_id": t.jget("turn_id"),
+      "ts": t.jget("ts"), "user_message": t.jget("user_message"),
+      "gate": t.jget("gate"), "used": t.jget("used"),
+      "kept": t.jget("kept"), "local_only": localOnly,
+      "searches": searches})
+  return result
+
+const turnChecks* = [
+    ("spend_claim", "the reply's spend matches the trace's treg dollars"),
+    ("one_report", "a research turn saves exactly one report"),
+    ("grounded_numbers",
+      "the reply's numbers appear in a tool output, a memory or the message"),
+    ("errors_handled",
+      "every failed tool call was retried or mentioned in the reply"),
+    ("under_budget", "the turn cost less than the per-turn budget (WAKU_TURN_BUDGET_USD)")]
+  ## The five code checks, with what each one asks. The checks
+  ## themselves (`run_checks`, spec 015 A) land with the turn-evals
+  ## unit; this table already names their rows.
+
+const judgePass* = 0.7
+  ## A judge score passes at 0.7.
+
+proc yourTurns*(turns: seq[JsonNode], window: string = "7d",
+    nowMs: int64 = 0): JsonNode =
+  ## One row per check for the turns in a window: passed, failed, n/a,
+  ## the pass rate, and the newest failing turn. The judge row counts
+  ## the turns judged and their average score.
+  let startMs = windowStartMs(window, nowMs)
+  var inside: seq[JsonNode] = @[]
+  for t in turns:
+    if inStartMs(t.jget("ts").getStr(), startMs):
+      inside.add(t)
+  var rows = newJArray()
+  for (name, what) in turnChecks:
+    var passed, failed, na = 0
+    var newest = newJNull()
+    for t in inside:
+      var value = newJNull()
+      let scores = t.jget("scores")
+      if scores.kind == JArray:
+        for s in scores:
+          if s.kind == JObject and
+              s.jget("source").getStr() == "code" and
+              s.jget("name").getStr() == name:
+            value = s.jget("value")
+            break
+      if value.kind == JNull:
+        inc na
+      elif (value.kind == JInt or value.kind == JFloat) and
+          (if value.kind == JFloat: value.getFloat()
+           else: float(value.getBiggestInt())) >= 1:
+        inc passed
+      else:
+        inc failed
+        var note = ""
+        if scores.kind == JArray:
+          for s in scores:
+            if s.kind == JObject and
+                s.jget("source").getStr() == "code" and
+                s.jget("name").getStr() == name:
+              note = s.jget("note").getStr()
+              break
+        newest = %*{"turn_id": t.jget("turn_id").getStr(),
+          "ts": t.jget("ts"), "user_message": t.jget("user_message"),
+          "note": note}
+    let scored = passed + failed
+    rows.add(%*{"name": name, "what": what, "passed": passed,
+      "failed": failed, "na": na,
+      "pass_rate": (if scored > 0: %(passed.float / scored.float)
+                    else: newJNull()),
+      "newest_fail": newest})
+  var judged: seq[JsonNode] = @[]
+  var graded: seq[seq[float]] = @[]
+  for t in inside:
+    let scores = t.jget("scores")
+    if scores.kind != JArray:
+      graded.add(@[])
+      continue
+    for s in scores:
+      if s.kind == JObject and s.jget("source").getStr() == "judge":
+        let v = s.jget("value")
+        if v.kind == JFloat or v.kind == JInt:
+          judged.add(s)
+    var g: seq[float] = @[]
+    for s in scores:
+      if s.kind == JObject and s.jget("source").getStr() == "code":
+        let v = s.jget("value")
+        if v.kind == JFloat:
+          g.add(v.getFloat())
+        elif v.kind == JInt:
+          g.add(float(v.getBiggestInt()))
+    graded.add(g)
+  var judgedSum = 0.0
+  var judgedPassed = 0
+  for s in judged:
+    let v = s.jget("value")
+    let num = if v.kind == JFloat: v.getFloat()
+              else: float(v.getBiggestInt())
+    judgedSum += num
+    if num >= judgePass:
+      inc judgedPassed
+  var turnsScored, turnsPassed = 0
+  for g in graded:
+    if g.len == 0:
+      continue
+    inc turnsScored
+    var allPass = true
+    for v in g:
+      if v < 1:
+        allPass = false
+        break
+    if allPass:
+      inc turnsPassed
+  %*{"window": window, "turns": inside.len, "checks": rows,
+    "turns_scored": turnsScored, "turns_passed": turnsPassed,
+    "judge": {"judged": judged.len,
+      "average": (if judged.len > 0:
+        %(round(judgedSum / judged.len.float * 100) / 100)
+      else: newJNull()),
+      "passed": judgedPassed}}
+
+proc countTests(path: string): int =
+  ## Test functions in one file: lines opening `def test_` (or
+  ## `async def test_`), like upstream's `_TEST_DEF`.
+  try:
+    for line in lines(path):
+      let s = line.strip()
+      if s.startsWith("def test_") or s.startsWith("async def test_"):
+        inc result
+  except IOError, OSError:
+    discard
+
+proc releaseInfo*(path: string): JsonNode =
+  ## The release the container runs, or null when no record says so.
+  if path.len == 0:
+    return newJNull()
+  var record: JsonNode = nil
+  try:
+    record = parseJson(readFile(path))
+  except IOError, OSError, JsonParsingError:
+    return newJNull()
+  if record.isNil or record.kind != JObject:
+    return newJNull()
+  let sha = record.jget("sha").getStr()
+  if sha.len != 40:
+    return newJNull()
+  for c in sha:
+    if c notin {'0' .. '9', 'a' .. 'f'}:
+      return newJNull()
+  let commitUrl = record.jget("commit_url").getStr()
+  if not commitUrl.startsWith("https://github.com/"):
+    return newJNull()
+  let checksEv = record.jget("checks")
+  if checksEv.kind != JArray or checksEv.len == 0:
+    return newJNull()
+  var checks = newJArray()
+  for c in checksEv:
+    if c.kind != JObject:
+      return newJNull()
+    let name = c.jget("name").getStr()
+    let conclusion = c.jget("conclusion").getStr()
+    let url = c.jget("url").getStr()
+    if name.len == 0 or conclusion.len == 0 or
+        not url.startsWith("https://github.com/"):
+      return newJNull()
+    let t = c.jget("tests")
+    var tests = newJNull()
+    if t.kind == JObject and t.jget("label").kind == JString:
+      var okCounts = true
+      for k in ["passed", "failed", "skipped"]:
+        let n = t.jget(k)
+        if n.kind != JInt or n.getBiggestInt() < 0:
+          okCounts = false
+      if okCounts:
+        tests = %*{"label": t.jget("label").getStr(),
+          "passed": t.jget("passed").getInt(),
+          "failed": t.jget("failed").getInt(),
+          "skipped": t.jget("skipped").getInt()}
+    checks.add(%*{"name": name, "conclusion": conclusion, "url": url,
+      "completed_at": (if c.jget("completed_at").kind == JString:
+        c.jget("completed_at") else: newJNull()),
+      "tests": tests})
+  let deployed = record.jget("deployed_at")
+  %*{"sha": sha, "short_sha": sha[0 ..< 7], "commit_url": commitUrl,
+    "deployed_at": (if deployed.kind == JString: deployed
+                    else: newJNull()),
+    "checks": checks}
+
+proc suiteCounts(value: JsonNode): JsonNode =
+  ## {passed, failed} when both read as counts, else null.
+  if value.kind != JObject:
+    return newJNull()
+  for k in ["passed", "failed"]:
+    let n = value.jget(k)
+    if n.kind != JInt:
+      return newJNull()
+  %*{"passed": value.jget("passed").getInt(),
+     "failed": value.jget("failed").getInt()}
+
+proc lastRun*(report: JsonNode, history: seq[JsonNode]): JsonNode =
+  ## What the newest recorded gate run said, per suite. None when no
+  ## run recorded suite counts.
+  var runs: seq[JsonNode] = @[]
+  if report.kind == JObject:
+    runs.add(report)
+  for h in history:
+    runs.add(h)
+  for run in runs:
+    if run.kind != JObject or run.jget("suites").kind != JObject:
+      continue
+    let det = suiteCounts(run.jget("suites").jget("deterministic"))
+    let judge = suiteCounts(run.jget("suites").jget("judge"))
+    if det.kind != JNull or judge.kind != JNull:
+      return %*{"ran_at": run.jget("ran_at"),
+        "deterministic": det, "judge": judge,
+        "verdict": {"deterministic": run.jget("deterministic"),
+          "judge": run.jget("judge")}}
+  newJNull()
+
+proc evalsInfo*(home: string, repo: string = "",
+    hosted: bool = false, releaseFile: string = ""): JsonNode =
+  ## What evals exist and what the release gate said last. Counted from
+  ## `evals/` beside the code; without a checkout both counts read null
+  ## and the page says so.
+  var deterministic = newJNull()
+  var judgeSuites = newJNull()
+  if repo.len > 0:
+    let detDir = repo / "evals" / "deterministic"
+    let judgeDir = repo / "evals" / "judge"
+    if dirExists(detDir):
+      var files, tests = 0
+      for kind, path in walkDir(detDir):
+        if kind == pcFile and extractFilename(path).startsWith("test_") and
+            path.endsWith(".py"):
+          files += 1
+          tests += countTests(path)
+      deterministic = %*{"files": files, "tests": tests}
+    if dirExists(judgeDir):
+      var suites = newJArray()
+      var names: seq[string] = @[]
+      for kind, path in walkDir(judgeDir):
+        let base = extractFilename(path)
+        if kind == pcFile and base.startsWith("test_") and
+            base.endsWith(".py"):
+          names.add(base[5 .. ^4])
+      names.sort()
+      for n in names:
+        suites.add(%n)
+      judgeSuites = suites
+  var report = newJNull()
+  try:
+    let parsed = parseJson(readFile(home / "eval_report.json"))
+    if parsed.kind == JObject:
+      report = parsed
+  except IOError, OSError, JsonParsingError:
+    discard
+  var history: seq[JsonNode] = @[]
+  try:
+    let lines = readFile(home / "eval_runs.jsonl").splitLines()
+    let tail = if lines.len > 20: lines[lines.len - 20 .. ^1] else: lines
+    for line in tail:
+      try:
+        let row = parseJson(line)
+        history.add(row)
+      except JsonParsingError:
+        discard
+  except IOError, OSError:
+    discard
+  var reversed = newJArray()
+  for i in countdown(history.len - 1, 0):
+    reversed.add(copy(history[i]))
+  %*{"deterministic": deterministic, "judge_suites": judgeSuites,
+    "hosted": hosted, "last": report, "history": reversed,
+    "last_run": lastRun(report, history),
+    "release": releaseInfo(releaseFile)}
+
+proc payload*(home: string, provider: string = "", model: string = "",
+    window: string = "7d", nowMs: int64 = 0,
+    servers: openArray[string] = [], repo: string = "",
+    hosted: bool = false, releaseFile: string = "",
+    judgeModel: string = ""): JsonNode =
+  ## Everything the Observability page draws, in one answer. Without a
+  ## judge model every turn's `judge_offer` reads null — the turn-evals
+  ## unit fills the offers and the route in.
+  let win = validWindow(window)
+  let (events, errors, files) = readEvents(home)
+  var late = newJObject()
+  for ev in events:
+    if ev.kind == JObject and ev.jget("type").getStr() == "score" and
+        ev.jget("turn_id").getStr().len > 0:
+      let tid = ev.jget("turn_id").getStr()
+      if not late.hasKey(tid):
+        late[tid] = newJArray()
+      late[tid].add(copy(ev))
+  let grouped = groupTurns(events)
+  var built: seq[JsonNode] = @[]
+  for t in grouped:
+    let tid = t.jget("turn_id").getStr()
+    var extra: seq[JsonNode] = @[]
+    if late.hasKey(tid):
+      let inside = t.jget("events")
+      for ev in late[tid]:
+        var found = false
+        if inside.kind == JArray:
+          for own in inside:
+            if own == ev:
+              found = true
+              break
+        if not found:
+          extra.add(ev)
+    built.add(buildTurn(t, servers, provider, model, extra))
+  let tools = toolStats(events, servers, win, nowMs)
+  let spend = spendHome(home, events, servers)
+  let byDay = spendByDay(home, events, 14, servers)
+  let info = evalsInfo(home, repo, hosted, releaseFile)
+  var turnsArr: seq[JsonNode] = @[]
+  for i in countdown(built.len - 1, max(0, built.len - maxTurns)):
+    let b = copy(built[i])
+    b["judge_offer"] = newJNull()
+    turnsArr.add(b)
+  var memArr: seq[JsonNode] = @[]
+  let mem = memoryPerTurn(built)
+  for i in countdown(mem.len - 1, max(0, mem.len - maxTurns)):
+    memArr.add(copy(mem[i]))
+  var yourTurns = newJObject()
+  for w in windows:
+    yourTurns[w] = yourTurns(built, w, nowMs)
+  let evals = %*{"deterministic": info.jget("deterministic"),
+    "judge_suites": info.jget("judge_suites"), "hosted": info.jget("hosted"),
+    "last": info.jget("last"), "history": info.jget("history"),
+    "last_run": info.jget("last_run"), "release": info.jget("release"),
+    "your_turns": yourTurns}
+  %*{"generated_at": format(now().utc,
+      "yyyy-MM-dd'T'HH:mm:ss'+00:00'"),
+    "summary": summary(home, events, built, tools, win, nowMs, servers),
+    "spend_by_day": %byDay,
+    "trace_files": files.len, "trace_file": (if files.len > 0:
+      %files[^1] else: newJNull()),
+    "trace_errors": %errors,
+    "turns": %turnsArr, "tools": tools, "memory": %memArr,
+    "spend": spend, "evals": evals}
