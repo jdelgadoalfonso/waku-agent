@@ -481,3 +481,285 @@ proc checkOneReport*(v: JsonNode): JsonNode =
         "answered from memory: no research tool ran and no save was asked")
   checkResult("one_report", %0,
     "a research turn with no report saved and none in the reply")
+
+# ---------------------------------------------------------------------------
+# 3. grounded_numbers
+# ---------------------------------------------------------------------------
+
+import std/times
+
+const
+  groundedShare* = 0.9
+    ## grounded_numbers passes when 90% of the numbers are found.
+  groundedMinNumbers* = 3
+    ## Below this many numbers the check is n/a.
+
+  monthNames = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug",
+    "sep", "oct", "nov", "dec"]
+  scaleTable = [("thousand", 1e3), ("million", 1e6), ("billion", 1e9),
+    ("bn", 1e9), ("mn", 1e6), ("k", 1e3), ("m", 1e6), ("b", 1e9)]
+
+let
+  isoDateRe = re(r"\b(\d{4})-(\d{2})-(\d{2})")
+  mdyRe = re(r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+" &
+    r"(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b", {reIgnoreCase})
+  dmyRe = re(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+" &
+    r"(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{4})\b",
+    {reIgnoreCase})
+  numberRe = re(r"(?<![\w.$-])(\$)?\s?(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)" &
+    r"(\s?%)?(?:\s?(thousand|million|billion|bn|mn|[kmb])\b)?(?![\w.-]*\w)",
+    {reIgnoreCase})
+  bareMantissaRe = re(r"\d[\d,]*\.?\d*")
+  ordinalRe = re(r"\d+(?:st|nd|rd|th)\b", {reIgnoreCase})
+  listNumberRe = re(r"^\s*\d+[.)]\s", {reMultiLine})
+  scaleSuffixRe = re(r"(thousand|million|billion|bn|mn|[kmb])$",
+    {reIgnoreCase})
+
+proc monthNum(name: string): int =
+  for i, m in monthNames:
+    if name.toLowerAscii().startsWith(m):
+      return i + 1
+  0
+
+proc scaleValue(suffix: string): float =
+  let low = suffix.toLowerAscii()
+  for (name, value) in scaleTable:
+    if name == low:
+      return value
+  1.0
+
+proc dashAscii(text: string): string =
+  ## The Unicode dashes read as plain hyphens.
+  text.replace("\u2010", "-").replace("\u2011", "-").replace("\u2012", "-")
+    .replace("\u2013", "-").replace("\u2014", "-").replace("\u2212", "-")
+
+proc replyDates(text: string): seq[tuple[iso: string, start, stop: int]] =
+  ## (ISO date, span) for every date written as 2026-10-05,
+  ## Oct 5, 2026 or 5 October 2026.
+  var caps = newSeq[string](3)
+  var start = 0
+  while start <= text.len:
+    let b = findBounds(text, isoDateRe, caps, start)
+    if b.first < 0: break
+    result.add((caps[0] & "-" & caps[1] & "-" & caps[2], b.first, b.last))
+    start = b.first + max(b.last - b.first + 1, 1)
+  for pat in [mdyRe, dmyRe]:
+    let isMdy = pat == mdyRe
+    caps = newSeq[string](3)
+    start = 0
+    while start <= text.len:
+      let b = findBounds(text, pat, caps, start)
+      if b.first < 0: break
+      let month = monthNum(if isMdy: caps[0] else: caps[1])
+      let day = parseInt(if isMdy: caps[1] else: caps[0])
+      let iso = caps[2] & "-" & (if month < 10: "0" & $month else: $month) &
+        "-" & (if day < 10: "0" & $day else: $day)
+      result.add((iso, b.first, b.last))
+      start = b.first + max(b.last - b.first + 1, 1)
+
+type Wanted = object
+  written: string
+  isDate: bool
+  iso: string
+  values: seq[float]
+  decimals: int
+  scale: float
+
+proc replyNumbers(reply: string, ts: string): seq[Wanted] =
+  ## What grounded_numbers looks for: each money amount, percentage, date
+  ## and number of two or more digits in the reply's prose. Ordinals, list
+  ## numbers and code blocks are skipped, and so is the turn's own date, a
+  ## day either side: it says when, not what was found.
+  var text = replace(dashAscii(prose(reply)), listNumberRe, " ")
+  var near: seq[string] = @[]
+  if ts.len >= 10:
+    try:
+      let day = parse(ts[0 .. 9], "yyyy-MM-dd")
+      for d in [-1, 0, 1]:
+        near.add(format(day + initDuration(days = d), "yyyy-MM-dd"))
+    except TimeParseError:
+      discard
+  var taken: seq[tuple[a, b: int]] = @[]
+  for (iso, a, b) in replyDates(text):
+    taken.add((a, b))
+    if iso notin near:
+      result.add(Wanted(written: text[a .. b], isDate: true, iso: iso))
+  for g in findGroups(text, numberRe, 4):
+    let whole = g[0]
+    let start = text.find(whole)
+    if start < 0:
+      continue
+    var inside = false
+    for (a, b) in taken:
+      if a <= start and start <= b:
+        inside = true
+        break
+    if inside:
+      continue
+    var m: array[1, string]
+    if match(text[start .. ^1], ordinalRe, m):
+      continue
+    let raw = g[2]
+    let digits = raw.count({'0' .. '9'})
+    let marked = g[1].len > 0 or g[3].len > 0 or g[4].len > 0
+    if not marked and digits < 2:
+      continue
+    var value = parseAmount(raw)
+    var scale = 1.0
+    var sm: array[2, string]
+    if find(text[start .. ^1], scaleSuffixRe, sm) >= 0:
+      scale = scaleValue(sm[1])
+      value *= scale
+    let decimals = if "." in raw: raw.split(".")[1].len else: 0
+    var values = @[value, value / scale]
+    if "%" in whole:
+      values.add(value / 100)
+    result.add(Wanted(written: whole.strip(), isDate: false, values: values,
+      decimals: decimals, scale: scale))
+
+proc jsonStrings(node: JsonNode, depth = 0): seq[string] =
+  ## Every string inside a decoded JSON value. A string that is itself
+  ## JSON is decoded too, a few levels deep.
+  case node.kind
+  of JString:
+    let s = node.getStr()
+    let trimmed = s.strip()
+    result = @[s]
+    if depth < 3 and trimmed.len > 0 and trimmed[0] in {'{', '['}:
+      try:
+        result &= jsonStrings(parseJson(s), depth + 1)
+      except JsonParsingError:
+        discard
+  of JObject:
+    for _, v in node:
+      result &= jsonStrings(v, depth)
+  of JArray:
+    for v in node:
+      result &= jsonStrings(v, depth)
+  else:
+    result = @[]
+
+proc sourceIndex(texts: seq[string]): tuple[numbers: seq[float], dates: seq[string]] =
+  ## The numbers and dates in a turn's sources. A JSON source is read
+  ## decoded too, so a memory body sent escaped still reads as written.
+  var decoded: seq[string] = @[]
+  for text in texts:
+    try:
+      decoded &= jsonStrings(parseJson(text))
+    except JsonParsingError:
+      discard
+  for text in texts & decoded:
+    let clean = dashAscii(text)
+    for (iso, _, _) in replyDates(clean):
+      if iso notin result.dates:
+        result.dates.add(iso)
+    for g in findGroups(clean, numberRe, 4):
+      var value = parseAmount(g[2])
+      var sm: array[2, string]
+      if find(g[0], scaleSuffixRe, sm) >= 0:
+        value *= scaleValue(sm[1])
+      if value notin result.numbers:
+        result.numbers.add(value)
+    # a bare scaled figure in a source ("4.2M") also stands for its mantissa
+    var caps = newSeq[string](0)
+    var start = 0
+    while start <= clean.len:
+      let b = findBounds(clean, bareMantissaRe, caps, start)
+      if b.first < 0: break
+      let piece = clean[b.first .. b.last]
+      start = b.first + max(b.last - b.first + 1, 1)
+      if piece[^1].isDigit():
+        try:
+          let n = parseAmount(piece)
+          if n notin result.numbers:
+            result.numbers.add(n)
+        except ValueError:
+          discard
+
+proc numberFound(values: seq[float], decimals: int, numbers: seq[float],
+    scale = 1.0): bool =
+  for v in values:
+    if v in numbers:
+      return true
+  # "$0.01" is grounded by a source's 0.0089 when it rounds to it
+  for n in numbers:
+    for v in values:
+      if round(n, decimals) == round(v, decimals) and
+          abs(n - v) < 10.0 ^ (-decimals.float):
+        return true
+  # "$1.58M" is grounded by a source's raw 1575000: the source, in the
+  # reply's unit, rounds to what the reply wrote
+  if scale > 1:
+    let half = 0.5 * 10.0 ^ (-decimals.float) + 1e-9
+    for n in numbers:
+      if n >= scale / 10 and abs(n / scale - values[1]) <= half:
+        return true
+  false
+
+proc spendFigures(tools: JsonNode): seq[float] =
+  ## What the trace says this turn's treg calls cost, each and in total:
+  ## "the call cost $0.04" is grounded by the trace even when the call's
+  ## own output does not repeat its price.
+  var costs: seq[float] = @[]
+  for t in tools:
+    if t.jget("source").getStr() == "treg":
+      let c = t.jget("cost_usd")
+      if c.kind in {JInt, JFloat}:
+        costs.add(toolCost(t))
+  result = @[]
+  var total = 0.0
+  for c in costs:
+    if round6(c) notin result:
+      result.add(round6(c))
+    total += c
+  if costs.len > 0 and round6(total) notin result:
+    result.add(round6(total))
+
+proc checkGroundedNumbers*(v: JsonNode): JsonNode =
+  ## Every money amount, percentage, date and number of two or more digits
+  ## in the reply appears in a tool output, a Waku Memory result or the
+  ## user's message of this turn, after normalising the format. The turn's
+  ## own date is not a claim. Passes at 90% found; the note names up to
+  ## three that were not. n/a below three numbers, for an older trace whose
+  ## tool outputs may have been cut, and when a number is missing from a
+  ## turn that ran no tool but Waku Memory: such a reply may quote the
+  ## chat's earlier turns or recalled facts, which the trace does not keep.
+  if not v.jget("v2").getBool():
+    return checkResult("grounded_numbers", newJNull(),
+      "older trace: tool outputs may be cut")
+  let wanted = replyNumbers(v.jget("reply").getStr(), v.jget("ts").getStr())
+  if wanted.len < groundedMinNumbers:
+    return checkResult("grounded_numbers", newJNull(),
+      $wanted.len & " number(s) in the reply; the check needs 3")
+  var texts = @[v.jget("message").getStr()]
+  for t in v.jget("tools"):
+    texts.add(t.jget("output").getStr())
+  let (numbers, dates) = sourceIndex(texts)
+  var allNumbers = numbers & spendFigures(v.jget("tools"))
+  var missing: seq[string] = @[]
+  for w in wanted:
+    var ok = false
+    if w.isDate:
+      ok = w.iso in dates
+    else:
+      ok = numberFound(w.values, w.decimals, allNumbers, w.scale)
+    if not ok:
+      missing.add(w.written)
+  let found = wanted.len - missing.len
+  let pass = found.float / wanted.len.float >= groundedShare
+  var note = $found & " of " & $wanted.len &
+    " numbers found in the turn's sources"
+  if missing.len > 0:
+    note &= "; not found: " & missing[0 ..< min(3, missing.len)].join(", ")
+  if not pass:
+    var memoryOnly = true
+    for t in v.jget("tools"):
+      if t.jget("source").getStr() != "waku_memory":
+        memoryOnly = false
+        break
+    if memoryOnly:
+      return checkResult("grounded_numbers", newJNull(),
+        note & "; answered from memory, and the chat history and " &
+        "recalled facts are not traced")
+    return checkResult("grounded_numbers", %0, note)
+  checkResult("grounded_numbers", %1, note)

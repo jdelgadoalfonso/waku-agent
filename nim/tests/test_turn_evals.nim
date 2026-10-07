@@ -220,6 +220,72 @@ suite "one report":
     v["v2"] = %false
     assert checkOneReport(v)["value"].kind == JNull
 
+proc groundedView(message, reply: string, outputs: seq[string],
+    sources: seq[string] = @[]): JsonNode =
+  var tools: seq[JsonNode] = @[]
+  for i, o in outputs:
+    let src = if i < sources.len: sources[i] else: "local"
+    tools.add(%*{"tool": "search_web", "args": {}, "output": o,
+      "ok": true, "source": src, "cost_usd": newJNull(),
+      "endpoint_id": "", "provider": ""})
+  %*{"message": message, "reply": reply, "tools": tools,
+    "reports": newJArray(), "usd": 0.1, "v2": true,
+    "ts": "2026-10-05T10:00:00+00:00", "research": false,
+    "unfinished": false}
+
+const numSource = "{\"revenue_usd\": 1200, \"share\": 0.04, " &
+  "\"founded\": \"2026-10-05\", \"employees\": 37, \"growth_pct\": 12}"
+
+suite "grounded numbers":
+  test "other formats match: commas, $0.04, percents, written dates":
+    let reply = "They earn $1,200 a month, hold $0.04 of share, have 37 " &
+      "staff, grew 12% and launched Oct 5, 2026."
+    let check = checkGroundedNumbers(groundedView("x", reply, @[numSource]))
+    assert check["value"].getInt() == 1, check["note"].getStr()
+
+  test "an invented figure fails and is named":
+    let reply = "Revenue was $1,200, profit $9,999 and tax $8,888."
+    let check = checkGroundedNumbers(groundedView("x", reply, @[numSource]))
+    assert check["value"].getInt() == 0
+    assert "9,999" in check["note"].getStr(), check["note"].getStr()
+
+  test "below three numbers is n/a, and code and lists do not count":
+    let thin = checkGroundedNumbers(
+      groundedView("x", "Only 5 and 7 here.", @[numSource]))
+    assert thin["value"].kind == JNull
+    let coded = checkGroundedNumbers(groundedView("x",
+      "```\n100 200 300\n```\n1. First\n2. Second", @[numSource]))
+    assert coded["value"].kind == JNull, coded["note"].getStr()
+
+  test "the user's message counts as a source too":
+    let reply = "Revenue was $1,200, staff 37 and tax $8,888."
+    let check = checkGroundedNumbers(groundedView(
+      "remember tax $8,888", reply, @[numSource]))
+    assert check["value"].getInt() == 1, check["note"].getStr()
+
+  test "the trace's own treg dollars ground a spend sentence":
+    var v = groundedView("x",
+      "The call cost $0.04 over 25 rows and 30 tries.",
+      @["{\"rows\": 25, \"tries\": 30}"], @["treg"])
+    v["tools"][0]["cost_usd"] = %0.04
+    let check = checkGroundedNumbers(v)
+    assert check["value"].getInt() == 1, check["note"].getStr()
+
+  test "a memory-only miss is n/a: history is not traced":
+    let mem: seq[string] = @[]
+    var v = groundedView("x", "It cost $5.00, took 25 days and 30 tries.",
+      @["{}"], @["waku_memory"])
+    discard mem
+    let check = checkGroundedNumbers(v)
+    assert check["value"].kind == JNull
+    assert "answered from memory" in check["note"].getStr()
+
+  test "an older trace gets n/a, its outputs may be cut":
+    var v = groundedView("x", "Revenue was $1,200, profit $9,999 and tax $8,888.",
+      @[numSource])
+    v["v2"] = %false
+    assert checkGroundedNumbers(v)["value"].kind == JNull
+
 suite "check table":
   test "the page lists the five checks in order":
     assert turnChecks.len == 5
