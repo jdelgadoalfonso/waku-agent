@@ -286,6 +286,92 @@ suite "grounded numbers":
     v["v2"] = %false
     assert checkGroundedNumbers(v)["value"].kind == JNull
 
+proc errTool(tool, source: string, ok: bool, provider = "",
+    endpoint = ""): JsonNode =
+  %*{"tool": tool, "args": {}, "output": "boom", "ok": ok,
+    "source": source, "cost_usd": newJNull(), "endpoint_id": endpoint,
+    "provider": provider}
+
+proc errView(reply: string, tools: seq[JsonNode],
+    usd = 0.1): JsonNode =
+  %*{"message": "x", "reply": reply, "tools": tools,
+    "reports": newJArray(), "usd": usd, "v2": true,
+    "ts": "2026-10-05T10:00:00+00:00", "research": false,
+    "unfinished": false}
+
+suite "errors handled":
+  test "a retried failure passes":
+    let check = checkErrorsHandled(errView("Done.",
+      @[errTool("treg_call", "treg", false),
+        errTool("treg_call", "treg", true)]))
+    assert check["value"].getInt() == 1
+
+  test "a mentioned failure passes, by tool, endpoint part or plain words":
+    let named = checkErrorsHandled(errView("Tomba returned nothing.",
+      @[errTool("tomba_lookup", "treg", false, provider = "tomba")]))
+    assert named["value"].getInt() == 1, named["note"].getStr()
+    let part = checkErrorsHandled(errView("YouTube gave no rows.",
+      @[errTool("treg_call", "treg", false,
+        endpoint = "tikhub.youtube.search_video")]))
+    assert part["value"].getInt() == 1, part["note"].getStr()
+    let words = checkErrorsHandled(errView("The search failed, trying again.",
+      @[errTool("search_web", "local", false)]))
+    assert words["value"].getInt() == 1
+
+  test "a silent failure fails and names the tool":
+    let check = checkErrorsHandled(errView("All good, here are results.",
+      @[errTool("tomba_lookup", "treg", false, provider = "tomba")]))
+    assert check["value"].getInt() == 0
+    assert "tomba_lookup" in check["note"].getStr()
+
+  test "no failure is n/a":
+    let check = checkErrorsHandled(
+      errView("Done.", @[errTool("treg_call", "treg", true)]))
+    assert check["value"].kind == JNull
+
+suite "under budget":
+  test "a $1.34 turn fails the default budget":
+    delEnv("WAKU_TURN_BUDGET_USD")
+    let check = checkUnderBudget(errView("x", @[], usd = 1.34))
+    assert check["value"].getInt() == 0
+    assert check["note"].getStr() == "$1.34 is over the $1.00 budget"
+
+  test "the budget comes from the environment":
+    putEnv("WAKU_TURN_BUDGET_USD", "2.00")
+    let check = checkUnderBudget(errView("x", @[], usd = 1.34))
+    assert check["value"].getInt() == 1
+    assert check["note"].getStr() == "$1.34 of the $2.00 budget"
+    delEnv("WAKU_TURN_BUDGET_USD")
+
+  test "no recorded cost is n/a":
+    var v = errView("x", @[])
+    v["usd"] = newJNull()
+    assert checkUnderBudget(v)["value"].kind == JNull
+
+suite "run checks":
+  test "one grouped turn gets the five code scores":
+    let turn = %*{"turn_id": "t_abc123",
+      "ts": "2026-10-05T10:00:00+00:00", "user_message": "hi",
+      "reply": "Forty-two.", "events": []}
+    let scores = runChecks(turn, usd = %0.1)
+    assert scores.len == 5
+    assert scores[0]["name"].getStr() == "spend_claim"
+    assert scores[4]["name"].getStr() == "under_budget"
+    for s in scores:
+      assert s["source"].getStr() == "code"
+
+  test "a check that raises is n/a and the page still builds":
+    proc broken(v: JsonNode): JsonNode =
+      raise newException(CatchableError, "boom")
+    let turn = %*{"turn_id": "t_abc123",
+      "ts": "2026-10-05T10:00:00+00:00", "user_message": "hi",
+      "reply": "Forty-two.", "events": []}
+    let scores = runChecks(turn, usd = %0.1,
+      checks = @[("spend_claim", CheckFn(broken))])
+    assert scores.len == 1
+    assert scores[0]["value"].kind == JNull
+    assert scores[0]["note"].getStr() == "check error"
+
 suite "check table":
   test "the page lists the five checks in order":
     assert turnChecks.len == 5

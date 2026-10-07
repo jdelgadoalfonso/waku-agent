@@ -763,3 +763,137 @@ proc checkGroundedNumbers*(v: JsonNode): JsonNode =
         "recalled facts are not traced")
     return checkResult("grounded_numbers", %0, note)
   checkResult("grounded_numbers", %1, note)
+
+# ---------------------------------------------------------------------------
+# 4. errors_handled
+# ---------------------------------------------------------------------------
+
+let failureWordsRe = re(
+  r"\b(error|errors|failed|fail|fails|failure|couldn't|could not|can't|cannot|didn't work|did not work|" &
+  r"unavailable|timed out|time out|unable|skipped|skip|insufficient|not enough|blocked|refused|rejected|" &
+  r"denied|wasn't able|was not able|weren't able|were not able)\b|" &
+  r"\b(?:did not|didn't|does not|doesn't|could not|couldn't|was not|wasn't|were not|weren't|" &
+  r"is not|isn't|are not|aren't|not)\s+(?:\w+\s+)?(?:run|ran|load|loaded|pulled|fetched|returned|" &
+  r"available|reachable|complete|completed|finish|finished|go through|went through)\b|" &
+  r"\bno\s+(?:\w+\s+){0,2}(?:was|were)\s+(?:run|pulled|fetched|returned|loaded|found|available)\b|" &
+  r"\bbelow\b.{0,60}\b(?:needed|required|minimum)\b", {reIgnoreCase})
+
+const genericParts = ["search", "list", "lookup", "info", "data", "details",
+  "detail", "fetch", "query", "call", "read", "web", "api", "app", "v1",
+  "v2", "v3", "get", "post", "posts", "user", "users", "companies",
+  "company", "people", "person", "profile", "profiles", "preview",
+  "similar", "general", "items", "item", "results"]
+  ## Endpoint parts too generic to stand for the failed call.
+
+proc boundaryMentioned(haystack, name: string): bool =
+  if name.len == 0:
+    return false
+  var m: array[1, string]
+  find(haystack, re("(?<![a-z0-9])" & escapeRe(name) & r"(?![a-z0-9])"),
+    m) >= 0
+
+proc toolNames(t: JsonNode): seq[string] =
+  ## What a reply may call a tool: its name, its short name, its provider,
+  ## its endpoint, and each specific part of the endpoint.
+  let name = t.jget("tool").getStr()
+  var short = name
+  short.removePrefix(tregPrefix)
+  short.removePrefix(wakuMemoryPrefix)
+  result = @[]
+  for n in @[name, short, short.replace("_", " "), t.jget("provider").getStr(),
+      t.jget("endpoint_id").getStr()]:
+    if n.len > 0 and n.toLowerAscii() notin genericParts and
+        n.toLowerAscii() notin result:
+      result.add(n.toLowerAscii())
+  for part in t.jget("endpoint_id").getStr().split({'@', '.', '/', ':'}):
+    let p = part.replace("_", " ")
+    if p.len >= 4 and p.toLowerAscii() notin genericParts and
+        p.toLowerAscii() notin result:
+      result.add(p.toLowerAscii())
+
+proc checkErrorsHandled*(v: JsonNode): JsonNode =
+  ## Every failed tool call was retried or mentioned: a later call to the
+  ## same tool in the turn succeeded, or the reply names the tool, its
+  ## provider, its endpoint or a part of it, or says a step failed or did
+  ## not happen. n/a when no tool failed.
+  let tools = v.jget("tools")
+  var failed: seq[int] = @[]
+  for i in 0 ..< tools.len:
+    if not tools[i].jget("ok").getBool(true):
+      failed.add(i)
+  if failed.len == 0:
+    return checkResult("errors_handled", newJNull(), "no tool call failed")
+  let reply = prose(v.jget("reply").getStr()).toLowerAscii()
+  let saidFailure = containsRe(reply, failureWordsRe)
+  var silent: seq[string] = @[]
+  for i in failed:
+    let t = tools[i]
+    var retried = false
+    for later in tools[i + 1 .. ^1]:
+      if later.jget("tool").getStr() == t.jget("tool").getStr() and
+          later.jget("ok").getBool(false):
+        retried = true
+        break
+    var named = false
+    for n in toolNames(t):
+      if boundaryMentioned(reply, n):
+        named = true
+        break
+    if not (retried or named or saidFailure):
+      if t.jget("tool").getStr() notin silent:
+        silent.add(t.jget("tool").getStr())
+  if silent.len > 0:
+    return checkResult("errors_handled", %0,
+      silent.join(", ") & " failed and the reply never says so")
+  checkResult("errors_handled", %1,
+    $failed.len & " failed call" & (if failed.len != 1: "s" else: "") &
+    " retried or mentioned")
+
+# ---------------------------------------------------------------------------
+# 5. under_budget
+# ---------------------------------------------------------------------------
+
+proc checkUnderBudget*(v: JsonNode): JsonNode =
+  ## The turn's dollars are at most the per-turn budget.
+  let usd = v.jget("usd")
+  if usd.kind notin {JInt, JFloat}:
+    return checkResult("under_budget", newJNull(), "no cost recorded")
+  let amount = if usd.kind == JInt: usd.getInt().float else: usd.getFloat()
+  let budget = budgetUsd()
+  if amount > budget:
+    return checkResult("under_budget", %0,
+      money(amount) & " is over the " & money(budget) & " budget")
+  checkResult("under_budget", %1,
+    money(amount) & " of the " & money(budget) & " budget")
+
+# ---------------------------------------------------------------------------
+# run_checks
+# ---------------------------------------------------------------------------
+
+type CheckFn* = proc(v: JsonNode): JsonNode
+
+proc defaultChecks*(): seq[tuple[name: string, fn: CheckFn]] =
+  @[("spend_claim", checkSpendClaim), ("one_report", checkOneReport),
+    ("grounded_numbers", checkGroundedNumbers),
+    ("errors_handled", checkErrorsHandled), ("under_budget", checkUnderBudget)]
+
+proc runChecks*(turn: JsonNode, usd: JsonNode = newJNull(),
+    research = false, servers: openArray[string] = [],
+    checks: seq[tuple[name: string, fn: CheckFn]] = @[]): seq[JsonNode] =
+  ## The five code checks on one grouped turn, as scores with source
+  ## `code`: value 1 (pass), 0 (fail) or null (n/a). A check that raises
+  ## is recorded as n/a with the note "check error" and never breaks the
+  ## page.
+  let table = if checks.len > 0: checks else: defaultChecks()
+  var v: JsonNode
+  try:
+    v = view(turn, usd, research, servers)
+  except CatchableError:
+    for (name, _) in table:
+      result.add(checkResult(name, newJNull(), "check error"))
+    return result
+  for (name, check) in table:
+    try:
+      result.add(check(v))
+    except CatchableError:
+      result.add(checkResult(name, newJNull(), "check error"))
