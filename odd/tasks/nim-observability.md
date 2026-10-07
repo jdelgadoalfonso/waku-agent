@@ -88,3 +88,8 @@ juez usará después.
 - **L3** (decisión de implementador): `observability.nim` nuevo (la
   página; el núcleo sigue en `observe.nim`); scores stored-only hasta
   turn-evals; `judge_offer` null sin modelo (misma forma, sin ofertas).
+- **L4** (cierre, T1-T4): suite completa **1375 OK, 0 FAILED** (+19 sobre
+  trace-v2: lectores + turn view + secciones/payload + 3 ruta). T5
+  documenta la fuente y el límite en los módulos y el aterrizaje en
+  `nim-port.md`. `portOnlyGetRoutes` declara la divergencia hasta que
+  Python pinee la ruta; `generatedAt`/`nowMs` fijan el reloj en los pines.
