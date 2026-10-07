@@ -71,6 +71,7 @@ el juez corre solo cuando la persona lo pide, escribiendo un evento
 | T6 | Cableado (`build_turn` corre checks + stored, `research` por skill-match, `evals.your_turns` se vuelve real) + pines | S1 S2 | test-first, pins | work unit |
 | T7 | Juez bajo demanda (`judge_offer` estimado, prompt, veredicto, score) + POST `/api/turn-evals/judge` + `portOnlyPostRoutes` + pines | S2 S4 | test-first, pins | work unit |
 | T8 | `report` + `waku evals turns` + docs que la unidad vuelve falsos (regla 9) | S1 S4 | CLI + doc + pines | work unit |
+| T9 | Cableado vivo del juez: el small model del provider en uso sobre el seam `buildClient` (spec 015, "It asks the small model of the provider in use") + pines de transporte scripted | S2 S4 | test-first, pins | work unit |
 
 ## Non-goals
 
@@ -80,6 +81,10 @@ el juez corre solo cuando la persona lo pide, escribiendo un evento
   contrato no la ve, igual que `portOnlyGetRoutes`).
 - Re-calificar modelos o releases: la unidad califica turnos, no suites.
 - `release_info`/autodeploy, `collect()` completo de `/api/data`.
+- El tagging `turn_id`/`charges` del cliente hosted (Python lo usa para
+  que el proxy cobre la llamada del juez aparte del turno): el port no
+  tiene proxy de metering, así que el costo sale de `llmCost` y el seam
+  `charged_usd` queda como el punto de entrada si algún día lo hay.
 
 ## Verificación
 
@@ -104,6 +109,12 @@ el juez corre solo cuando la persona lo pide, escribiendo un evento
   `POST` pineado en POST + espejo intacto.
 - **T8**: `waku evals turns` imprime tabla + turnos que fallan; `rg -n`
   documenta fuente y límites en `turn_evals.nim`.
+- **T9**: el seam vivo manda un solo mensaje de usuario con el prompt,
+  `max_tokens` 300 y el modelo pedido; lee `text`/`in`/`out` del
+  response; un cliente que falla sube como `JudgeRefused` por la ruta;
+  la ruta cae al `model` del home cuando no hay `small_model`; la línea
+  del ledger sigue siendo una sola (el cliente NO se envuelve en
+  `meteredClient`).
 
 ## Log
 
@@ -126,5 +137,27 @@ el juez corre solo cuando la persona lo pide, escribiendo un evento
   fuente y el límite en el módulo, el dispatch y el README (regla 9).
   Hallazgo: `yourTurns` y su tabla ya vivían en `observability.nim`
   (llegaron con la unidad de rutas) — T6 los volvió reales en vez de
-  duplicarlos en `turn_evals.nim`. `judgePass`/`judgePassMark` comparten
-  valor a propósito: la tabla es de la página, el veredicto del check.
+  duplicarlos en `turn_evals.nim`.
+- **L5** (usuario, 2026-10-07): "cablea el juez vivo" — el seam queda
+  declarado como T9, no como follow-up: `arena_live` es donde vive
+  `liveClientFor` y el `buildClient` que los tests ya scriptean, así que
+  el cableado vivo entra ahí (una implementación del cliente, no dos) y
+  la ruta deja de responder el error honesto.
+- **L6** (cierre, T9, 2026-10-07): suite completa **1435 OK, 0 FAILED,
+  cero warnings** (+3 sobre T8: 2 seam vivo + 1 fallback de modelo).
+  `makeLiveTurnJudge(deps, provider)` en `arena_live` sobre
+  `liveClientFor`; `dashboard` lo cablea junto a `makeLiveJudge`. El
+  cliente **no** va por `meteredClient` (una línea de ledger por juicio:
+  la escribe `judgeTurn`). La ruta usa `small_model or model`, como
+  `judge_client`. `judgePass` de la página pasa a aliasar
+  `turn_evals.judgePassMark` (un literal, no dos). Hallazgo de pin: el
+  throttle de 60 s es por turn id **y por proceso**, así que dos pines
+  en una corrida no pueden compartir turno — `judgeHome` lo toma como
+  parámetro.
+- **Pendiente al cortar** (2026-10-07): (1) el review nativo de la
+  unidad sigue bloqueado en el gate `managed_assets_outdated` (espera
+  autorización para el `gentle-ai sync` del continuation, que escribe
+  fuera del proyecto); (2) deriva pre-existente de
+  `nim/tests/factstore_fakes` (binario trackeado que cada `nimble test`
+  regenera) sin decisión entre restaurar a HEAD o ignorar
+  `.codegraph/`/`.pi/`.

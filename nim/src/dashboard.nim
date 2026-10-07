@@ -237,9 +237,11 @@ type
     ## One judgment race behind `/api/judgment-arena/stream` (nil until
     ## a judge runner exists).
   TurnJudgeCallFn* = turn_evals.JudgeCallFn
-    ## One turn-judge model call behind `POST /api/turn-evals/judge`
-    ## (nil until the live small-model call is wired — the honest
-    ## error, like the unwired graph).
+    ## One turn-judge model call behind `POST /api/turn-evals/judge`.
+    ## The live path wires the small model of the provider in use
+    ## (`makeLiveTurnJudge`); nil is the in-process deps case
+    ## (validate-only callers), where the route answers the honest
+    ## error instead of a 500.
   HostedListFn* = memory_arena.HostedListFn
     ## One hosted store's facts behind `/api/memory-arena/stores`.
   HostedWipeFn* = memory_arena.HostedWipeFn
@@ -1452,15 +1454,19 @@ proc turnJudge*(d: DashboardDeps, payload: JsonNode): JsonNode =
   ## port divergence, not a Python route — see `portOnlyPostRoutes`.
   if d.turnJudgeFn.isNil:
     return %*{"error": "no judge backend is wired in the Nim port — " &
-      "the small-model call behind \"Judge this turn\" is not connected yet"}
+      "the small-model call behind \"Judge this turn\" is not connected " &
+      "in this process"}
   let turnId = payload.jget("turn_id").getStr()
   try:
     let (events, _, _) = observability.readEvents(d.home)
     let grouped = observability.groupTurns(events)
     let (turn, judged) = turn_evals.findTurn(%grouped, %events, turnId)
     let at = if d.nowIso.len > 0: d.nowIso else: turn_evals.nowIso()
+    # `small_model or model`, like Python's `judge_client`: a home with no
+    # small model still judges, with the model every turn already uses.
+    let model = if d.smallModel.len > 0: d.smallModel else: d.model
     let score = turn_evals.judgeTurn(d.home, turn, judged, d.turnJudgeFn,
-      d.smallModel, d.provider, at)
+      model, d.provider, at)
     return %*{"score": score}
   except CatchableError as exc:
     return %*{"error": exc.msg}
@@ -3858,6 +3864,7 @@ proc serveDashboardCmd*(providers: seq[Provider], settings: Settings,
       nowUnix: getTime().toUnix())
     srv.deps.raceFn = makeLiveRace(adeps)
     srv.deps.judgeFn = makeLiveJudge(adeps)
+    srv.deps.turnJudgeFn = makeLiveTurnJudge(adeps, settings.provider)
     srv.deps.memoryRunFn = makeLiveMemoryRun(adeps)
     srv.deps.judgmentRaceFn = makeLiveJudgmentRace(adeps)
     return runDashboardCmd(srv, rig.reconcileHook(), rig.shutdownHook(),

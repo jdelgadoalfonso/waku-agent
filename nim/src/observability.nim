@@ -1220,8 +1220,9 @@ proc memoryPerTurn*(turns: seq[JsonNode]): seq[JsonNode] =
       "searches": searches})
   return result
 
-const judgePass* = 0.7
-  ## A judge score passes at 0.7.
+const judgePass* = turn_evals.judgePassMark
+  ## A judge score passes at 0.7. One literal, in `turn_evals`: the page
+  ## prints the row, the judge's own threshold is the same number.
 
 proc yourTurns*(turns: seq[JsonNode], window: string = "7d",
     nowMs: int64 = 0): JsonNode =

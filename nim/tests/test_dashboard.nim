@@ -2173,7 +2173,10 @@ suite "phase 12 observability route":
     removeDir(root)
 
 suite "phase 15 turn-evals judge route":
-  proc judgeHome(name: string): string =
+  proc judgeHome(name: string, turnId = "t_f00d42"): string =
+    ## One temp home with a judged-ready turn. `turnId` is a parameter
+    ## because the 60-second throttle is per turn id and per process: two
+    ## pins in one run must not share one.
     result = getTempDir() / name
     if dirExists(result):
       removeDir(result)
@@ -2181,9 +2184,9 @@ suite "phase 15 turn-evals judge route":
     createDir(result / "static")
     writeFile(result / "static" / "index.html", "<html></html>")
     writeFile(result / "traces" / "2026-10-05.jsonl", [
-      $(%*{"type": "turn_start", "turn_id": "t_f00d42",
+      $(%*{"type": "turn_start", "turn_id": turnId,
            "ts": "2026-10-05T10:00:00.000+00:00", "user_message": "hi"}),
-      $(%*{"type": "turn_end", "turn_id": "t_f00d42",
+      $(%*{"type": "turn_end", "turn_id": turnId,
            "ts": "2026-10-05T10:00:02.000+00:00", "reply": "yo",
            "iterations": 1})].join("\n") & "\n")
 
@@ -2235,6 +2238,28 @@ suite "phase 15 turn-evals judge route":
     let (_, _, body2) = handleGet(d, "/api/observability")
     assert parseJson(body2)["turns"][0]["judge_offer"].kind == JNull
     removeDir(root)
+
+  test "the route judges with the small model, or the home's model without one":
+    var seen: seq[string] = @[]
+    let record = proc(prompt, model: string): JsonNode {.closure.} =
+      seen.add(model)
+      %*{"text": "{\"addresses_question\": 8, \"grounded\": 8, " &
+        "\"reason\": \"ok\"}", "in": 1, "out": 1}
+    # `small_model or model`, like Python's `judge_client`.
+    let small = judgeHome("waku-dash-judge-model-small", "t_add999")
+    var withSmall = judgeDeps(small)
+    withSmall.turnJudgeFn = record
+    discard handlePost(withSmall, "/api/turn-evals/judge",
+      """{"turn_id": "t_add999"}""")
+    let bare = judgeHome("waku-dash-judge-model-bare", "t_beef01")
+    var withoutSmall = judgeDeps(bare)
+    withoutSmall.smallModel = ""
+    withoutSmall.turnJudgeFn = record
+    discard handlePost(withoutSmall, "/api/turn-evals/judge",
+      """{"turn_id": "t_beef01"}""")
+    assert seen == @["m", "test-model"], $seen
+    removeDir(small)
+    removeDir(bare)
 
   test "an unwrapped binary has no eval counts to read":
     assert checkoutRoot("") == "" or dirExists(checkoutRoot("") / "evals")

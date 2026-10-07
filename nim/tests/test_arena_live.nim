@@ -229,6 +229,43 @@ suite "live judge":
     assert llms[0]["model"].getStr() == "m"
     assert llms[0]["usage"]["in"].getInt() == 4
 
+suite "live turn judge":
+  test "one small-model call carries the prompt and reads its tokens":
+    let home = freshHome("waku-turnjudge-live")
+    var deps = stubDeps(home, Bank(scripts: initTable[string, seq[JsonNode]](),
+      pos: initTable[string, int]()))
+    var seen: seq[JsonNode] = @[]
+    deps.buildClient = proc(provider, model: string): LlmClient {.closure.} =
+      LlmClient(create: proc(req: JsonNode): JsonNode {.closure.} =
+        seen.add(req)
+        textResp(
+          """{"addresses_question": 9, "grounded": 8, "reason": "ok"}""",
+          120, 20))
+    let call = makeLiveTurnJudge(deps, "prov")
+    let resp = call("grade this turn", "small-1")
+    assert seen.len == 1
+    assert seen[0]["model"].getStr() == "small-1"
+    assert seen[0]["max_tokens"].getInt() == 300
+    assert seen[0]["messages"].len == 1
+    assert seen[0]["messages"][0]["role"].getStr() == "user"
+    assert seen[0]["messages"][0]["content"].getStr() == "grade this turn"
+    assert resp["text"].getStr() ==
+      """{"addresses_question": 9, "grounded": 8, "reason": "ok"}"""
+    assert resp["in"].getInt() == 120
+    assert resp["out"].getInt() == 20
+    removeDir(home)
+
+  test "a call that raises propagates for the route to refuse":
+    let home = freshHome("waku-turnjudge-dead")
+    var deps = stubDeps(home, Bank(scripts: initTable[string, seq[JsonNode]](),
+      pos: initTable[string, int]()))
+    deps.buildClient = proc(provider, model: string): LlmClient {.closure.} =
+      raise newException(CatchableError, "bad key")
+    let call = makeLiveTurnJudge(deps, "prov")
+    expect CatchableError:
+      discard call("grade this turn", "small-1")
+    removeDir(home)
+
 suite "live probes and graph stream":
   test "provider probe passes silently without a matching key":
     let probe = liveProviderProbe(@[], freshHome("waku-probe-none"),

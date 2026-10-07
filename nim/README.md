@@ -372,8 +372,10 @@ episode; `settle` waits for the graph to stop growing, not just the episodes.
   verdict is written once as a `score` trace event. `observability`
   runs the checks inside `buildTurn` and offers the judge per turn;
   `POST /api/turn-evals/judge` and `waku evals turns` are the two ways
-  in. The judge's model call is an injected seam, so nothing here opens
-  a socket; the route refuses honestly until the live call is wired.
+  in. The judge's model call is the `buildClient` seam
+  (`arena_live.makeLiveTurnJudge` wires the small model of the provider
+  in use), so the route opens no socket of its own and tests script a
+  client instead.
 - `src/brief.nim` ports `ops/brief.py` (`runBrief` → outbox txt).
 - `src/client.nim` ports `get_client` (row lookup, key scoping, default
   models, endpoint resolution, helpful startup errors).

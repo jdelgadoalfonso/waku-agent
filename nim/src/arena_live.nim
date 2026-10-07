@@ -34,6 +34,7 @@ import ./http
 import ./github
 import ./judge
 import ./judgment_cases
+import ./turn_evals
 import ./loop
 import ./experimental
 import ./mcp
@@ -244,6 +245,34 @@ proc makeLiveJudge*(deps: ArenaDeps): JudgeFn =
           ghRepo: "")
         liveClientFor(deps, s),
       proc(ms: int) {.closure.} = sleep(ms))
+
+proc makeLiveTurnJudge*(deps: ArenaDeps,
+    provider: string): turn_evals.JudgeCallFn =
+  ## The turn-evals `JudgeCallFn` (spec 015): the small model of the
+  ## provider in use grades one stored turn, read from this home's own
+  ## traces. One call per press of "Judge this turn".
+  ##
+  ## NOT metered through `meteredClient`: `turn_evals.judgeTurn` writes
+  ## the judge's own ledger row (kind "judge") from this response's
+  ## tokens, so wrapping the client here would record one call twice.
+  ##
+  ## A call that raises propagates as it is: the route turns it into the
+  ## honest `JudgeRefused` sentence (`get_client`'s no-key and unknown
+  ## provider sentences included), and the 60-second throttle releases
+  ## so a failed call may be retried at once.
+  result = proc(prompt, model: string): JsonNode {.closure.} =
+    var s = Settings(provider: provider, apiKey: "", model: model,
+      home: deps.home, smallModel: "", baseUrl: "", maxIterations: 10,
+      maxTokens: 8192, historyTurns: 12, graphWorkflows: false,
+      consolidateEvery: 6, retrievalTopK: 4, experimental: false,
+      appleTools: false, ghTool: false, ghRepo: "")
+    let client = liveClientFor(deps, s)
+    let resp = client.create(%*{"model": model,
+      "max_tokens": turn_evals.judgeMaxTokens,
+      "messages": @[%*{"role": "user", "content": prompt}]})
+    let usage = resp.jget("usage")
+    %*{"text": textOf(resp.jget("content")),
+      "in": usage.jget("in"), "out": usage.jget("out")}
 
 const
   adjudicatePrompt* = """A user asked an assistant a question the assistant was never told the answer to.
