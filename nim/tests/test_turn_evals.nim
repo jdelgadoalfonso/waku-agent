@@ -5,6 +5,7 @@
 
 import std/json
 import std/os
+import std/strutils
 import std/unittest
 
 import ../src/turn_evals
@@ -80,6 +81,59 @@ suite "money and budget":
     putEnv("WAKU_TURN_BUDGET_USD", "-3")
     assert budgetUsd() == 1.00
     delEnv("WAKU_TURN_BUDGET_USD")
+
+proc tregTool(output: string): JsonNode =
+  %*{"type": "tool", "tool": "treg_call", "args": {}, "output": output}
+
+proc spendView(reply: string, outputs: seq[string],
+    usd = 0.0089): JsonNode =
+  var events: seq[JsonNode] = @[]
+  for o in outputs:
+    events.add(tregTool(o))
+  view(%*{"turn_id": "t_abc123", "ts": "2026-10-05T10:00:00+00:00",
+    "user_message": "x", "reply": reply, "events": events}, usd = %usd)
+
+const tombaOut = "{\"status\": 200, \"endpoint_id\": " &
+  "\"tomba.companies.similar\", \"cost_usd\": 0.0089}"
+
+suite "spend claim":
+  test "a $0.00 reply against $0.0089 of treg fails and names both":
+    let check = checkSpendClaim(spendView("The research cost $0.00.", @[tombaOut]))
+    assert check["value"].getInt() == 0
+    assert check["note"].getStr() ==
+      "reply says $0.00; this turn's treg calls cost $0.0089", check["note"].getStr()
+
+  test "a named treg figure is checked against its own calls":
+    let ok = checkSpendClaim(spendView("The treg cost was $0.0089.", @[tombaOut]))
+    assert ok["value"].getInt() == 1, ok["note"].getStr()
+    let bad = checkSpendClaim(spendView("The treg cost was $0.40.", @[tombaOut]))
+    assert bad["value"].getInt() == 0
+    assert "$0.40" in bad["note"].getStr()
+    assert "$0.0089" in bad["note"].getStr()
+
+  test "a price offered for later is not a claim":
+    let check = checkSpendClaim(
+      spendView("Want me to enrich them? That'd run ~$0.002 each.", @[tombaOut]))
+    assert check["value"].kind == JNull
+
+  test "a free claim passes when treg charged nothing":
+    let free = "{\"status\": 200, \"endpoint_id\": " &
+      "\"leadsforge.lookalike.preview\", \"cost_usd\": 0.0}"
+    let check = checkSpendClaim(spendView(
+      "Both lists came from LeadsForge's free preview ($0.00).", @[free]))
+    assert check["value"].getInt() == 1, check["note"].getStr()
+
+  test "N calls at $X each states N times X":
+    let aviato = "{\"status\": 200, \"endpoint_id\": \"aviato.search\", " &
+      "\"cost_usd\": 0.04}"
+    let check = checkSpendClaim(spendView(
+      "Four Aviato calls at $0.01 each covered it; the spend was $0.04.",
+      @[aviato]))
+    assert check["value"].getInt() == 1, check["note"].getStr()
+
+  test "an unscoped figure without the treg word is not checked":
+    let check = checkSpendClaim(spendView("Total: $0.04.", @[tombaOut]))
+    assert check["value"].kind == JNull
 
 suite "check table":
   test "the page lists the five checks in order":
