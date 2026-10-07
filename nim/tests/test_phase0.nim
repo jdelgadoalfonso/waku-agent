@@ -110,11 +110,12 @@ suite "phase 0 dotenv parser":
       ("WAKU_URL", "http://x?a=b")
 
 suite "phase 0 CLI command table":
-  test "cliCommands contains all 12 command names":
+  test "cliCommands contains all 13 command names":
     let expected = [
       "chat", "dashboard", "connections", "connect", "mcp", "voice",
       "telegram", "discord", "whatsapp", "brief", "gather", "skill",
+      "evals",
     ]
-    assert cliCommands.len == 12
+    assert cliCommands.len == 13
     for cmd in expected:
       assert cmd in cliCommands, "missing command: " & cmd

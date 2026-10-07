@@ -1546,3 +1546,49 @@ proc payload*(home: string, provider: string = "", model: string = "",
     "trace_errors": %errors,
     "turns": %turnsArr, "tools": tools, "memory": %memArr,
     "spend": spend, "evals": evals}
+
+proc turnsReport*(home: string, window: string = "7d",
+    nowMs: int64 = 0): string =
+  ## The `waku evals turns` text: the Your turns table for one window,
+  ## then every failing turn with the check that failed and its note.
+  ## `nowMs` is the clock in unix millis; 0 means now. Turns are built
+  ## exactly like the payload builds them (checks on every read, late
+  ## scores joined by turn id), so the table never disagrees with the page.
+  let win = validWindow(window)
+  let clock = if nowMs > 0: nowMs
+    else: int64(getTime().toUnix) * 1000
+  let (events, _, _) = readEvents(home)
+  var late = newJObject()
+  for ev in events:
+    if ev.kind == JObject and ev.jget("type").getStr() == "score" and
+        ev.jget("turn_id").getStr().len > 0:
+      let tid = ev.jget("turn_id").getStr()
+      if not late.hasKey(tid):
+        late[tid] = newJArray()
+      late[tid].add(copy(ev))
+  let grouped = groupTurns(events)
+  let servers = mcpServerNames(home)
+  var built: seq[JsonNode] = @[]
+  for t in grouped:
+    let tid = t.jget("turn_id").getStr()
+    var extra: seq[JsonNode] = @[]
+    if late.hasKey(tid):
+      let inside = t.jget("events")
+      for ev in late[tid]:
+        var found = false
+        if inside.kind == JArray:
+          for own in inside:
+            if own == ev:
+              found = true
+              break
+        if not found:
+          extra.add(ev)
+    let research = isResearch(matchingSkillNames(home, bundledSkillDirs(),
+      t.jget("user_message").getStr()))
+    built.add(buildTurn(t, servers, "", "", extra, research))
+  let startMs = windowStartMs(win, clock)
+  var inside: seq[JsonNode] = @[]
+  for t in built:
+    if inStartMs(t.jget("ts").getStr(), startMs):
+      inside.add(t)
+  turn_evals.reportText(home, win, %inside, yourTurns(built, win, clock))

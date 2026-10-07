@@ -1169,3 +1169,59 @@ proc judgeTurn*(home: string, turn, judged: JsonNode, call: JudgeCallFn,
     "addresses_question": verdict.jget("addresses_question"),
     "grounded": verdict.jget("grounded")}
   writeScore(home, result)
+
+# ---------------------------------------------------------------------------
+# waku evals turns
+# ---------------------------------------------------------------------------
+
+proc passRateStr(v: JsonNode): string =
+  ## Floored, so 228 of 229 reads 99.5%, never 100%.
+  if v.kind == JNull:
+    return "-"
+  let floored = int(v.getFloat() * 1000).float / 10
+  if floored == floored.int.float: $floored.int else: $floored
+
+proc reportText*(home, window: string, turns, table: JsonNode): string =
+  ## The `waku evals turns` text: the Your turns table, then every failing
+  ## turn with the check that failed and its note. `turns` are built turns
+  ## inside the window, oldest first; `table` is their `yourTurns` row set.
+  let label = if window == "today": "today"
+    elif window == "all": "all time" else: "the last 7 days"
+  var lines = @["Your turns, " & label & ": " & $table.jget("turns").getInt() &
+    " turn(s) in " & home & "/traces", ""]
+  lines.add(alignLeft("check", 18) & align("passed", 8) & align("failed", 8) &
+    align("n/a", 6) & align("rate", 7) & "  what it checks")
+  for row in table.jget("checks"):
+    lines.add(alignLeft(row.jget("name").getStr(), 18) &
+      align($row.jget("passed").getInt(), 8) &
+      align($row.jget("failed").getInt(), 8) &
+      align($row.jget("na").getInt(), 6) &
+      align(passRateStr(row.jget("pass_rate")), 7) &
+      "  " & row.jget("what").getStr())
+  let j = table.jget("judge")
+  var judgeLine = alignLeft("judge", 18) & align($j.jget("judged").getInt(), 8) &
+    " judged"
+  if j.jget("average").kind != JNull:
+    judgeLine &= ", average " & $j.jget("average").getFloat()
+  lines.add(judgeLine)
+  var failing: seq[(JsonNode, JsonNode)] = @[]
+  for t in turns:
+    for s in t.jget("scores"):
+      if s.jget("source").getStr() == "code" and s.jget("value").kind == JInt and
+          s.jget("value").getBiggestInt() == 0:
+        failing.add((t, s))
+  lines.add("")
+  if failing.len == 0:
+    lines.add("No failing turns.")
+  else:
+    lines.add("Failing turns: " & $failing.len)
+    for i in countdown(failing.len - 1, 0):
+      let (t, s) = failing[i]
+      let stamp = t.jget("ts").getStr()
+      let short = stamp[0 ..< min(16, stamp.len)].replace("T", " ")
+      let tid = t.jget("turn_id").getStr()
+      lines.add("  " & short & "  " & (if tid.len > 0: tid else: "(older trace)") &
+        "  " & s.jget("name").getStr() & ": " & s.jget("note").getStr())
+      let msg = t.jget("user_message").getStr()
+      lines.add("    \"" & msg[0 ..< min(80, msg.len)] & "\"")
+  lines.join("\n")

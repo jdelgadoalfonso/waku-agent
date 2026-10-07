@@ -365,6 +365,15 @@ episode; `settle` waits for the graph to stop growing, not just the episodes.
   loopback OAuth, `waku-memory` over the MCP bridge — every browser and
   socket step injected, so tests never open either). The dashboard chat
   answers the table without building an agent first.
+- `src/turn_evals.nim` ports `ops/turn_evals.py` (spec 015): the five
+  code checks a turn is graded by on every read (`spend_claim`,
+  `one_report`, `grounded_numbers`, `errors_handled`, `under_budget`),
+  the turn's own `Your turns` table, and the on-demand AI judge whose
+  verdict is written once as a `score` trace event. `observability`
+  runs the checks inside `buildTurn` and offers the judge per turn;
+  `POST /api/turn-evals/judge` and `waku evals turns` are the two ways
+  in. The judge's model call is an injected seam, so nothing here opens
+  a socket; the route refuses honestly until the live call is wired.
 - `src/brief.nim` ports `ops/brief.py` (`runBrief` → outbox txt).
 - `src/client.nim` ports `get_client` (row lookup, key scoping, default
   models, endpoint resolution, helpful startup errors).

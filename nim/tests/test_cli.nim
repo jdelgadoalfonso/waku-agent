@@ -417,3 +417,24 @@ suite "phase 6c oauth wiring":
     assert "OAuthFlowFn" notin msg
     assert browserUrl.startsWith("https://idp.example/authorize?")
     removeDir(home)
+
+suite "phase 15 evals turns command":
+  test "a bad window names the choices and exits 2":
+    let saved = scrubEnv()
+    let home = freshHome("waku-cli-evals-badwin")
+    assert runEvalsTurnsCmd(home, @["--window", "fortnight"]) == 2
+    restoreEnv(saved)
+    removeDir(home)
+
+  test "turns print offline from the home's traces":
+    let saved = scrubEnv()
+    let home = freshHome("waku-cli-evals-turns")
+    createDir(home / "traces")
+    putEnv("WAKU_HOME", home)
+    assert runEvalsTurnsCmd(home, @[]) == 0
+    assert runEvalsTurnsCmd(home, @["--window", "all"]) == 0
+    restoreEnv(saved)
+    removeDir(home)
+
+  test "evals routes to turns, bare evals prints usage":
+    assert runCommand(@["evals"]) == 1

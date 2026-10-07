@@ -120,3 +120,11 @@ el juez corre solo cuando la persona lo pide, escribiendo un evento
   fixtures upstream-only (pines inline); la ruta inyecta la llamada
   (nunca construye clientes); `charges`/`turn_id` tagging donde el seam
   los dé, si no costo estimado.
+- **L4** (cierre, T1-T8, 2026-10-07): suite completa **1432 OK, 0 FAILED**
+  (+57 sobre observability: 47 turn-evals + 6 ruta + 2 wiring + 3 CLI −
+  reacomodos). `nimble test` verde, cero warnings. T8 documenta la
+  fuente y el límite en el módulo, el dispatch y el README (regla 9).
+  Hallazgo: `yourTurns` y su tabla ya vivían en `observability.nim`
+  (llegaron con la unidad de rutas) — T6 los volvió reales en vez de
+  duplicarlos en `turn_evals.nim`. `judgePass`/`judgePassMark` comparten
+  valor a propósito: la tabla es de la página, el veredicto del check.

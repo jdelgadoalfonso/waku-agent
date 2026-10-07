@@ -7,8 +7,10 @@
 ## `dashboard` to the server loop (in-process callers validate only, so
 ## the dispatch test stays green without blocking on a socket). Phase 7d2
 ## wires the four gateway commands (`telegram`, `discord`, `whatsapp`,
-## `voice`) to their real loops over one real agent each. `connect` is
-## the only command still reporting not-yet-implemented.
+## `voice`) to their real loops over one real agent each. Phase 15
+## (`evals turns`) prints the turn-eval table from this home's traces
+## and ledger, offline and with no client built. `connect` is the only
+## command still reporting not-yet-implemented.
 ##
 ## Exit codes follow Python: unknown command → 1 with the usage text.
 ## Two deliberate divergences: `--help`/`--version` exit 0 (Unix
@@ -31,6 +33,7 @@ import ./client
 import ./config
 import ./connect
 import ./dashboard
+import ./observability
 import ./db
 import ./discord
 import ./experimental
@@ -84,6 +87,7 @@ const
   cliCommands* = [
     "chat", "dashboard", "connections", "connect", "mcp", "voice",
     "telegram", "discord", "whatsapp", "brief", "gather", "skill",
+    "evals",
   ]
 
   telegramMissingTokenLine = "Set TELEGRAM_BOT_TOKEN in .env " &
@@ -242,6 +246,25 @@ proc runGatherCmd*(dotenvStart = ""): int =
   if state.jget("errors").kind == JObject:
     for node, err in pairs(state["errors"]):
       echo node & ": " & err.getStr()
+  return 0
+
+proc runEvalsTurnsCmd*(dotenvStart = "", argv: seq[string] = @[]): int =
+  ## `waku evals turns [--window today|7d|all]`: the Your turns table,
+  ## then every failing turn with the check that failed and its note.
+  ## Offline: traces and ledger only, never a model call.
+  discard loadDotenv(dotenvStart)
+  var window = "7d"
+  var i = 0
+  while i < argv.len:
+    if argv[i] == "--window" and i + 1 < argv.len:
+      window = argv[i + 1]
+      inc i, 2
+    else:
+      inc i
+  if window notin observability.windows:
+    echo "--window takes one of: " & observability.windows.join(", ")
+    return 2
+  echo observability.turnsReport(loadSettings().home, window)
   return 0
 
 proc writeUsage*() =
@@ -559,6 +582,11 @@ proc runCommand*(args: seq[string], dotenvStart = "",
     return runBriefCmd(dotenvStart)
   if args[0] == "gather":
     return runGatherCmd(dotenvStart)
+  if args[0] == "evals" and args.len >= 2 and args[1] == "turns":
+    return runEvalsTurnsCmd(dotenvStart, args[2 .. ^1])
+  if args[0] == "evals":
+    writeUsage()
+    return 1
   if args[0] == "skill" and args.len >= 2 and args[1] == "export":
     return runSkillExport(args[2 .. ^1])
   if args[0] == "skill" and args.len >= 3 and args[1] == "install":

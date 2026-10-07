@@ -294,6 +294,36 @@ suite "your turns":
     assert checkRow("one_report")["na"].getInt() == 1
     assert yt["judge"]["passed"].getInt() == 1
 
+suite "turns report":
+  test "the table, then every failing turn with its note":
+    let home = freshHome("obs-turns-report")
+    writeFile(home / "traces" / "2026-10-05.jsonl", [
+      $(%*{"type": "turn_start", "turn_id": "t_r1",
+           "ts": "2026-10-05T10:00:00.000+00:00", "user_message": "hi"}),
+      $(%*{"type": "tool", "turn_id": "t_r1", "tool": "treg_call",
+           "args": {},
+           "output": "{\"endpoint_id\": \"tomba.x\", \"cost_usd\": 0.0089}",
+           "ts": "2026-10-05T10:00:01.000+00:00"}),
+      $(%*{"type": "turn_end", "turn_id": "t_r1",
+           "ts": "2026-10-05T10:00:02.000+00:00",
+           "reply": "The research cost $0.00.", "iterations": 1}),
+      $(%*{"type": "turn_start", "turn_id": "t_r2",
+           "ts": "2026-10-05T11:00:00.000+00:00", "user_message": "hi"}),
+      $(%*{"type": "turn_end", "turn_id": "t_r2",
+           "ts": "2026-10-05T11:00:01.000+00:00",
+           "reply": "Forty-two.", "iterations": 1})].join("\n") & "\n")
+    let text = turnsReport(home, "7d", 1791288000000'i64)
+    assert ("Your turns, the last 7 days: 2 turn(s) in " & home /
+      "traces") in text, text
+    assert "spend_claim" in text
+    assert "Failing turns: 1" in text, text
+    assert "t_r1  spend_claim: reply says $0.00" in text, text
+    assert "\"hi\"" in text
+    assert "No failing turns." notin text
+    let garbage = turnsReport(home, "garbage", 1791288000000'i64)
+    assert "the last 7 days" in garbage
+    removeDir(home)
+
 suite "evals info":
   test "no checkout says so, a checkout counts":
     let home = freshHome("obs-evals")
