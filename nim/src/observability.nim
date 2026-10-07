@@ -1483,9 +1483,10 @@ proc payload*(home: string, provider: string = "", model: string = "",
     hosted: bool = false, releaseFile: string = "",
     judgeModel: string = "", generatedAt: string = ""): JsonNode =
   ## Everything the Observability page draws, in one answer. Without a
-  ## judge model every turn's `judge_offer` reads null — the turn-evals
-  ## unit fills the offers and the route in. `generatedAt` overrides the
-  ## stamp for deterministic pins; "" computes it, like `nowIso`.
+  ## judge model every turn's `judge_offer` reads null; with one it names
+  ## the model and its estimated cost (`turn_evals.judge_offer`).
+  ## `generatedAt` overrides the stamp for deterministic pins; ""
+  ## computes it, like `nowIso`.
   let win = validWindow(window)
   let (events, errors, files) = readEvents(home)
   var late = newJObject()
@@ -1522,7 +1523,7 @@ proc payload*(home: string, provider: string = "", model: string = "",
   var turnsArr: seq[JsonNode] = @[]
   for i in countdown(built.len - 1, max(0, built.len - maxTurns)):
     let b = copy(built[i])
-    b["judge_offer"] = newJNull()
+    b["judge_offer"] = judgeOffer(grouped[i], provider, judgeModel)
     turnsArr.add(b)
   var memArr: seq[JsonNode] = @[]
   let mem = memoryPerTurn(built)

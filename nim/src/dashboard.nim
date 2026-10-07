@@ -104,6 +104,7 @@ import ./skills except FetchFn
 import ./telegram
 import ./tools
 import ./triage
+import ./turn_evals
 import ./whatsapp
 import ./wire
 
@@ -143,6 +144,27 @@ const
     ## and the hosted policy table read from. 8a serves a SUBSET of these
     ## paths and must never serve anything outside this list: a new path
     ## here is a contract change (same commit updates the eval + policy).
+
+  portOnlyPostRoutes* = [
+    "/api/turn-evals/judge",
+  ]
+    ## POST paths this port serves that Python's `PINNED_POST` does not
+    ## name YET, each one a documented divergence rather than a drift:
+    ##
+    ## - `/api/turn-evals/judge` (spec 015) landed upstream with
+    ##   `waku/ops/turn_evals.py`, which this branch does not carry: the
+    ##   Python tree here has no turn-evals module, no pin for it and no
+    ##   hosted policy entry. The port tracks the newer upstream, so the
+    ##   route is served and declared HERE until the Python side syncs —
+    ##   at which point it moves into `pythonPinnedPost` and this list
+    ##   empties.
+    ##
+    ## `pythonPinnedGet`/`pythonPinnedPost` stay an EXACT mirror of the
+    ## Python pins (a test enforces it); this list is what keeps a served
+    ## route from being invisible. A route here is a deliberate gap: it
+    ## must never hold one the Python side already pins, and the hosted
+    ## route-contract eval cannot see it (no policy entry exists to
+    ## check). Two tests pin both halves of that sentence.
 
   pythonPinnedPost* = [
     "/api/chat",
@@ -214,6 +236,10 @@ type
   JudgmentRaceFn* = memory_arena.JudgmentRaceFn
     ## One judgment race behind `/api/judgment-arena/stream` (nil until
     ## a judge runner exists).
+  TurnJudgeCallFn* = turn_evals.JudgeCallFn
+    ## One turn-judge model call behind `POST /api/turn-evals/judge`
+    ## (nil until the live small-model call is wired — the honest
+    ## error, like the unwired graph).
   HostedListFn* = memory_arena.HostedListFn
     ## One hosted store's facts behind `/api/memory-arena/stores`.
   HostedWipeFn* = memory_arena.HostedWipeFn
@@ -272,6 +298,7 @@ type
     sessionFn*: SessionFn
     raceFn*: RaceFn
     judgeFn*: JudgeFn
+    turnJudgeFn*: TurnJudgeCallFn
     memoryRunFn*: MemoryRunFn
     judgmentRaceFn*: JudgmentRaceFn
     hostedListFn*: HostedListFn
@@ -321,14 +348,16 @@ proc readGetRoutes*(): seq[string] =
 
 proc readPostRoutes*(): seq[string] =
   ## The served POST API surface (8b routes + the 8c compare trio + the
-  ## 8d key/clean; streams dispatch separately via `handleStream`). Each
-  ## MUST be in `pythonPinnedPost` (there is a test).
+  ## 8d key/clean + the port-only divergences; streams dispatch
+  ## separately via `handleStream`). Each MUST be in `pythonPinnedPost`
+  ## or in `portOnlyPostRoutes` (there is a test).
   @["/api/chat", "/api/memory", "/api/settings", "/api/query",
     "/api/session", "/api/pin", "/api/connections",
     "/api/connections/test", "/api/providers", "/api/voice",
     "/api/compare/clear", "/api/compare/regrade",
     "/api/compare/delete_run", "/api/judgment-arena/key",
-    "/api/memory-arena/clean"]
+    "/api/memory-arena/clean"] &
+    @portOnlyPostRoutes
 
 proc contentTypeFor*(name: string): string =
   ## Port of `STATIC_TYPES.get(target.suffix, "application/octet-stream")`.
@@ -1414,6 +1443,28 @@ proc observabilityPayload*(d: DashboardDeps, window: string): JsonNode =
     mcpServerNames(d.home), checkoutRoot(d.staticDir), hosted = false,
     releaseFile = "", judgeModel = d.smallModel, generatedAt = d.nowIso)
 
+proc turnJudge*(d: DashboardDeps, payload: JsonNode): JsonNode =
+  ## `POST /api/turn-evals/judge {turn_id}` (spec 015): ask the small
+  ## model of the provider in use whether one stored turn's reply answers
+  ## its question and stays grounded in its tool outputs. The turn is read
+  ## from this home's own traces, so a request cannot supply text to
+  ## judge. Answers `{"score"}` or `{"error"}`; never a 500. A declared
+  ## port divergence, not a Python route — see `portOnlyPostRoutes`.
+  if d.turnJudgeFn.isNil:
+    return %*{"error": "no judge backend is wired in the Nim port — " &
+      "the small-model call behind \"Judge this turn\" is not connected yet"}
+  let turnId = payload.jget("turn_id").getStr()
+  try:
+    let (events, _, _) = observability.readEvents(d.home)
+    let grouped = observability.groupTurns(events)
+    let (turn, judged) = turn_evals.findTurn(%grouped, %events, turnId)
+    let at = if d.nowIso.len > 0: d.nowIso else: turn_evals.nowIso()
+    let score = turn_evals.judgeTurn(d.home, turn, judged, d.turnJudgeFn,
+      d.smallModel, d.provider, at)
+    return %*{"score": score}
+  except CatchableError as exc:
+    return %*{"error": exc.msg}
+
 proc handleGet*(d: DashboardDeps, target: string): (int, string, string) =
   ## Pure GET dispatch. Returns `(status, contentType, body)`; the HTTP
   ## layer adds framing (Content-Length, no-cache on statics, SSE for
@@ -2227,6 +2278,8 @@ proc handlePost*(d: var DashboardDeps, target,
       return (200, "application/json",
         $compareDeleteRun(d.home, jsonStr(payload.jget("ts")),
           d.providers))
+    if target == "/api/turn-evals/judge":
+      return (200, "application/json", $turnJudge(d, payload))
     if target == "/api/judgment-arena/key":
       # Jev is not a chat provider so it skips the provider list, but it
       # still needs a key — written to the user's own `.env`, never sent
@@ -2925,7 +2978,7 @@ proc buildDashboardDeps*(providers: seq[Provider], settings: Settings,
     chatStreamFn: liveChatStreamFn(box),
     graphStreamFn: liveGraphStreamFn(box), voiceFn: nil,
     sessionFn: liveSessionFn(box), revealProbe: nil, revealOpen: nil,
-    raceFn: nil, judgeFn: nil, memoryRunFn: nil, judgmentRaceFn: nil,
+    raceFn: nil, judgeFn: nil, turnJudgeFn: nil, memoryRunFn: nil, judgmentRaceFn: nil,
     hostedListFn: nil, hostedWipeFn: nil,
     judgmentSuites: suiteList(allSuites()),
     memoryExample: memoryExampleFor(staticDir), store: nil,

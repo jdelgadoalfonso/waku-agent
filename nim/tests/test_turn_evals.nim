@@ -6,6 +6,7 @@
 import std/json
 import std/os
 import std/strutils
+import std/times
 import std/unittest
 
 import ../src/turn_evals
@@ -371,6 +372,143 @@ suite "run checks":
     assert scores.len == 1
     assert scores[0]["value"].kind == JNull
     assert scores[0]["note"].getStr() == "check error"
+
+proc judgeTurnJson(turnId, reply: string, tools: JsonNode = newJArray(),
+    message = "do it"): JsonNode =
+  %*{"turn_id": turnId, "ts": "2026-10-05T10:00:00+00:00",
+    "user_message": message, "reply": reply, "events": tools}
+
+proc judgeHome(name: string): string =
+  result = getTempDir() / name
+  if dirExists(result):
+    removeDir(result)
+  createDir(result)
+
+proc fakeJudge(text: string, nIn = 100, nOut = 10,
+    calls: ptr int = nil): JudgeCallFn =
+  result = proc(prompt, model: string): JsonNode {.closure.} =
+    if not calls.isNil:
+      calls[] += 1
+    %*{"text": text, "in": nIn, "out": nOut}
+
+const goodVerdict =
+  "{\"addresses_question\": 9, \"grounded\": 3, \"reason\": \"says it\"}"
+
+suite "judge prompt and offer":
+  test "the prompt comes from the stored turn only":
+    let tools = %*[{"type": "tool", "tool": "treg_call",
+      "output": "x".repeat(2000)}]
+    let p = judgePrompt(judgeTurnJson("t_aaa111", "did " & "y".repeat(5000),
+      tools, message = "do it"))
+    assert "do it" in p
+    assert ("did " & "y".repeat(3996)) in p
+    assert ("y".repeat(3997)) notin p
+    assert ("[treg_call] " & "x".repeat(800)) in p
+    assert ("x".repeat(801)) notin p
+    let bare = judgePrompt(judgeTurnJson("t_aaa111", "done"))
+    assert "(no tools ran this turn)" in bare
+
+  test "the offer names the model and its estimate, else null":
+    let t = judgeTurnJson("t_aaa111", "done")
+    let offer = judgeOffer(t, "prov", "m")
+    assert offer["model"].getStr() == "m"
+    assert offer["usd"].getFloat() == judgeEstimate(judgePrompt(t), "prov", "m")
+    assert judgeOffer(judgeTurnJson("", "done"), "prov", "m").kind == JNull
+    assert judgeOffer(judgeTurnJson("t_aaa111", "  "), "prov", "m").kind == JNull
+    assert judgeOffer(t, "prov", "").kind == JNull
+
+  test "the verdict is the lower mark over ten, or null":
+    let v = parseVerdict("lead " & goodVerdict & " tail")
+    assert v["value"].getFloat() == 0.3
+    assert v["addresses_question"].getInt() == 9
+    assert v["grounded"].getInt() == 3
+    assert v["reason"].getStr() == "says it"
+    assert parseVerdict("no json here").kind == JNull
+    assert parseVerdict("{\"addresses_question\": 99, \"grounded\": -2}")[
+      "value"].getFloat() == 0.0
+
+suite "judge writes once":
+  test "one score event with cost and model, plus the ledger line":
+    let home = judgeHome("waku-judge-ok")
+    let turn = judgeTurnJson("t_aaa111", "did it",
+      %*[{"type": "tool", "tool": "treg_call", "output": "rows"}])
+    var calls = 0
+    let at = "2026-10-06T12:00:00+00:00"
+    let ev = judgeTurn(home, turn, newJArray(),
+      fakeJudge(goodVerdict, calls = addr calls), "m", "prov", at)
+    assert calls == 1
+    assert ev["turn_id"].getStr() == "t_aaa111"
+    assert ev["source"].getStr() == "judge"
+    assert ev["value"].getFloat() == 0.3
+    assert ev["judge"].getStr() == "m"
+    assert "says it (judged by m, " in ev["note"].getStr()
+    let day = format(now().utc, "yyyy-MM-dd")
+    let lines = readFile(home / "traces" / (day & ".jsonl")).strip().splitLines()
+    assert lines.len == 1, $lines.len
+    let stored = parseJson(lines[0])
+    assert stored["turn_id"].getStr() == "t_aaa111"
+    assert stored["value"].getFloat() == 0.3
+    assert stored["ts"].getStr().len > 0
+    let usage = parseJson(readFile(home / "usage.jsonl").strip())
+    assert usage["kind"].getStr() == "judge"
+    assert usage["in"].getInt() == 100
+    removeDir(home)
+
+  test "an exact charge wins over the estimate":
+    let home = judgeHome("waku-judge-charged")
+    let turn = judgeTurnJson("t_ddd444", "did it")
+    let call = proc(prompt, model: string): JsonNode {.closure.} =
+      %*{"text": goodVerdict, "in": 100, "out": 10, "charged_usd": 0.05}
+    let ev = judgeTurn(home, turn, newJArray(), call, "m", "prov",
+      "2026-10-06T12:00:00+00:00")
+    assert ev["cost_usd"].getFloat() == 0.05
+    removeDir(home)
+
+  test "unknown turns and repeats within a minute are refused":
+    let grouped = %*[judgeTurnJson("t_bbb222", "did it")]
+    expect JudgeRefused:
+      discard findTurn(grouped, newJArray(), "xyz")
+    expect JudgeRefused:
+      discard findTurn(grouped, newJArray(), "t_deadbeef")
+    expect JudgeRefused:
+      discard findTurn(%*[judgeTurnJson("t_bbb222", "  ")], newJArray(),
+        "t_bbb222")
+    let home = judgeHome("waku-judge-repeat")
+    var calls = 0
+    let at = "2026-10-06T12:00:00+00:00"
+    let (turn, judged) = findTurn(grouped, newJArray(), "t_bbb222")
+    discard judgeTurn(home, turn, judged, fakeJudge(goodVerdict,
+      calls = addr calls), "m", "prov", at)
+    expect JudgeRefused:
+      discard judgeTurn(home, turn, judged, fakeJudge(goodVerdict,
+        calls = addr calls), "m", "prov", at)
+    assert calls == 1
+    removeDir(home)
+
+  test "a written score from seconds ago refuses without calling":
+    var calls = 0
+    let judged = %*[{"type": "score", "turn_id": "t_eee555",
+      "source": "judge", "ts": "2026-10-06T11:59:40+00:00"}]
+    expect JudgeRefused:
+      discard judgeTurn("/nonexistent-xyz", judgeTurnJson("t_eee555", "did"),
+        judged, fakeJudge(goodVerdict, calls = addr calls), "m", "prov",
+        "2026-10-06T12:00:00+00:00")
+    assert calls == 0
+
+  test "an unreadable verdict spends but writes no score":
+    let home = judgeHome("waku-judge-badverdict")
+    var calls = 0
+    try:
+      discard judgeTurn(home, judgeTurnJson("t_ccc333", "did it"),
+        newJArray(), fakeJudge("no json here", calls = addr calls), "m",
+        "prov", "2026-10-06T12:00:00+00:00")
+      assert false, "should have refused"
+    except JudgeRefused as exc:
+      assert "readable score" in exc.msg
+    assert calls == 1
+    assert not dirExists(home / "traces")
+    assert readFile(home / "usage.jsonl").strip().splitLines().len == 1
+    removeDir(home)
 
 suite "check table":
   test "the page lists the five checks in order":

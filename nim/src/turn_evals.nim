@@ -897,3 +897,275 @@ proc runChecks*(turn: JsonNode, usd: JsonNode = newJNull(),
       result.add(check(v))
     except CatchableError:
       result.add(checkResult(name, newJNull(), "check error"))
+
+# ---------------------------------------------------------------------------
+# The AI judge, on demand
+# ---------------------------------------------------------------------------
+
+import std/sysrand
+import ./pricing
+
+const
+  judgeCheck* = "answer_grounded"
+    ## The check name the judge's `score` event carries.
+  judgeMaxTokens* = 300
+  judgeRepeatSeconds* = 60
+    ## A second judge of the same turn within this long is refused.
+  replyChars* = 4000
+  outputChars* = 800
+  outputsChars* = 6000
+  judgePassMark* = 0.7
+    ## A judge score passes at 0.7. (Same value as the Evals table in
+    ## `observability`; the table owns the page, this owns the verdict.)
+
+  judgeRubric* = """You are a strict, fair judge grading one turn of an AI assistant.
+
+The person asked:
+{message}
+
+The assistant replied:
+{reply}
+
+The tool outputs the assistant saw this turn (each cut to {output_chars} characters):
+{outputs}
+
+Score two things from 0 to 10:
+- addresses_question: does the reply answer what the person asked?
+- grounded: is every fact, number and claim in the reply supported by the tool
+  outputs above or the person's message? A claim the outputs contradict scores 0-3.
+
+Reply with ONLY a JSON object, no prose:
+{{"addresses_question": <int 0-10>, "grounded": <int 0-10>, "reason": "<one short sentence>"}}"""
+
+proc judgePrompt*(turn: JsonNode): string =
+  ## The judge's prompt, built from the stored turn only: its message, the
+  ## first 4,000 characters of its reply, and its tool outputs, each cut to
+  ## 800 characters and together to 6,000.
+  var outputs: seq[string] = @[]
+  var used = 0
+  let events = turn.jget("events")
+  if events.kind == JArray:
+    for ev in events:
+      if ev.jget("type").getStr() != "tool" or used >= outputsChars:
+        continue
+      var text = redact(%ev.jget("output").getStr()).getStr()
+      text = text[0 ..< min(outputChars, text.len)]
+      text = text[0 ..< min(outputsChars - used, text.len)]
+      used += text.len
+      outputs.add("[" & (if ev.jget("tool").kind == JString:
+        ev.jget("tool").getStr() else: "tool") & "] " & text)
+  let reply = turn.jget("reply").getStr()
+  judgeRubric
+    .replace("{message}", turn.jget("user_message").getStr()[0 ..< min(2000,
+      turn.jget("user_message").getStr().len)])
+    .replace("{reply}", reply[0 ..< min(replyChars, reply.len)])
+    .replace("{output_chars}", $outputChars)
+    .replace("{outputs}", (if outputs.len > 0: outputs.join("\n")
+      else: "(no tools ran this turn)"))
+
+proc judgeEstimate*(prompt, provider, model: string): float =
+  ## What one judge call should cost: the prompt's characters divided by 4
+  ## as input tokens, plus 300 output tokens, at the registry price.
+  let (pIn, pOut) = priceFor(provider, model)
+  round6(prompt.len.float / 4 / 1e6 * pIn + judgeMaxTokens.float / 1e6 * pOut)
+
+proc judgeOffer*(turn: JsonNode, provider, model: string): JsonNode =
+  ## What the "Judge this turn" button says before it is pressed: the
+  ## model that would judge and its estimated cost. Null for a turn the
+  ## route would refuse (no turn id, no reply) or with no model to call.
+  if turn.jget("turn_id").getStr().len == 0 or
+      turn.jget("reply").getStr().strip().len == 0 or model.len == 0:
+    return newJNull()
+  %*{"model": model, "usd": judgeEstimate(judgePrompt(turn), provider, model)}
+
+proc toCheckInt(node: JsonNode): int =
+  if node.kind == JInt:
+    int(node.getBiggestInt())
+  elif node.kind == JFloat:
+    int(node.getFloat())
+  else:
+    raise newException(ValueError, "not a number")
+
+proc parseVerdict*(text: string): JsonNode =
+  ## The verdict from the judge's answer, or null when it holds no
+  ## readable JSON. The score is the lower of the two marks over 10.
+  try:
+    let o = text.find('{')
+    let c = text.rfind('}')
+    if o < 0 or c <= o:
+      return newJNull()
+    let obj = parseJson(text[o .. c])
+    let a = clamp(toCheckInt(obj["addresses_question"]), 0, 10)
+    let g = clamp(toCheckInt(obj["grounded"]), 0, 10)
+    let reason = if obj.hasKey("reason") and obj["reason"].kind == JString:
+      obj["reason"].getStr()[0 ..< min(200, obj["reason"].getStr().len)]
+    else: ""
+    %*{"value": round(min(a, g).float / 10, 2), "reason": reason,
+      "addresses_question": a, "grounded": g}
+  except CatchableError:
+    newJNull()
+
+type
+  JudgeRefused* = object of CatchableError
+    ## The judge route's answer for a turn it will not judge.
+
+  JudgeCallFn* = proc(prompt, model: string): JsonNode {.closure.}
+    ## One judge model call, injected so tests never touch a network.
+    ## Answers `{"text", "in", "out"}` (tokens in/out) and, when the
+    ## backend can meter exactly, `charged_usd`.
+
+let turnIdRe = re(r"t_[0-9a-f]{4,32}\z")
+
+proc findTurn*(grouped, rawEvents: JsonNode,
+    turnId: string): tuple[turn, judged: JsonNode] =
+  ## The grouped turn with this id, and every judge score already written
+  ## for it. Raises `JudgeRefused` for an unknown turn and for one with no
+  ## reply to judge. `grouped`/`rawEvents` come from the caller
+  ## (`observability.read_events` + `group_turns`): this module never
+  ## imports the page, so the page can import this module.
+  var m: array[1, string]
+  if match(turnId, turnIdRe, m):
+    for t in grouped:
+      if t.jget("turn_id").getStr() == turnId:
+        var judged = newJArray()
+        if rawEvents.kind == JArray:
+          for e in rawEvents:
+            if e.jget("type").getStr() == "score" and
+                e.jget("turn_id").getStr() == turnId and
+                e.jget("source").getStr() == "judge":
+              judged.add(copy(e))
+        if t.jget("reply").getStr().strip().len == 0:
+          raise newException(JudgeRefused, "This turn has no reply to judge.")
+        return (copy(t), judged)
+  raise newException(JudgeRefused,
+    "No turn with that id in this home's traces.")
+
+var recentJudge: seq[tuple[turnId, iso: string]] = @[]
+  ## Turns judged in this process, so a double-click judges once.
+
+proc isoEpoch(iso: string): int64 =
+  ## Seconds for a `yyyy-MM-ddTHH:mm:ss` prefix, or -1 when unreadable.
+  ## Both stamps come from this home's traces (UTC ISO), so the zone and
+  ## the millis never decide a 60-second window.
+  try:
+    if iso.len < 19:
+      return -1
+    toUnix(parse(iso[0 .. 18], "yyyy-MM-dd'T'HH:mm:ss").toTime())
+  except TimeParseError:
+    -1
+
+proc nowIso*(): string =
+  format(now().utc, "yyyy-MM-dd'T'HH:mm:ss'.'fff'+00:00'")
+
+proc claimTurn(turnId: string, judged: JsonNode, atIso: string) =
+  ## Refuse a second judge of the same turn within 60 seconds: one already
+  ## running or finished in this process, or a score written that recently.
+  let at = isoEpoch(atIso)
+  for (id, iso) in recentJudge:
+    if id == turnId and at >= 0:
+      let then = isoEpoch(iso)
+      if then >= 0 and at - then < judgeRepeatSeconds:
+        raise newException(JudgeRefused,
+          "This turn was judged less than a minute ago.")
+  if judged.kind == JArray:
+    for e in judged:
+      let ts = e.jget("ts").getStr()
+      if ts.len > 0 and at >= 0:
+        let then = isoEpoch(ts)
+        if then >= 0 and at - then < judgeRepeatSeconds:
+          raise newException(JudgeRefused,
+            "This turn was judged less than a minute ago.")
+  recentJudge.add((turnId, atIso))
+
+proc unclaimTurn(turnId: string) =
+  recentJudge.keepIf(proc(x: tuple[turnId, iso: string]): bool =
+    x.turnId != turnId)
+
+proc randomCallId(): string =
+  try:
+    var hx = ""
+    for b in urandom(8):
+      hx.add(toHex(int(b), 2).toLowerAscii())
+    "j_" & hx
+  except CatchableError:
+    "j_" & $toUnix(getTime())
+
+proc judgeCostUsd(resp: JsonNode, provider, model: string): tuple[cost: float,
+    nIn, nOut: int] =
+  let nIn = if resp.jget("in").kind == JInt:
+    int(resp.jget("in").getBiggestInt()) else: 0
+  let nOut = if resp.jget("out").kind == JInt:
+    int(resp.jget("out").getBiggestInt()) else: 0
+  let charged = resp.jget("charged_usd")
+  let cost = if charged.kind in {JInt, JFloat}:
+    round6(if charged.kind == JInt: charged.getBiggestInt().float
+      else: charged.getFloat())
+  else:
+    llmCost(provider, model, %*{"in": nIn, "out": nOut})
+  (cost, nIn, nOut)
+
+proc writeScore*(home: string, event: JsonNode) =
+  ## Append one `score` event to today's trace file, as the tracer writes
+  ## lines.
+  createDir(home / "traces")
+  let path = home / "traces" / format(now().utc, "yyyy-MM-dd") & ".jsonl"
+  var record = copy(event)
+  record["ts"] = %nowIso()
+  var f: File
+  if not open(f, path, fmAppend):
+    raise newException(IOError, "cannot append " & path)
+  f.writeLine($redact(record))
+  f.close()
+
+proc recordJudgeUsage*(home, provider, model, callId: string,
+    nIn, nOut: int) =
+  ## The judge's tokens in the spend ledger, as kind "judge", so the Spend
+  ## tab counts every model call this home paid for.
+  createDir(home)
+  var f: File
+  if not open(f, home / "usage.jsonl", fmAppend):
+    raise newException(IOError, "cannot append " & home / "usage.jsonl")
+  f.writeLine($( %*{"ts": nowIso(), "provider": provider, "model": model,
+    "kind": "judge", "turn_id": callId, "in": nIn, "out": nOut}))
+  f.close()
+
+proc judgeTurn*(home: string, turn, judged: JsonNode, call: JudgeCallFn,
+    model, provider: string, atIso = ""): JsonNode =
+  ## Judge one stored turn and write the result as one `score` trace event
+  ## (source `judge`, joined by `turn_id`), with the model that judged and
+  ## what the call cost. Raises `JudgeRefused` for an unknown turn, a turn
+  ## with no reply, a repeat within 60 seconds, an unreachable judge, or
+  ## an answer without a readable score.
+  if turn.kind != JObject or turn.jget("turn_id").getStr().len == 0:
+    raise newException(JudgeRefused,
+      "No turn with that id in this home's traces.")
+  let turnId = turn.jget("turn_id").getStr()
+  if turn.jget("reply").getStr().strip().len == 0:
+    raise newException(JudgeRefused, "This turn has no reply to judge.")
+  let at = if atIso.len > 0: atIso else: nowIso()
+  claimTurn(turnId, judged, at)
+  let prompt = judgePrompt(turn)
+  let callId = randomCallId()
+  var resp: JsonNode
+  try:
+    resp = call(prompt, model)
+  except CatchableError as exc:
+    unclaimTurn(turnId) # a failed call may be retried at once
+    raise newException(JudgeRefused,
+      "The judge could not be reached: " & $exc.name & ".")
+  let (cost, nIn, nOut) = judgeCostUsd(resp, provider, model)
+  recordJudgeUsage(home, provider, model, callId, nIn, nOut)
+  let verdict = parseVerdict(resp.jget("text").getStr())
+  if verdict.kind == JNull:
+    raise newException(JudgeRefused,
+      "The judge answered without a readable score (" & money(cost) &
+      " spent).")
+  result = %*{"type": "score", "turn_id": turnId, "source": "judge",
+    "name": judgeCheck, "check": judgeCheck,
+    "value": verdict.jget("value"),
+    "judge": model, "cost_usd": cost,
+    "note": verdict.jget("reason").getStr() & " (judged by " & model &
+      ", " & money(cost) & ")",
+    "addresses_question": verdict.jget("addresses_question"),
+    "grounded": verdict.jget("grounded")}
+  writeScore(home, result)

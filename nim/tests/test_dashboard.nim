@@ -1527,9 +1527,17 @@ suite "phase 8b POST connections and providers":
     removeDir(root)
 
 suite "phase 8b POST route surface":
-  test "every 8b route is a real Python POST route (contract stays green)":
+  test "every served POST route is Python's or a declared divergence":
     for r in readPostRoutes():
-      assert r in pythonPinnedPost
+      assert r in pythonPinnedPost or r in portOnlyPostRoutes, r
+
+  test "the port-only list never shadows a route Python pins":
+    for r in portOnlyPostRoutes:
+      assert r notin pythonPinnedPost, r
+    for r in pythonPinnedPost:
+      assert r notin portOnlyPostRoutes, r
+    assert portOnlyPostRoutes == @["/api/turn-evals/judge"],
+      "a new port-only route is a decision, not a detail: name it here"
 
   test "every served POST route answers 200 against an empty home":
     let root = freshDir("waku-dash-postroutes")
@@ -1551,6 +1559,7 @@ suite "phase 8b POST route surface":
       "/api/voice": "audio-bytes",
       "/api/judgment-arena/key": """{"key": "ts-test"}""",
       "/api/memory-arena/clean": """{}""",
+      "/api/turn-evals/judge": """{"turn_id": "t_nope42"}""",
     }.toTable
     for r in readPostRoutes():
       if r in bodies:
@@ -1747,7 +1756,7 @@ suite "phase 8c compare wiring":
     for r in readGetRoutes():
       assert r in pythonPinnedGet or r in portOnlyGetRoutes, r
     for r in readPostRoutes():
-      assert r in pythonPinnedPost
+      assert r in pythonPinnedPost or r in portOnlyPostRoutes, r
 
   test "history answers 200 with the repriced shape on an empty home":
     let root = freshDir("waku-dash-chist")
@@ -2161,6 +2170,70 @@ suite "phase 12 observability route":
       assert node.hasKey(key), key
     assert node["turns"].len == 0
     assert node["evals"]["your_turns"]["7d"]["turns"].getInt() == 0
+    removeDir(root)
+
+suite "phase 15 turn-evals judge route":
+  proc judgeHome(name: string): string =
+    result = getTempDir() / name
+    if dirExists(result):
+      removeDir(result)
+    createDir(result / "traces")
+    createDir(result / "static")
+    writeFile(result / "static" / "index.html", "<html></html>")
+    writeFile(result / "traces" / "2026-10-05.jsonl", [
+      $(%*{"type": "turn_start", "turn_id": "t_f00d42",
+           "ts": "2026-10-05T10:00:00.000+00:00", "user_message": "hi"}),
+      $(%*{"type": "turn_end", "turn_id": "t_f00d42",
+           "ts": "2026-10-05T10:00:02.000+00:00", "reply": "yo",
+           "iterations": 1})].join("\n") & "\n")
+
+  proc judgeDeps(root: string): DashboardDeps =
+    result = testDeps(root, root / "static")
+    result.smallModel = "m"
+    result.nowIso = "2026-10-06T12:00:00+00:00"
+
+  test "unwired the button answers an honest error, never a 500":
+    let root = judgeHome("waku-dash-judge-nil")
+    var d = judgeDeps(root)
+    let (status, ctype, body) = handlePost(d, "/api/turn-evals/judge",
+      """{"turn_id": "t_f00d42"}""")
+    assert status == 200 and ctype == "application/json"
+    assert "no judge backend" in parseJson(body)["error"].getStr()
+    removeDir(root)
+
+  test "wired it judges once, then refuses the repeat":
+    let root = judgeHome("waku-dash-judge-once")
+    var d = judgeDeps(root)
+    d.turnJudgeFn = proc(prompt, model: string): JsonNode {.closure.} =
+      %*{"text": "{\"addresses_question\": 8, \"grounded\": 7, " &
+        "\"reason\": \"answers\"}", "in": 50, "out": 5}
+    let (status, _, body) = handlePost(d, "/api/turn-evals/judge",
+      """{"turn_id": "t_f00d42"}""")
+    assert status == 200
+    let node = parseJson(body)
+    assert node["score"]["turn_id"].getStr() == "t_f00d42"
+    assert node["score"]["value"].getFloat() == 0.7
+    let (status2, _, body2) = handlePost(d, "/api/turn-evals/judge",
+      """{"turn_id": "t_f00d42"}""")
+    assert status2 == 200
+    assert "less than a minute" in parseJson(body2)["error"].getStr()
+    let (status3, _, body3) = handlePost(d, "/api/turn-evals/judge",
+      """{"turn_id": "t_nope"}""")
+    assert status3 == 200
+    assert "No turn with that id" in parseJson(body3)["error"].getStr()
+    removeDir(root)
+
+  test "the payload offers the small model, or null without one":
+    let root = judgeHome("waku-dash-judge-offer")
+    var d = judgeDeps(root)
+    d.nowMs = 1791288000000'i64
+    let (_, _, body) = handleGet(d, "/api/observability")
+    let offer = parseJson(body)["turns"][0]["judge_offer"]
+    assert offer["model"].getStr() == "m"
+    assert offer["usd"].kind == JFloat
+    d.smallModel = ""
+    let (_, _, body2) = handleGet(d, "/api/observability")
+    assert parseJson(body2)["turns"][0]["judge_offer"].kind == JNull
     removeDir(root)
 
   test "an unwrapped binary has no eval counts to read":
