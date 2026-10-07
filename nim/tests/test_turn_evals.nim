@@ -135,6 +135,91 @@ suite "spend claim":
     let check = checkSpendClaim(spendView("Total: $0.04.", @[tombaOut]))
     assert check["value"].kind == JNull
 
+proc plainTool(source: string, ok = true): JsonNode =
+  %*{"tool": "search_web", "args": {}, "output": "Web results",
+    "ok": ok, "source": source, "cost_usd": newJNull(),
+    "endpoint_id": "", "provider": ""}
+
+proc reportView(message, reply: string, tools: seq[JsonNode] = @[],
+    reports: seq[string] = @[], research = true): JsonNode =
+  var reps: seq[JsonNode] = @[]
+  for r in reports:
+    reps.add(%r)
+  %*{"message": message, "reply": reply, "tools": tools,
+    "reports": reps, "usd": 0.1, "v2": true, "ts": "2026-10-05T10:00:00+00:00",
+    "research": research, "unfinished": false}
+
+proc rememberTool(body, output: string, tool = "waku_memory_memory_remember",
+    ok = true, company = false): JsonNode =
+  let args = if company: %*{"body": body, "scope": "project:Company brain"}
+    else: %*{"body": body}
+  %*{"tool": tool, "args": args, "output": output,
+    "ok": ok, "source": "waku_memory", "cost_usd": newJNull(),
+    "endpoint_id": "", "provider": ""}
+
+suite "one report":
+  test "a research turn with no report saved fails":
+    let check = checkOneReport(reportView("research the competitors of Letta",
+      "Letta competes with Zep.", @[plainTool("local")]))
+    assert check["value"].getInt() == 0
+    let asked = checkOneReport(
+      reportView("research the competitors of Letta and save a report",
+        "Letta competes with Zep."))
+    assert asked["value"].getInt() == 0
+
+  test "two saves in one turn fail, even off research":
+    let check = checkOneReport(reportView("hi", "yo", @[], @["m1", "m2"],
+      research = false))
+    assert check["value"].getInt() == 0
+    assert check["note"].getStr() == "2 reports saved in one turn"
+
+  test "one report event passes, and the marker counts without memory":
+    let one = checkOneReport(reportView("research the competitors of Letta",
+      "Letta competes with Zep.", @[plainTool("local")], @["m1"]))
+    assert one["value"].getInt() == 1
+    let marker = checkOneReport(reportView("research the competitors of Letta",
+      "Letta competes with Zep.\n\n<!-- waku-report v1 -->\n# Letta\n"))
+    assert marker["value"].getInt() == 1
+
+  test "an everyday message is not owed a report":
+    let check = checkOneReport(
+      reportView("what's on my calendar", "Nothing today.", research = false))
+    assert check["value"].kind == JNull
+
+  test "asking for no report is n/a, saving one anyway fails":
+    let na = checkOneReport(reportView("Just answer, no report",
+      "Forty-two."))
+    assert na["value"].kind == JNull
+    let saved = checkOneReport(reportView("Just answer, no report",
+      "Forty-two.", @[], @["m1"]))
+    assert saved["value"].getInt() == 0
+
+  test "a memory_remember whose body is a report counts as the save":
+    let body = "<!-- waku-report v1 -->\n# Letta\n\n## Findings\n- x\n"
+    let check = checkOneReport(reportView("research the competitors of Letta",
+      "Saved.", @[rememberTool(body, "{\"memory\": {\"id\": \"mx\"}}")]))
+    assert check["value"].getInt() == 1
+    let shaped = checkOneReport(reportView("research the competitors of Letta",
+      "Saved.", @[rememberTool("# Letta\\n## Findings\\n- x",
+        "{\"memory\": {\"id\": \"my\"}}", company = true)]))
+    assert shaped["value"].getInt() == 1, shaped["note"].getStr()
+
+  test "a refused save and a duplicate id save nothing twice":
+    let refused = checkOneReport(reportView("research the competitors of Letta",
+      "Could not save.",
+      @[rememberTool("<!-- waku-report v1 -->\n# L", "Not sent. Waku saves nothing.")]))
+    assert refused["value"].getInt() == 0
+    let dup = checkOneReport(reportView("research the competitors of Letta",
+      "Saved.", @[rememberTool("<!-- waku-report v1 -->\n# L",
+        "{\"memory\": {\"id\": \"m1\"}}")], @["m1"]))
+    assert dup["value"].getInt() == 1
+
+  test "an older trace did not trace reports":
+    var v = reportView("research the competitors of Letta", "No save.",
+      @[plainTool("local")])
+    v["v2"] = %false
+    assert checkOneReport(v)["value"].kind == JNull
+
 suite "check table":
   test "the page lists the five checks in order":
     assert turnChecks.len == 5

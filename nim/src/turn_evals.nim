@@ -378,3 +378,106 @@ proc checkSpendClaim*(v: JsonNode): JsonNode =
   checkResult("spend_claim", %1,
     $claims & " spend claim" & (if claims != 1: "s" else: "") &
     " match the trace")
+
+# ---------------------------------------------------------------------------
+# 2. one_report
+# ---------------------------------------------------------------------------
+
+import ./reports
+
+const
+  reportRefusalHead* = "Not sent. Waku saves"
+    ## Upstream `REFUSAL[:20]`: a `memory_remember` answer that starts here
+    ## refused the save, so it counts no report. The port never writes such
+    ## an answer today; the skip stays so one would not count either.
+  companyProject* = "Company brain"
+    ## Upstream `COMPANY_PROJECT`: a `memory_remember` body filed here whose
+    ## text has a "# " title with "## " sections is a report without the
+    ## marker.
+
+let
+  saveAskRe = re(r"\b(save|saves|saving|store|storing)\b", {reIgnoreCase})
+  reportShapeRe = re(r"(?:^|\\n|\n)# \S.*?(?:\\n|\n)## \S", {reIgnoreCase, reDotAll})
+    ## A body the model sent to memory_remember that is a report without
+    ## the marker: a "# " title and "## " sections, filed in the Company
+    ## brain. `\\n` is a literal backslash-n: the body may be JSON text.
+  noReportRe = re(r"\b(?:no|without(?: an?| any)?|skip(?: the)?|(?:don't|do not|dont) (?:need|want)(?: an?| any)?)\s+" &
+    r"(?:report|reports|brief|snapshot|saving)\b|" &
+    r"\b(?:don't|do not|dont|never)\s+(?:save|store)\b|" &
+    r"\bjust (?:answer|tell me|reply)\b", {reIgnoreCase})
+
+proc reportSaves*(v: JsonNode): seq[string] =
+  ## One entry per report this turn saved, deduplicated by memory id: each
+  ## `report` event, and each memory_remember call that Waku Memory took
+  ## whose body is a report (it holds the marker, or a "# " title with
+  ## "## " sections filed in the Company brain).
+  var idx = 0
+  for r in v.jget("reports"):
+    result.add(if r.kind == JString and r.getStr().len > 0: r.getStr()
+      else: "report-" & $idx)
+    inc idx
+  var i = 0
+  for t in v.jget("tools"):
+    inc i
+    if not t.jget("tool").getStr().endsWith("_memory_remember"):
+      continue
+    if not t.jget("ok").getBool():
+      continue
+    if t.jget("output").getStr().startsWith(reportRefusalHead):
+      continue
+    let args = t.jget("args")
+    let body = if args.kind == JObject: args.jget("body") else: args
+    let text = if body.kind == JString: body.getStr() else: ""
+    let whole = if args.kind == JObject: $args
+      else: (if args.kind == JString: args.getStr() else: "")
+    if reportMarker notin text and
+        not (companyProject in whole and containsRe(text, reportShapeRe)):
+      continue
+    var memoryId = "remember-" & $i
+    try:
+      memoryId = parseJson(t.jget("output").getStr())["memory"]["id"].getStr()
+    except CatchableError:
+      discard
+    if memoryId notin result:
+      result.add(memoryId)
+
+proc checkOneReport*(v: JsonNode): JsonNode =
+  ## A research turn saves exactly one report; any turn that saves two
+  ## fails. A turn is research when the research-report skill matched its
+  ## message and the turn did research. A question answered from memory
+  ## alone is n/a, and so is a turn whose message asks for no report;
+  ## saving one anyway fails. With no Waku Memory connected no `report`
+  ## event is written and the reply keeps the report, so a reply carrying
+  ## the report marker counts as one. An older trace (no turn id) did not
+  ## trace reports: n/a.
+  let saves = reportSaves(v)
+  if saves.len > 1:
+    return checkResult("one_report", %0,
+      $saves.len & " reports saved in one turn")
+  if not v.jget("research").getBool():
+    return checkResult("one_report", newJNull(), "not a research turn")
+  if not v.jget("v2").getBool():
+    return checkResult("one_report", newJNull(),
+      "older trace: reports were not traced")
+  if containsRe(v.jget("message").getStr(), noReportRe):
+    if saves.len > 0:
+      return checkResult("one_report", %0,
+        "the message asked for no report and one was saved")
+    return checkResult("one_report", newJNull(),
+      "the message asked for no report")
+  if saves.len == 1:
+    return checkResult("one_report", %1, "one report saved")
+  if reportMarker in v.jget("reply").getStr():
+    return checkResult("one_report", %1,
+      "the report is in the reply; no Waku Memory to save it to")
+  if not containsRe(v.jget("message").getStr(), saveAskRe):
+    var memoryOnly = true
+    for t in v.jget("tools"):
+      if t.jget("source").getStr() != "waku_memory":
+        memoryOnly = false
+        break
+    if memoryOnly:
+      return checkResult("one_report", newJNull(),
+        "answered from memory: no research tool ran and no save was asked")
+  checkResult("one_report", %0,
+    "a research turn with no report saved and none in the reply")
