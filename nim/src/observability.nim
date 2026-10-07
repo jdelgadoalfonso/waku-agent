@@ -1489,10 +1489,11 @@ proc payload*(home: string, provider: string = "", model: string = "",
     window: string = "7d", nowMs: int64 = 0,
     servers: openArray[string] = [], repo: string = "",
     hosted: bool = false, releaseFile: string = "",
-    judgeModel: string = ""): JsonNode =
+    judgeModel: string = "", generatedAt: string = ""): JsonNode =
   ## Everything the Observability page draws, in one answer. Without a
   ## judge model every turn's `judge_offer` reads null — the turn-evals
-  ## unit fills the offers and the route in.
+  ## unit fills the offers and the route in. `generatedAt` overrides the
+  ## stamp for deterministic pins; "" computes it, like `nowIso`.
   let win = validWindow(window)
   let (events, errors, files) = readEvents(home)
   var late = newJObject()
@@ -1541,8 +1542,8 @@ proc payload*(home: string, provider: string = "", model: string = "",
     "last": info.jget("last"), "history": info.jget("history"),
     "last_run": info.jget("last_run"), "release": info.jget("release"),
     "your_turns": yourTurns}
-  %*{"generated_at": format(now().utc,
-      "yyyy-MM-dd'T'HH:mm:ss'+00:00'"),
+  %*{"generated_at": (if generatedAt.len > 0: generatedAt
+      else: format(now().utc, "yyyy-MM-dd'T'HH:mm:ss'+00:00'")),
     "summary": summary(home, events, built, tools, win, nowMs, servers),
     "spend_by_day": %byDay,
     "trace_files": files.len, "trace_file": (if files.len > 0:

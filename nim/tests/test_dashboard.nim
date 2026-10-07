@@ -873,9 +873,20 @@ suite "phase 8a /api/data frontend contract":
       assert node.hasKey(gap), gap & " is served — remove it from knownGaps"
 
 suite "phase 8a route surface":
-  test "every 8a route is a real Python GET route (contract stays green)":
+  test "every served GET route is Python's or a declared divergence":
     for r in readGetRoutes():
-      assert r in pythonPinnedGet
+      assert r in pythonPinnedGet or r in portOnlyGetRoutes, r
+
+  test "the port-only list never shadows a route Python pins":
+    # A route here is a deliberate gap that the hosted route-contract eval
+    # cannot see, so it must stay a gap: one the Python side already pins
+    # belongs in the mirror, and the mirror must stay exactly Python's.
+    for r in portOnlyGetRoutes:
+      assert r notin pythonPinnedGet, r
+    for r in pythonPinnedGet:
+      assert r notin portOnlyGetRoutes, r
+    assert portOnlyGetRoutes == @["/api/observability"],
+      "a new port-only route is a decision, not a detail: name it here"
 
   test "every 8a route answers 200 against an empty home":
     let root = freshDir("waku-dash-routes")
@@ -1734,7 +1745,7 @@ suite "phase 8c compare wiring":
   test "history is a real GET inside the pinned surface":
     assert "/api/compare/history" in readGetRoutes()
     for r in readGetRoutes():
-      assert r in pythonPinnedGet
+      assert r in pythonPinnedGet or r in portOnlyGetRoutes, r
     for r in readPostRoutes():
       assert r in pythonPinnedPost
 
@@ -2068,3 +2079,90 @@ suite "the memory page goes through the fact store":
     assert node["facts"].len == 1
     assert node["facts"][0]["subject"].getStr() == "Alex"
     removeDir(root)
+
+suite "phase 12 observability route":
+  proc obsDeps(root, web: string, nowMs: int64): DashboardDeps =
+    ## The route's deps with a frozen clock and a pinned stamp, so a
+    ## crafted trace lands in a named window.
+    result = testDeps(root, web)
+    result.nowMs = nowMs
+    result.nowIso = "2026-10-05T12:00:00+00:00"
+    result.provider = "openrouter"
+    result.model = "m"
+
+  test "serves the payload, newest turn first, with an unknown window at 7d":
+    let root = freshDir("waku-dash-obs")
+    let web = root / "static"
+    createDir(web)
+    writeFile(web / "index.html", "<html></html>")
+    createDir(root / "traces")
+    # One file per day, as the tracer writes them: file order IS time
+    # order, which is what makes "newest first" a reversal.
+    writeFile(root / "traces" / "2020-01-01.jsonl", [
+      $(%*{"type": "turn_start", "turn_id": "t_0",
+           "ts": "2020-01-01T10:00:00.000+00:00", "user_message": "old"}),
+      $(%*{"type": "turn_end", "turn_id": "t_0",
+           "ts": "2020-01-01T10:00:01.000+00:00", "reply": "old",
+           "iterations": 1})].join("\n") & "\n")
+    writeFile(root / "traces" / "2026-10-05.jsonl", [
+      $(%*{"type": "turn_start", "turn_id": "t_1",
+           "ts": "2026-10-05T10:00:00.000+00:00", "user_message": "hi"}),
+      $(%*{"type": "llm", "turn_id": "t_1",
+           "ts": "2026-10-05T10:00:01.000+00:00",
+           "usage": {"in": 10, "out": 2}, "stop_reason": "end_turn"}),
+      $(%*{"type": "turn_end", "turn_id": "t_1",
+           "ts": "2026-10-05T10:00:02.000+00:00", "reply": "yo",
+           "iterations": 1})].join("\n") & "\n")
+    # A frozen clock AFTER both turns (2026-10-06T12:00Z): the 7d window
+    # still holds t_1 and drops the 2020 one, which is the filter being
+    # pinned rather than the turn's own date.
+    let nowMs = 1791288000000'i64
+    let d = obsDeps(root, web, nowMs)
+    let (status, ctype, body) = handleGet(d, "/api/observability")
+    assert status == 200 and ctype == "application/json"
+    let node = parseJson(body)
+    assert node["generated_at"].getStr() == "2026-10-05T12:00:00+00:00"
+    assert node["summary"]["window"].getStr() == "7d"
+    # `turns` is every turn, newest first, capped — the window shows up in
+    # `summary` (upstream's `payload` filters the cards, never the list).
+    assert node["turns"].len == 2
+    assert node["turns"][0]["turn_id"].getStr() == "t_1"
+    assert node["turns"][1]["turn_id"].getStr() == "t_0"
+    assert node["summary"]["turns"]["count"].getInt() == 1,
+      "the 2020 turn is outside the frozen 7d"
+    let (status2, _, body2) =
+      handleGet(d, "/api/observability?window=garbage")
+    assert status2 == 200
+    assert parseJson(body2)["summary"]["window"].getStr() == "7d",
+      "an unknown window falls back to 7d, like Python"
+    let (status3, _, body3) = handleGet(d, "/api/observability?window=all")
+    assert status3 == 200
+    let all = parseJson(body3)
+    assert all["summary"]["window"].getStr() == "all"
+    assert all["turns"].len == 2
+    assert all["summary"]["turns"]["count"].getInt() == 2,
+      "all counts both turns"
+    assert all["turns"][0]["judge_offer"].kind == JNull
+    assert all["trace_files"].getInt() == 2
+    removeDir(root)
+
+  test "an empty home still answers the whole shape":
+    let root = freshDir("waku-dash-obs-empty")
+    let web = root / "static"
+    createDir(web)
+    writeFile(web / "index.html", "<html></html>")
+    let (status, _, body) =
+      handleGet(obsDeps(root, web, 1760000000000'i64), "/api/observability")
+    assert status == 200
+    let node = parseJson(body)
+    for key in ["generated_at", "summary", "spend_by_day", "trace_files",
+        "trace_file", "trace_errors", "turns", "tools", "memory", "spend",
+        "evals"]:
+      assert node.hasKey(key), key
+    assert node["turns"].len == 0
+    assert node["evals"]["your_turns"]["7d"]["turns"].getInt() == 0
+    removeDir(root)
+
+  test "an unwrapped binary has no eval counts to read":
+    assert checkoutRoot("") == "" or dirExists(checkoutRoot("") / "evals")
+    assert checkoutRoot("/nonexistent-xyz/waku/ops/static") == ""

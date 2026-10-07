@@ -89,6 +89,7 @@ import ./github
 import ./http
 import ./integrations
 import ./observability
+import ./observe
 import ./mcp
 import ./memory_admin
 import ./judgment_cases
@@ -169,6 +170,26 @@ const
     ## `STREAM_ROUTES` + the judgment/memory-arena exact checks). 8b serves
     ## a SUBSET; the arena entries stay honest 501s until 8c/8d.
 
+  portOnlyGetRoutes* = [
+    "/api/observability",
+  ]
+    ## GET paths this port serves that Python's `PINNED_GET` does not name
+    ## YET, each one a documented divergence rather than a drift:
+    ##
+    ## - `/api/observability` (spec 012) landed upstream in commit
+    ##   `3b08a62`, which this branch does not carry: the Python tree here
+    ##   has no `waku/ops/observability.py`, no pin for it and no hosted
+    ##   policy entry. The port tracks the newer upstream, so the route is
+    ##   served and declared HERE until the Python side syncs — at which
+    ##   point it moves into `pythonPinnedGet` and this list empties.
+    ##
+    ## `pythonPinnedGet`/`pythonPinnedPost` stay an EXACT mirror of the
+    ## Python pins (a test enforces it); this list is what keeps a served
+    ## route from being invisible. A route here is a deliberate gap: it
+    ## must never hold one the Python side already pins, and the hosted
+    ## route-contract eval cannot see it (no policy entry exists to
+    ## check). Two tests pin both halves of that sentence.
+
 type
   ChatFn* = proc(message: string): JsonNode {.closure.}
     ## One non-streaming turn (`chat`): the final done payload.
@@ -237,6 +258,9 @@ type
       ## `YYYY-MM-DD` trace file selector; "" means the local today.
     nowIso*: string
       ## `generated_at` override for deterministic tests; "" computes it.
+    nowMs*: int64
+      ## The clock the observability window reads, in unix millis; 0
+      ## means now. Injectable so a pin can date a crafted trace.
     dotenvPath*: string
       ## The `.env` file settings/connections persist to; "" skips disk.
     hostOs*: string
@@ -286,12 +310,14 @@ type
 proc readGetRoutes*(): seq[string] =
   ## The served GET API surface (8a reads + the 8b `reveal` side effect +
   ## the 8c compare history + the 8d arena GETs + the hosted-front-door
-  ## session reads). Each MUST be in `pythonPinnedGet` (there is a test).
+  ## session reads + the port-only divergences). Each MUST be in
+  ## `pythonPinnedGet` or in `portOnlyGetRoutes` (there is a test).
   ## Static paths (`/`, `/static/`, `/embed/chat`) are served too but
   ## walk the checkout, not this list — like Python's trailing `else`.
   @["/api/data", "/api/session", "/api/models", "/api/events",
     "/api/reveal", "/api/compare/history", "/api/judgment-arena",
-    "/api/memory-arena", "/api/memory-arena/stores"]
+    "/api/memory-arena", "/api/memory-arena/stores"] &
+    @portOnlyGetRoutes
 
 proc readPostRoutes*(): seq[string] =
   ## The served POST API surface (8b routes + the 8c compare trio + the
@@ -1365,6 +1391,29 @@ proc embedPage*(staticDir, theme: string): (bool, string)
   ## siblings (`sessionAction` with the POST mutations, `embedPage`
   ## with the static servers), but `handleGet` answers their routes.
 
+proc checkoutRoot*(staticDir: string): string =
+  ## The repository root beside a checkout, or "" for a bare binary
+  ## (no `evals/` anywhere): what the observability payload counts the
+  ## eval suites from. Measured from the static dir exactly like
+  ## `memoryExampleFor`, so one checkout layout answers both.
+  let root = if staticDir.len > 0: staticDir else: "."
+  let cand = normalizedPath(root / ".." / ".." / "..")
+  if dirExists(cand / "evals"): cand else: ""
+
+proc observabilityPayload*(d: DashboardDeps, window: string): JsonNode =
+  ## `GET /api/observability` (spec 012): the Observability page's turns,
+  ## tools, memory, spend and evals, read from this home's traces and
+  ## ledger ONLY — no agent, no network, nothing outside `WAKU_HOME`
+  ## except counting the eval suites in a checkout. An unknown window
+  ## falls back to `7d` inside the payload, like Python's `payload`.
+  ## `nowMs` is injectable so a pin can date a crafted trace; 0 means
+  ## now. See `portOnlyGetRoutes` for why this path is a declared port
+  ## divergence.
+  let nowMs = if d.nowMs > 0: d.nowMs else: int64(getTime().toUnix) * 1000
+  observability.payload(d.home, d.provider, d.model, window, nowMs,
+    mcpServerNames(d.home), checkoutRoot(d.staticDir), hosted = false,
+    releaseFile = "", judgeModel = d.smallModel, generatedAt = d.nowIso)
+
 proc handleGet*(d: DashboardDeps, target: string): (int, string, string) =
   ## Pure GET dispatch. Returns `(status, contentType, body)`; the HTTP
   ## layer adds framing (Content-Length, no-cache on statics, SSE for
@@ -1388,6 +1437,13 @@ proc handleGet*(d: DashboardDeps, target: string): (int, string, string) =
     return (200, "application/json", $revealTarget(d.home,
       query.getOrDefault("path", ""), d.env, host, d.revealProbe,
       d.revealOpen))
+  if path == "/api/observability":
+    # Spec 012: the Observability page's turns, tools, memory, spend and
+    # evals, read from this home's traces and ledger only. An unknown
+    # window falls back to `7d`. A declared port divergence, not a
+    # Python route — see `portOnlyGetRoutes`.
+    return (200, "application/json",
+      $observabilityPayload(d, query.getOrDefault("window", "7d")))
   if path == "/" or path == "/index.html":
     return serveIndex(d.staticDir)
   if path.startsWith("/static/"):
