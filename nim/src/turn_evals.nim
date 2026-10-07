@@ -236,7 +236,7 @@ proc countWord(word: string): int =
 proc parseAmount(raw: string): float =
   parseFloat(raw.replace(",", ""))
 
-proc round6(x: float): float =
+proc round6*(x: float): float =
   floor(x * 1e6 + 0.5) / 1e6
 
 proc findGroups(s: string, pat: Regex, groups: int): seq[seq[string]] =

@@ -19,8 +19,12 @@ import std/strutils
 import std/syncio
 import std/times
 
+import ./brain
+import ./memory_live
 import ./observe
 import ./pricing
+import ./skills
+import ./turn_evals
 import ./wire
 
 proc parseTsMs*(raw: string): (bool, int64) =
@@ -366,8 +370,8 @@ proc storedScores*(turn: JsonNode, extra: seq[JsonNode] = @[]): seq[JsonNode] =
   ## The turn's written scores (a judge's, a human's): those inside the
   ## turn that name no other turn, and those joined to it by turn_id.
   ## When one source scored one name twice, the newest wins. The five
-  ## code checks (`run_checks`, spec 015 A) land with the turn-evals
-  ## unit; until then this list is the whole `scores` of a built turn.
+  ## code checks (`turn_evals.run_checks`, spec 015) run first in
+  ## `build_turn`; this list appends the scores written for the turn.
   let own = turn.jget("turn_id").getStr()
   var fresh: seq[tuple[key: string, ts: string, score: JsonNode]] = @[]
   proc consider(ev: JsonNode) =
@@ -602,11 +606,10 @@ proc turnErrors*(steps: seq[JsonNode]): seq[JsonNode] =
 
 proc buildTurn*(turn: JsonNode, servers: openArray[string] = [],
     provider: string = "", model: string = "",
-    extraScores: seq[JsonNode] = @[]): JsonNode =
+    extraScores: seq[JsonNode] = @[], research = false): JsonNode =
   ## A turn with its steps in order, its time, its dollars and its
-  ## stored scores. The five code checks (`run_checks`, spec 015 A)
-  ## land with the turn-evals unit; until then `scores` holds stored
-  ## scores only.
+  ## scores: the five code checks (`turn_evals.run_checks`, spec 015),
+  ## run on every read, then any score written for it (a judge's).
   var steps: seq[JsonNode] = @[]
   let events = turn.jget("events")
   if events.kind == JArray:
@@ -702,7 +705,8 @@ proc buildTurn*(turn: JsonNode, servers: openArray[string] = [],
         tokensOut += int(oo.getBiggestInt())
     else:
       discard
-  result = %*{"scores": storedScores(turn, extraScores),
+  result = %*{"scores": runChecks(turn, usd = %round6(total),
+      research = research, servers = servers) & storedScores(turn, extraScores),
     "turn_id": turn.jget("turn_id").getStr(),
     "ts": turn.jget("ts"),
     "user_message": turn.jget("user_message").getStr(),
@@ -1216,18 +1220,6 @@ proc memoryPerTurn*(turns: seq[JsonNode]): seq[JsonNode] =
       "searches": searches})
   return result
 
-const turnChecks* = [
-    ("spend_claim", "the reply's spend matches the trace's treg dollars"),
-    ("one_report", "a research turn saves exactly one report"),
-    ("grounded_numbers",
-      "the reply's numbers appear in a tool output, a memory or the message"),
-    ("errors_handled",
-      "every failed tool call was retried or mentioned in the reply"),
-    ("under_budget", "the turn cost less than the per-turn budget (WAKU_TURN_BUDGET_USD)")]
-  ## The five code checks, with what each one asks. The checks
-  ## themselves (`run_checks`, spec 015 A) land with the turn-evals
-  ## unit; this table already names their rows.
-
 const judgePass* = 0.7
   ## A judge score passes at 0.7.
 
@@ -1520,7 +1512,9 @@ proc payload*(home: string, provider: string = "", model: string = "",
               break
         if not found:
           extra.add(ev)
-    built.add(buildTurn(t, servers, provider, model, extra))
+    let research = isResearch(matchingSkillNames(home, bundledSkillDirs(),
+      t.jget("user_message").getStr()))
+    built.add(buildTurn(t, servers, provider, model, extra, research))
   let tools = toolStats(events, servers, win, nowMs)
   let spend = spendHome(home, events, servers)
   let byDay = spendByDay(home, events, 14, servers)

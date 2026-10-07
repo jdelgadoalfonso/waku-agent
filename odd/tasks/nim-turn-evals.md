@@ -45,8 +45,10 @@ el juez corre solo cuando la persona lo pide, escribiendo un evento
   min/10, `find_turn`, `_claim` 60s, `judge_turn` con llamada inyectada,
   `write_score`, ledger kind "judge"), `report` + `cli_main`
   (`waku evals turns [--window]`).
-- Cableado: `build_turn` corre los checks en cada lectura + stored;
-  `payload` pone `judge_offer` por turno (modelo = small del provider) y
+- Cableado: `build_turn` corre los checks en cada lectura + stored
+  (`yourTurns` y la tabla ya viven en `observability.nim` — llegaron con
+  la unidad de rutas y T6 los vuelve reales); `payload` pone
+  `judge_offer` por turno (modelo = small del provider) y
   `evals.your_turns` por ventana; `observability_data` pasa el small model
   como ya hace; ruta POST en `dashboard.nim` con lista `portOnlyPostRoutes`
   (este Python no pinea la ruta, como pasó con GET observability).
@@ -66,8 +68,8 @@ el juez corre solo cuando la persona lo pide, escribiendo un evento
 | T3 | `one_report` (saves dedup, research, no-report, marker, v2) + pines | S1 S3 | test-first, pins | work unit |
 | T4 | `grounded_numbers` (formatos, fechas, 90%, n/a memoria-sola) + pines | S1 S3 | test-first, pins | work unit |
 | T5 | `errors_handled` + `under_budget` + `run_checks` (raise → n/a) + pines | S1 S3 | test-first, pins | work unit |
-| T6 | `your_turns` + cableado (`build_turn` corre checks, `judge_offer` estimado, `evals.your_turns`, small model) + pines | S1 S2 | test-first, pins | work unit |
-| T7 | Juez bajo demanda + POST `/api/turn-evals/judge` + `portOnlyPostRoutes` + pines | S2 S4 | test-first, pins | work unit |
+| T6 | Cableado (`build_turn` corre checks + stored, `research` por skill-match, `evals.your_turns` se vuelve real) + pines | S1 S2 | test-first, pins | work unit |
+| T7 | Juez bajo demanda (`judge_offer` estimado, prompt, veredicto, score) + POST `/api/turn-evals/judge` + `portOnlyPostRoutes` + pines | S2 S4 | test-first, pins | work unit |
 | T8 | `report` + `waku evals turns` + docs que la unidad vuelve falsos (regla 9) | S1 S4 | CLI + doc + pines | work unit |
 
 ## Non-goals
@@ -93,11 +95,13 @@ el juez corre solo cuando la persona lo pide, escribiendo un evento
 - **T5**: reintentado pasa; mencionado pasa; silencioso falla; sin fallos
   es n/a; $1.34 falla al default; raise de un check es n/a y la página
   se arma igual.
-- **T6**: `build_turn` trae los cinco code scores; `your_turns` cuenta por
-  ventana; `judge_offer` trae modelo y usd estimado; vacía responde.
-- **T7**: prompt sale solo del turno guardado; el juez escribe un `score`
-  con costo y modelo; turno desconocido y repeat <60s rehúsan; veredicto
-  ilegible no escribe; `POST` pineado en POST + espejo intacto.
+- **T6**: `build_turn` trae los cinco code scores + stored; `your_turns`
+  cuenta los checks recién corridos; pines viejos (stored, judge null)
+  siguen verdes.
+- **T7**: `judge_offer` trae modelo y usd estimado; prompt sale solo del
+  turno guardado; el juez escribe un `score` con costo y modelo; turno
+  desconocido y repeat <60s rehúsan; veredicto ilegible no escribe;
+  `POST` pineado en POST + espejo intacto.
 - **T8**: `waku evals turns` imprime tabla + turnos que fallan; `rg -n`
   documenta fuente y límites en `turn_evals.nim`.
 

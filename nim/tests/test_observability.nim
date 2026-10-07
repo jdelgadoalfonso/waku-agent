@@ -165,6 +165,38 @@ suite "built turns":
     assert built["story"][0]["part"].getStr() == "question"
     assert built["scores"].kind == JArray
 
+suite "turn-eval wiring":
+  test "build_turn runs the five code checks, then stored scores":
+    let turn = %*{"turn_id": "t_9", "ts": "2026-10-05T10:00:00.000+00:00",
+      "user_message": "hi", "reply": "Forty-two.", "events": []}
+    let extra = @[%*{"type": "score", "source": "judge",
+      "name": "overall", "value": 0.8, "note": "fine",
+      "ts": "2026-10-05T10:00:01.000+00:00"}]
+    let built = buildTurn(turn, @[], "", "", extra)
+    assert built["scores"].len == 6
+    assert built["scores"][0]["name"].getStr() == "spend_claim"
+    assert built["scores"][4]["name"].getStr() == "under_budget"
+    for s in built["scores"][0 .. 4]:
+      assert s["source"].getStr() == "code"
+    assert built["scores"][4]["value"].getFloat() == 1.0
+    assert built["scores"][5]["source"].getStr() == "judge"
+
+  test "your_turns counts the checks the page just ran":
+    let turn = %*{"turn_id": "t_9", "ts": "2026-10-05T10:00:00.000+00:00",
+      "user_message": "hi", "reply": "Forty-two.", "events": []}
+    let built = buildTurn(turn, @[], "", "")
+    let (okN, nowMs) = parseTsMs("2026-10-06T00:00:00.000+00:00")
+    assert okN
+    let yt = yourTurns(@[built], "7d", nowMs)
+    proc checkRow(name: string): JsonNode =
+      for c in yt["checks"]:
+        if c["name"].getStr() == name:
+          return c
+      newJNull()
+    assert yt["turns"].getInt() == 1
+    assert checkRow("under_budget")["passed"].getInt() == 1
+    assert checkRow("one_report")["na"].getInt() == 1
+
 proc toolEv(tool, output, ts: string): JsonNode =
   %*{"type": "tool", "tool": tool, "args": %*{"query": "q"},
       "output": output, "ts": ts, "call_id": "t1", "duration_ms": 3}
