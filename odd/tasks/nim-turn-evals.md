@@ -263,3 +263,35 @@ el juez corre solo cuando la persona lo pide, escribiendo un evento
   (lens-context efímero). Lección: no transcribir hashes a mano
   (un target truncado da `invalid_request`); generar comandos
   desde el JSON. Pendientes: corrección T4, T4 quemar, G3, G4.
+- **L13** (revisión G3, 2026-10-09): T5+T6 aprobados por revisión
+  nativa (`review-3d6bc53a27ed1592`, 5 archivos/310 líneas, lente
+  `review-reliability`). El revisor por subproceso murió a los 927s
+  contra el límite derivado del relay (~15.5 min para un prompt de
+  32KB; el revisor necesita ~30-40 min), así que la corrida terminó
+  por la ruta en-host del proveedor: materializar la tarea, ejecutar
+  el rol R3 desde los patches congelados y presentar el resultado por
+  `capture-result --input`. 0 BLOCKER/CRITICAL; 2 advisory no
+  bloqueantes: WARNING `R3-saidfailure-global-bypass`
+  (`turn_evals.nim:826-827`: la alternativa de failure-words es
+  global y pasa todo tool fallido si el reply menciona cualquier
+  fallo) y SUGGESTION `R3-bundled-skill-dirs-in-loop`
+  (`observability.nim:1515-1516`). Autoridad quemada
+  (acknowledge-approved, revisión `e7305e18`).
+- **L14** (revisión G4, 2026-10-09): T7+T8 aprobados por revisión
+  nativa (`review-97a2a201ea501d96`, 12 archivos/767 líneas, misma
+  lente y misma ruta en-host, prompt de 62KB). 0 BLOCKER/CRITICAL;
+  3 advisory: WARNING `R3-window-value-missing-accepted`
+  (`waku.nim:258-263`: `--window` sin valor se salta silenciosamente
+  y sale 0 con 7d, mientras un valor inválido sale 2), SUGGESTION
+  `R3-turns-report-duplicates-build` (`observability.nim:1569-1588`:
+  `turnsReport` reimplementa el building de `payload`) y SUGGESTION
+  `R3-judge-offer-builds-prompt-per-read` (`turn_evals.nim:971-978`:
+  la oferta materializa el prompt completo en cada lectura aunque solo
+  su longitud alimenta la estimación). Autoridad quemada (revisión
+  `6a8db308`). Con esto T1-T8 tienen revisión nativa completa.
+- **L15** (higiene de linajes, 2026-10-09): abandonado el lineage
+  G2-combinado `review-ec50166725530492` (536 líneas; nunca admitió
+  resultados de lente — T3 y T4 cerraron con sus propias revisiones
+  quemadas). `operator_disposition`, actor `pi`, registro v2
+  committed, lineage en cuarentena
+  (`review-ec50166725530492-878788222`).
