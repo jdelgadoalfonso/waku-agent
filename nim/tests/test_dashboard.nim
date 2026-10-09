@@ -32,13 +32,17 @@ proc freshDir(name: string): string =
     removeDir(result)
   createDir(result)
 
-proc payloadKeys*(src: string): seq[string] =
+proc payloadKeys*(src: string, lowercase = true): seq[string] =
   ## Every `D.<key>` / `d.<key>` read in one frontend file: `D` is the
   ## global `/api/data` blob and the views receive it as `d`, so both
-  ## spellings are payload reads. DOM members on unrelated `d` locals
-  ## (`querySelector`, `innerHTML`, …) are denied by name — a new one
-  ## shows up as a missing payload key, and the fix is extending that
-  ## list, never inventing an endpoint key for it.
+  ## spellings are payload reads. A file that fetches an endpoint of
+  ## its own (observe.js, compare.js, models.js, diagram.js) hands
+  ## THAT response to its views as `d`, so such a file is extracted
+  ## with `lowercase = false`: only `D.`, the global `refresh()` sets
+  ## once per page, is a /api/data read there. DOM members on
+  ## unrelated `d` locals (`querySelector`, `innerHTML`, …) are denied
+  ## by name — a new one shows up as a missing payload key, and the
+  ## fix is extending that list, never inventing an endpoint key for it.
   const domDeny = ["addEventListener", "appendChild", "body",
     "checked", "classList", "className", "click", "close", "createElement",
     "currentTarget", "dataset", "disabled", "files", "focus",
@@ -49,7 +53,8 @@ proc payloadKeys*(src: string): seq[string] =
   const ident = {'a' .. 'z', 'A' .. 'Z', '0' .. '9', '_', '$'}
   var i = 0
   while i < src.len - 2:
-    if (src[i] == 'D' or src[i] == 'd') and src[i + 1] == '.' and
+    if (src[i] == 'D' or (src[i] == 'd' and lowercase)) and
+        src[i + 1] == '.' and
         (i == 0 or src[i - 1] notin ident):
       var j = i + 2
       var key = ""
@@ -837,11 +842,25 @@ suite "phase 8a /api/data frontend contract":
     # (empty) so the next frontend read outside the payload fails here
     # instead of degrading silently in the browser.
     const knownGaps: seq[string] = @[]
+    # Files whose `d` is NOT the /api/data blob: each fetches an
+    # endpoint of its own and hands THAT response to its views
+    # (observe.js's `d` is /api/observability's payload, compare.js's
+    # is the /api/compare/history list, models.js's is the /api/models
+    # catalog, diagram.js's is the /api/events stream). Their
+    # lowercase `d.<key>` reads belong to that endpoint's contract, not
+    # this one; `D.` is still the blob everywhere. A new page with its
+    # own payload is a decision, not a detail: name its file here.
+    const ownPayload = ["compare.js", "diagram.js", "models.js",
+                        "observe.js"]
     var read: seq[string] = @[]
     for kind, path in walkDir(jsDir):
       if kind != pcFile or not path.endsWith(".js"):
         continue
-      for key in payloadKeys(readFile(path)):
+      var dataView = true
+      for f in ownPayload:
+        if path.endsWith(f):
+          dataView = false
+      for key in payloadKeys(readFile(path), lowercase = dataView):
         if key notin read:
           read.add(key)
     assert read.len > 0, "no D./d. reads found — the extractor is broken"
@@ -885,7 +904,7 @@ suite "phase 8a route surface":
       assert r notin pythonPinnedGet, r
     for r in pythonPinnedGet:
       assert r notin portOnlyGetRoutes, r
-    assert portOnlyGetRoutes == @["/api/observability"],
+    assert portOnlyGetRoutes == @[],
       "a new port-only route is a decision, not a detail: name it here"
 
   test "every 8a route answers 200 against an empty home":
@@ -1536,7 +1555,7 @@ suite "phase 8b POST route surface":
       assert r notin pythonPinnedPost, r
     for r in pythonPinnedPost:
       assert r notin portOnlyPostRoutes, r
-    assert portOnlyPostRoutes == @["/api/turn-evals/judge"],
+    assert portOnlyPostRoutes == @[],
       "a new port-only route is a decision, not a detail: name it here"
 
   test "every served POST route answers 200 against an empty home":
