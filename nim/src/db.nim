@@ -31,7 +31,11 @@ const schemaStmts* = [
       subject TEXT NOT NULL,
       content TEXT NOT NULL,
       source TEXT DEFAULT 'user',
-      created_at TEXT DEFAULT (datetime('now'))
+      created_at TEXT DEFAULT (datetime('now')),
+      -- Spec 006: 0 while a kept fact still has to reach Waku Memory, and the
+      -- scope it goes to there. Every other fact is 1: nothing to send.
+      synced INTEGER DEFAULT 1,
+      scope TEXT DEFAULT 'global'
   )""",
   """
   CREATE VIRTUAL TABLE IF NOT EXISTS facts_fts USING fts5(
@@ -85,6 +89,11 @@ proc chatLogColumns*(db: DbConn): seq[string] =
   for row in db.getAllRows(sql"PRAGMA table_info(chat_log)"):
     result.add(row[1])
 
+proc factColumns*(db: DbConn): seq[string] =
+  ## Column names of `facts` (for `_migrate` and tests).
+  for row in db.getAllRows(sql"PRAGMA table_info(facts)"):
+    result.add(row[1])
+
 proc migrate*(db: DbConn) =
   ## Additive, idempotent column upgrades for databases created before a
   ## column existed. Port of `waku/db.py` `_migrate`.
@@ -97,6 +106,13 @@ proc migrate*(db: DbConn) =
   if "meta" notin cols:
     # per-turn telemetry as JSON on the assistant row
     db.exec(sql"ALTER TABLE chat_log ADD COLUMN meta TEXT")
+  let factCols = factColumns(db)
+  if "synced" notin factCols:
+    # Spec 006. Existing rows default to 1, so the backlog is not re-sent
+    # to Waku Memory: the capture shim imports that from memory/<id>.md.
+    db.exec(sql"ALTER TABLE facts ADD COLUMN synced INTEGER DEFAULT 1")
+  if "scope" notin factCols:
+    db.exec(sql"ALTER TABLE facts ADD COLUMN scope TEXT DEFAULT 'global'")
 
 proc connectDb*(home: string): DbConn =
   ## Open (creating `home` when missing) `<home>/state.db`, wait up to 3s

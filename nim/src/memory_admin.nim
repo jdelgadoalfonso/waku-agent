@@ -180,18 +180,20 @@ proc createSkill*(home, name, description, body: string,
   writeFile(dest, text)
   return "Created skill '" & slug & "'. It will trigger on: " & description.strip()
 
-proc makeSaveNoteTool*(db: DbConn): Tool =
+proc makeSaveNoteTool*(db: DbConn, remember: notes.Remember = nil): Tool =
   Tool(name: "save_note",
     description: "Save a durable fact to long-term memory. Use when the user tells you something " &
       "worth remembering about themselves, a person, or a project — especially if they " &
-      "say 'remember' or share a preference.",
+      "say 'remember' or share a preference. The answer says where the fact was saved; " &
+      "repeat it to the user exactly.",
     inputSchema: %*{"type": "object",
       "properties": {
         "subject": {"type": "string", "description": "Who/what this is about, e.g. 'alex' or 'acme-project'"},
         "content": {"type": "string", "description": "The fact, one sentence"}},
       "required": ["subject", "content"]},
     fn: proc(args: JsonNode): string =
-      notes.saveNote(db, strArg(args, "subject"), strArg(args, "content")))
+      notes.saveNote(db, strArg(args, "subject"), strArg(args, "content"),
+        remember))
 
 proc makeSendMessageTool*(home: string): Tool =
   Tool(name: "send_message",

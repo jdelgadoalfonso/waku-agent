@@ -30,10 +30,10 @@ proc freshDb(name: string): tuple[home: string, db: DbConn] =
   result = (home, connectDb(home))
 
 suite "phase 2c save_note":
-  test "stores lowercased and quotes the original subject":
+  test "stores lowercased and says where it went":
     let (home, db) = freshDb("waku-note")
     assert db.saveNote("  ALEX  ", "prefers mornings") ==
-      "Saved to memory under '  ALEX  ': prefers mornings"
+      "Saved here. Waku Memory is not connected."
     assert db.searchFacts("alex") == @["[alex] prefers mornings"]
     db.close()
     removeDir(home)
@@ -140,7 +140,8 @@ suite "phase 2c registry wiring":
     reg.register(makeUpdateSoulTool(home))
     reg.register(makeCreateSkillTool(home))
     assert reg.execute("save_note",
-      %*{"subject": "alex", "content": "x"}).startsWith("Saved to memory")
+      %*{"subject": "alex", "content": "x"}) ==
+      "Saved here. Waku Memory is not connected."
     assert "outbox" in reg.execute("send_message",
       %*{"to": "bob", "body": "hi"})
     assert reg.execute("manage_memory", %*{"action": "search",

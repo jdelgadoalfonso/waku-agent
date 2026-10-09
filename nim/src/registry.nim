@@ -23,6 +23,7 @@ import ./factstore
 import ./github
 import ./mcp
 import ./memory_admin
+import ./notes
 import ./search
 import ./tools
 
@@ -62,15 +63,17 @@ proc mcpRegistryTools*(home: string, env: Table[string, string],
 proc buildRegistry*(db: DbConn, home: string, settings: Settings,
     searchFetch: SearchFetchFn, ghRun: GhRunner, pi: PiSeams,
     apple: AppleSeams, facts: FactStore, episodes: EpisodeStore,
-    mcpTools: seq[Tool] = @[]): ToolRegistry =
+    mcpTools: seq[Tool] = @[], remember: notes.Remember = nil): ToolRegistry =
   ## Port of `build_registry`. Every side effect rides an injected seam
   ## (`searchFetch`, `ghRun`, `pi`, `apple`) plus pre-connected
   ## `mcpTools` — tests record them all, the builders pass the live
   ## adapters. `settings` alone gates the opt-ins (never OR the env at
-  ## registry time): the arena passes per-race values.
+  ## registry time): the arena passes per-race values. `remember` is
+  ## the Waku Memory send (spec 018); nil, as in every Nim build
+  ## today, means save_note answers "not connected" honestly.
   result.register(makeCreateEventTool(db, home))
   result.register(makeListEventsTool(db))
-  result.register(makeSaveNoteTool(db))
+  result.register(makeSaveNoteTool(db, remember))
   result.register(makeSendMessageTool(home))
   result.register(makeSearchTool(searchFetch))
   result.register(makeManageMemoryTool(db, facts, episodes))
