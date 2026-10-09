@@ -338,6 +338,14 @@ suite "errors handled":
     assert check["value"].getInt() == 0
     assert "tomba_lookup" in check["note"].getStr()
 
+  test "a second failure stays silent when the reply reports another":
+    let check = checkErrorsHandled(errView("The search web call failed.",
+      @[errTool("search_web", "local", false),
+        errTool("tomba_lookup", "treg", false, provider = "tomba")]))
+    assert check["value"].getInt() == 0, check["note"].getStr()
+    assert "search_web" notin check["note"].getStr()
+    assert "tomba_lookup" in check["note"].getStr()
+
   test "no failure is n/a":
     let check = checkErrorsHandled(
       errView("Done.", @[errTool("treg_call", "treg", true)]))

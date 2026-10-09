@@ -814,8 +814,9 @@ proc toolNames(t: JsonNode): seq[string] =
 proc checkErrorsHandled*(v: JsonNode): JsonNode =
   ## Every failed tool call was retried or mentioned: a later call to the
   ## same tool in the turn succeeded, or the reply names the tool, its
-  ## provider, its endpoint or a part of it, or says a step failed or did
-  ## not happen. n/a when no tool failed.
+  ## provider, its endpoint or a part of it. Plain failure words count
+  ## only when one call failed, since they can only mean that call.
+  ## n/a when no tool failed.
   let tools = v.jget("tools")
   var failed: seq[int] = @[]
   for i in 0 ..< tools.len:
@@ -824,7 +825,7 @@ proc checkErrorsHandled*(v: JsonNode): JsonNode =
   if failed.len == 0:
     return checkResult("errors_handled", newJNull(), "no tool call failed")
   let reply = prose(v.jget("reply").getStr()).toLowerAscii()
-  let saidFailure = containsRe(reply, failureWordsRe)
+  let saidFailure = failed.len == 1 and containsRe(reply, failureWordsRe)
   var silent: seq[string] = @[]
   for i in failed:
     let t = tools[i]
