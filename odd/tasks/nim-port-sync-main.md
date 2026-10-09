@@ -32,8 +32,8 @@ rebase; this work makes the Nim port match it. Sources of truth: commits
 
 - T1 — S1: `nim/src/loop.nim` + `nim/tests/test_loop.nim` (done: cefd3aa)
 - T2 — S2: `nim/src/memory_live.nim` + `nim/tests/test_memory_live.nim` (done: this commit)
-- T3 — S3: `nim/src/notes.nim`, `nim/src/db.nim`, `nim/src/memory_admin.nim`, `nim/src/registry.nim` + tests (pending)
-- T4 — S3 wiring: `nim/src/app.nim` (`savedCell`), `nim/src/memory_live.nim` (`wireMemory` joins saved saves into `recalled`) + tests (pending; same file as T2, runs after it)
+- T3 — S3: `nim/src/notes.nim`, `nim/src/db.nim`, `nim/src/memory_admin.nim`, `nim/src/registry.nim` + tests (done: 492cbef)
+- T4 — S3 wiring: `nim/src/app.nim` (`savedCell`), `nim/src/memory_live.nim` (`wireMemory` joins saved saves into `recalled`) + tests (done: this commit)
 
 ## Log
 
