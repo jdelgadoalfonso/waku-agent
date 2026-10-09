@@ -161,3 +161,85 @@ el juez corre solo cuando la persona lo pide, escribiendo un evento
   `nim/tests/factstore_fakes` (binario trackeado que cada `nimble test`
   regenera) sin decisión entre restaurar a HEAD o ignorar
   `.codegraph/`/`.pi/`.
+- **L7** (review nativo, 2026-10-08): punto 1 retomado con
+  autorización. `gentle-ai sync --agent pi` (v4.0.0, 9 archivos,
+  todos fuera del proyecto) desbloqueó `managed_assets_outdated`.
+  Descubrimiento de ruta: para un rango comprometido hay que
+  congelar el target con `review status --base-ref <commit>
+  --committed-only` (proyección `base-diff`) y luego `review start`
+  con los tokens ofrecidos; la fachada `start` sola no reconcilia
+  `baseRef` con un árbol sucio (`candidate-mismatch`). Consentimiento
+  `granted` (riesgo medio, 14 archivos, 2377 líneas). Lineage
+  `review-350c858b082944dd` creado, lente `review-reliability`,
+  presupuesto de corrección 200. **Bloqueado**: la corrida del
+  revisor falló 3 veces con 429 del pool compartido upstream
+  (Novita / ling-3.1-flash por OpenRouter); al cambiar el
+  modelo, el 429 desapareció pero el relé devolvió 404 (modelo
+  no gratuito; el proveedor sugiere el slug `minimax/minimax-m3`
+  o clave paga). Nada quemado; el slot se reofrece en cada
+  STATUS fresco. Pendiente: enrutar el relé a un modelo
+  disponible (lado del usuario) y reintentar. (2026-10-08,
+  reintentos): con el modelo cambiado el relé **sí corró**
+  pero excedió el límite del relé (~1016868ms) con el
+  prompt de 136KB del rango completo → declarado
+  `unachievable_lens_slot` (lineage detenido). Nueva
+  rebanada T9 por decisión del usuario: lineage
+  `review-26fc4204948fdd02`, consentimiento granted,
+  8 archivos/164 líneas, presupuesto 82 — y también
+  excedió el límite (926720ms contra 926700ms) con un
+  prompt de solo 31KB: el cuello es la **velocidad del
+  modelo**, no el alcance. Remedio del proveedor:
+  `GENTLE_PI_REVIEW_RELAY_PI_TIMEOUT_MS` (techo
+  7200000ms) en el entorno del host, o un modelo de
+  relé más rápido; ambos lados del usuario.
+- **L8** (relanzamiento con timeout 2h, 2026-10-08): usuario subió
+  `GENTLE_PI_REVIEW_RELAY_PI_TIMEOUT_MS` a 7200000 y autorizó sync +
+  ambas revisiones (T9 primero). Secuencia que funciona: sync genérico
+  para el withdraw, luego sync v4.0.0 exacto del continuation para que
+  STATUS reofrezca collect. **T9 aprobada y quemada**
+  (`review-26fc4204948fdd02`, 8 archivos/164 líneas, prompt 31KB):
+  1697s, `approved`, 2 findings informativos no bloqueantes en
+  `arena_live.nim` (retry sin pin 259-262 SUGGESTION, ledger-row sin
+  pin 255-257 WARNING), revision `1e01b66d`, authority burned.
+  **Rango completo fallido** (`review-350c858b082944dd`, 14
+  archivos/2377 líneas, prompt ~136KB): 3606s y
+  `pi-host-relay-transport-failure` (stream sin finish_reason,
+  sin timeout); nada quemado, STATUS reofrece el slot. Lección:
+  31KB→28min OK pero 136KB→60min sin finish con este modelo; el
+  rango puede necesitar reintentos o seguir en rebanadas.
+- **L9** (troceado en 4 grupos, 2026-10-08): usuario eligió 4 grupos y
+  abandonar el rango (`operator_disposition`, committed, nada
+  descartado). Worktrees hermanos registrados: g1 `da92dab`, g2
+  `fa74feb`, g3 `47dcdf9`, g4 `4a20ead`. Grupos: G1 T1+T2 646,
+  G2 T3+T4 536, G3 T5+T6 310, G4 T7+T8 767 (T9 ya quemada).
+  Flujo en worktree limpio: native status `--base-ref
+  --committed-only` → native start con tokens exactos → consent
+  → sync v4.0.0 → collect → forecast → run. **G1 aprobada y
+  quemada** (`review-ffd031747841504c`, 3 archivos/646 líneas,
+  prompt ~40KB): 2209s, `approved`, 6 findings informativos
+  (`turn_evals.nim` 102-103, 306-307, 31-41 WARNING; test 119-124
+  WARNING; 122-124 y 324 SUGGESTION), revision `d75c2132`.
+  Lección: la fachada START no admite `baseRef`
+  (`schema-incompatible`); hay que usar el comando nativo exacto.
+  Pendientes: G2, G3, G4.
+- **L10** (G2 T3+T4, 2026-10-08): consent granted (medium, 2
+  archivos/536 líneas, `review-ec50166725530492` en g2). Corrida
+  3606s y mismo `pi-host-relay-transport-failure` que el rango
+  (stream sin finish_reason a los ~60min, sin timeout); nada
+  quemado, STATUS reofrece el slot. Patrón: fallos a ~3600s en
+  rango y G2 contra éxitos en T9 (28min) y G1 (37min) → apunta a
+  rango y G2 contra éxitos en T9 (28min) y G1 (37min) → apunta a
+  límite del stream (~1h) más que al tamaño. Opciones: reintentar
+  G2, partirlo en T3 (188) + T4 (348), o seguir con G3 (310).
+- **L11** (partición G2, 2026-10-08): usuario eligió partir G2.
+  Worktree nuevo `g2t3` en `9565d73` autorizado y registrado.
+  **T3 aprobada y quemada** (`review-9dadce56c9ba7c9c`, 2
+  archivos/188 líneas, prompt ~20KB): 2209s, `approved`, 6
+  findings informativos, revision `a281f961`. **T4 en
+  `correction_required** (`review-7f29e5479b90eb62`, 2
+  archivos/348 líneas): revisor 2599s + refutador 691s que
+  corroboró severos del candidato; plan de 1-174 diff lines
+  ofrecido pero sin texto de findings en la transición
+  (lens-context efímero). Lección: no transcribir hashes a mano
+  (un target truncado da `invalid_request`); generar comandos
+  desde el JSON. Pendientes: corrección T4, T4 quemar, G3, G4.
