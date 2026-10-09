@@ -244,6 +244,19 @@ suite "grounded numbers":
     let check = checkGroundedNumbers(groundedView("x", reply, @[numSource]))
     assert check["value"].getInt() == 1, check["note"].getStr()
 
+  test "a scaled figure mid-reply grounds the raw source figure":
+    let reply = "It raised $1.5M, kept $2K and paid $300."
+    let check = checkGroundedNumbers(groundedView("x", reply,
+      @["{\"raised\": 1500000, \"kept\": 2000, \"paid\": 300}"]))
+    assert check["value"].getInt() == 1, check["note"].getStr()
+
+  test "a reply ending in a scale word scales nothing":
+    let reply = "Costs were $5,000, fees $600 and tax $700 on the web"
+    let check = checkGroundedNumbers(groundedView("x", reply,
+      @["{\"big\": 5000000000000, \"fees\": 600000000000, " &
+        "\"tax\": 700000000000}"]))
+    assert check["value"].getInt() == 0
+
   test "an invented figure fails and is named":
     let reply = "Revenue was $1,200, profit $9,999 and tax $8,888."
     let check = checkGroundedNumbers(groundedView("x", reply, @[numSource]))

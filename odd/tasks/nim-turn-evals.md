@@ -232,6 +232,26 @@ el juez corre solo cuando la persona lo pide, escribiendo un evento
   límite del stream (~1h) más que al tamaño. Opciones: reintentar
   G2, partirlo en T3 (188) + T4 (348), o seguir con G3 (310).
 - **L11** (partición G2, 2026-10-08): usuario eligió partir G2.
+- **L12** (corrección nativa, 2026-10-09): T4 quedó en
+  `correction_required` por `R3-scale-suffix-end-anchored`
+  (CRITICAL). El find anclado a `$` buscaba el sufijo de escala
+  en `text[start..^1]`: solo lo detecta al final del reply
+  (falso negativo: "$1.5M" a mitad de frase) o en cualquier
+  palabra final en k/m/b como "web" o "from" (falso positivo
+  que escalaría todas las cifras anteriores). Fix: el find
+  cubre solo el token coincidente (`whole`), como el lado
+  fuente. Al probar apareció la segunda cara del bug: en
+  `std/re` `groups[0]` es el primer grupo capturado, así que
+  `scaleValue(sm[1])` leía "" y la escala estaba muerta en
+  ambos lados; el lado del reply pasa a `sm[0]`. El `sm[1]`
+  latente del lado fuente (660) queda fuera del alcance de
+  este finding, anotado para seguimiento. Dos pines nuevos:
+  cifra con escala a mitad de reply funde con la fuente cruda;
+  reply terminado en palabra de escala no escala nada. Suite
+  completa **1437 OK / 0 FAILED**. Revisión quemada en
+  `review-7f29e5479b90eb62`: corrección de 17 líneas
+  (commit `cc36950`), validación dirigida aceptada y
+  acknowledgement quemado.
   Worktree nuevo `g2t3` en `9565d73` autorizado y registrado.
   **T3 aprobada y quemada** (`review-9dadce56c9ba7c9c`, 2
   archivos/188 líneas, prompt ~20KB): 2209s, `approved`, 6

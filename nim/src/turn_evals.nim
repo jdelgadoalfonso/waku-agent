@@ -607,8 +607,8 @@ proc replyNumbers(reply: string, ts: string): seq[Wanted] =
     var value = parseAmount(raw)
     var scale = 1.0
     var sm: array[2, string]
-    if find(text[start .. ^1], scaleSuffixRe, sm) >= 0:
-      scale = scaleValue(sm[1])
+    if find(whole, scaleSuffixRe, sm) >= 0:
+      scale = scaleValue(sm[0])
       value *= scale
     let decimals = if "." in raw: raw.split(".")[1].len else: 0
     var values = @[value, value / scale]
