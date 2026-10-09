@@ -14,8 +14,6 @@ import std/strutils
 
 import db_connector/db_sqlite
 
-import ./db
-
 const noteScope* = "global"
   ## The scope every save_note fact goes to in Waku Memory
   ## (Python's `SCOPE`). The one place the name lives;
