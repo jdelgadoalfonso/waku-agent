@@ -295,3 +295,17 @@ el juez corre solo cuando la persona lo pide, escribiendo un evento
   quemadas). `operator_disposition`, actor `pi`, registro v2
   committed, lineage en cuarentena
   (`review-ec50166725530492-878788222`).
+- **L16** (seguimiento de WARNING, 2026-10-09): corregidos los
+  dos hallazgos advisory WARNING de G3 y G4, commits `2d74c61` y
+  `10bfd49` en la rama feature. (1) `R3-saidfailure-global-bypass`:
+  `checkErrorsHandled` ya no aplica las failure-words del reply a
+  todos los tools fallidos — la alternativa global vale solo cuando
+  un único tool falló (las palabras solo pueden significar esa
+  llamada); con dos o más fallos cada uno debe ser reintentado o
+  nombrado. Pin nuevo: "a second failure stays silent when the
+  reply reports another". (2) `R3-window-value-missing-accepted`:
+  `runEvalsTurnsCmd` ya no ignora un `--window` sin valor: sale 2
+  nombrando las opciones, igual que un valor inválido. Pin nuevo:
+  "a dangling --window names the choices and exits 2". Suite
+  completa Nim 1439 OK / 0 FAILED. Los tres SUGGESTION de G3/G4
+  siguen pendientes (limpieza, no bloqueante).
