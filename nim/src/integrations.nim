@@ -53,6 +53,9 @@ import std/strutils
 import std/tables
 import std/times
 
+when defined(posix):
+  import std/posix
+
 import ./catalog
 import ./providers
 
@@ -839,7 +842,14 @@ proc applyDotenvEdits(path: string, updates: Table[string, string],
   var text = kept.join("\n")
   if kept.len > 0:
     text.add("\n")
+  let created = not fileExists(path)
   writeFile(path, text)
+  if created:
+    # python-dotenv's set_key writes through a temporary
+    # file, so a new .env starts with mode 600: a file
+    # that can hold a key is never world-readable (spec 013).
+    when defined(posix):
+      discard chmod(path.cstring, 0o600)
 
 proc snapshotEnv(env: Table[string, string],
     names: seq[string]): (Table[string, string], seq[string]) =

@@ -42,6 +42,7 @@ import ./gateway
 import ./github
 import ./http
 import ./integrations
+import ./key_locations
 import ./mcp
 import ./memory_live
 import ./providers
@@ -148,7 +149,17 @@ proc runConnections*(): int =
     return 1
   let rows = loadProviders(registryPath)
   let store = newHealthStore(loadSettings().home)
-  return cliMain(rows, processEnv(), hostOS, storeHealthFn(store), nil)
+  let code = cliMain(rows, processEnv(), hostOS, storeHealthFn(store), nil)
+  # Where a model key was looked for, in the order
+  # the places win (spec 013). Paths and yes-or-no
+  # only: no value is printed.
+  echo ""
+  echo "Model key"
+  let report = modelKeyLocations(getCurrentDir(), processEnv(),
+    getHomeDir(), startupEnvNames, rows)
+  for line in cliLines(report):
+    echo "  " & line
+  return code
 
 proc writeHelp*() =
   ## Print the command list the full port will implement.
@@ -175,7 +186,14 @@ proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
   ## community" and "my private assistant, exposed" (port of
   ## `discord.py::_build_agent`, which reloads settings and repoints
   ## `home`). Empty (the default) is the plain `WAKU_HOME` agent.
-  let dotenvPath = loadDotenv(dotenvStart)
+  let found = loadDotenv(dotenvStart)
+  # Spec 013: a save goes where the next start reads
+  # it first. With no folder .env, that is <home>/.env,
+  # so a key pasted from the dashboard works from every
+  # folder.
+  let dotenvPath = if found.len > 0: found
+                   else: envWriteTarget(processEnv(),
+                     userHome = getHomeDir()).path
   var settings = loadSettings()
   if homeEnv.len > 0:
     let home = getEnv(homeEnv).strip()

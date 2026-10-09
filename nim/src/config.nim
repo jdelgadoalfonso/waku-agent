@@ -13,6 +13,7 @@
 import std/os
 import std/strutils
 import std/syncio
+import std/tables
 
 const
   defaultMaxIterations* = 10
@@ -240,3 +241,63 @@ proc loadDotenv*(startDir = ""): string =
   if found.len > 0:
     loadDotenvFile(found)
   return found
+
+type HomeChoice* = object
+  ## `HomeChoice` from `waku/config.py`: where Waku keeps
+  ## its state, and which rule chose it.
+  path*: string
+  rule*: string
+    ## "WAKU_HOME", "legacy" (a folder's ./.waku) or
+    ## "global" (~/.waku)
+
+proc resolveHome*(env: Table[string, string],
+                  cwd = getCurrentDir(),
+                  userHome = getHomeDir()): HomeChoice =
+  ## Port of `resolve_home`: WAKU_HOME wins; then a folder's
+  ## ./.waku when it holds state.db and ~/.waku does not
+  ## (older memory answers until it is copied); then ~/.waku,
+  ## so the same assistant answers from every folder. Rule 2
+  ## checks ~/.waku/state.db, not the folder: a ~/.waku
+  ## holding unrelated files must not hide a person's real
+  ## memory.
+  let wakuHome = env.getOrDefault("WAKU_HOME", "").strip()
+  if wakuHome.len > 0:
+    return HomeChoice(path: wakuHome, rule: "WAKU_HOME")
+  let legacy = cwd / ".waku"
+  let globalHome = userHome / ".waku"
+  if fileExists(legacy / "state.db") and
+      not fileExists(globalHome / "state.db"):
+    return HomeChoice(path: legacy, rule: "legacy")
+  HomeChoice(path: globalHome, rule: "global")
+
+proc envWriteTarget*(env: Table[string, string],
+                     cwd = getCurrentDir(),
+                     userHome = getHomeDir()): tuple[path: string, isHome: bool] =
+  ## Port of `env_write_target`: the one `.env` every save
+  ## writes to, and whether it is <home>/.env. Pure: it
+  ## creates nothing. A save goes where the next start reads
+  ## it first. When a `.env` is found from the working
+  ## directory upward, that file wins over <home>/.env
+  ## (spec 002), so a value written to the home file would
+  ## be hidden by any line the project's file already
+  ## holds. When no such file exists, the save goes to
+  ## <home>/.env, so Waku finds it from every folder.
+  let found = findDotenv(cwd)
+  if found.len > 0:
+    return (found, false)
+  return (resolveHome(env, cwd, userHome).path / ".env", true)
+
+let startupEnvNames* = block:
+  ## `STARTUP_ENV_NAMES` from `waku/config.py`: the names
+  ## set in the environment before any `.env` file was
+  ## loaded (spec 013). Every `loadDotenv` keeps names
+  ## that are already set, so after the files load the
+  ## process environment holds their keys too — only
+  ## these names count as "environment variables".
+  ## Computed at import time, which is before `loadDotenv`
+  ## runs in `waku.nim`.
+  var names: seq[string] = @[]
+  for name, value in envPairs():
+    if value.len > 0:
+      names.add(name)
+  names

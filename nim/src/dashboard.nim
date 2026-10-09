@@ -88,6 +88,7 @@ import ./gateway
 import ./github
 import ./http
 import ./integrations
+import ./key_locations
 import ./observability
 import ./observe
 import ./mcp
@@ -136,6 +137,7 @@ const
     "/api/compare/history",
     "/static/",
     "/embed/chat",
+    "/api/observability",
     "/api/judgment-arena",
     "/api/memory-arena",
     "/api/memory-arena/stores",
@@ -145,26 +147,20 @@ const
     ## paths and must never serve anything outside this list: a new path
     ## here is a contract change (same commit updates the eval + policy).
 
-  portOnlyPostRoutes* = [
-    "/api/turn-evals/judge",
-  ]
-    ## POST paths this port serves that Python's `PINNED_POST` does not
-    ## name YET, each one a documented divergence rather than a drift:
-    ##
-    ## - `/api/turn-evals/judge` (spec 015) landed upstream with
-    ##   `waku/ops/turn_evals.py`, which this branch does not carry: the
-    ##   Python tree here has no turn-evals module, no pin for it and no
-    ##   hosted policy entry. The port tracks the newer upstream, so the
-    ##   route is served and declared HERE until the Python side syncs —
-    ##   at which point it moves into `pythonPinnedPost` and this list
-    ##   empties.
+  portOnlyPostRoutes*: seq[string] = @[]
+    ## POST paths this port serves that Python's `PINNED_POST` does
+    ## not name YET, each one a documented divergence rather than a
+    ## drift. Empty since the origin/main sync: the rebase landed
+    ## `waku/ops/turn_evals.py` and its pin, so `/api/turn-evals/judge`
+    ## moved into `pythonPinnedPost` and this list emptied — the
+    ## divergence the port carried closed.
     ##
     ## `pythonPinnedGet`/`pythonPinnedPost` stay an EXACT mirror of the
-    ## Python pins (a test enforces it); this list is what keeps a served
-    ## route from being invisible. A route here is a deliberate gap: it
-    ## must never hold one the Python side already pins, and the hosted
-    ## route-contract eval cannot see it (no policy entry exists to
-    ## check). Two tests pin both halves of that sentence.
+    ## Python pins (a test enforces it); this list is what keeps a
+    ## served route from being invisible. A route here is a deliberate
+    ## gap: it must never hold one the Python side already pins, and
+    ## the hosted route-contract eval cannot see it (no policy entry
+    ## exists to check). Two tests pin both halves of that sentence.
 
   pythonPinnedPost* = [
     "/api/chat",
@@ -179,6 +175,7 @@ const
     "/api/compare/clear",
     "/api/compare/regrade",
     "/api/compare/delete_run",
+    "/api/turn-evals/judge",
     "/api/chat/stream",
     "/api/compare/stream",
     "/api/voice",
@@ -192,25 +189,20 @@ const
     ## `STREAM_ROUTES` + the judgment/memory-arena exact checks). 8b serves
     ## a SUBSET; the arena entries stay honest 501s until 8c/8d.
 
-  portOnlyGetRoutes* = [
-    "/api/observability",
-  ]
-    ## GET paths this port serves that Python's `PINNED_GET` does not name
-    ## YET, each one a documented divergence rather than a drift:
-    ##
-    ## - `/api/observability` (spec 012) landed upstream in commit
-    ##   `3b08a62`, which this branch does not carry: the Python tree here
-    ##   has no `waku/ops/observability.py`, no pin for it and no hosted
-    ##   policy entry. The port tracks the newer upstream, so the route is
-    ##   served and declared HERE until the Python side syncs — at which
-    ##   point it moves into `pythonPinnedGet` and this list empties.
+  portOnlyGetRoutes*: seq[string] = @[]
+    ## GET paths this port serves that Python's `PINNED_GET` does not
+    ## name YET, each one a documented divergence rather than a drift.
+    ## Empty since the origin/main sync: the rebase landed
+    ## `waku/ops/observability.py` and its pin, so `/api/observability`
+    ## moved into `pythonPinnedGet` and this list emptied — the
+    ## divergence the port carried closed.
     ##
     ## `pythonPinnedGet`/`pythonPinnedPost` stay an EXACT mirror of the
-    ## Python pins (a test enforces it); this list is what keeps a served
-    ## route from being invisible. A route here is a deliberate gap: it
-    ## must never hold one the Python side already pins, and the hosted
-    ## route-contract eval cannot see it (no policy entry exists to
-    ## check). Two tests pin both halves of that sentence.
+    ## Python pins (a test enforces it); this list is what keeps a
+    ## served route from being invisible. A route here is a deliberate
+    ## gap: it must never hold one the Python side already pins, and
+    ## the hosted route-contract eval cannot see it (no policy entry
+    ## exists to check). Two tests pin both halves of that sentence.
 
 type
   ChatFn* = proc(message: string): JsonNode {.closure.}
@@ -1351,6 +1343,8 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
     "trace_errors": traces["trace_errors"],
     "trace_file": traces["trace_file"],
     "providers": providersSection(d),
+    "key_locations": modelKeyLocations(getCurrentDir(), d.env,
+      getHomeDir(), startupEnvNames, d.providers),
   }
 
 # `/api/reveal`: open a path under WAKU_HOME in the user's editor.
