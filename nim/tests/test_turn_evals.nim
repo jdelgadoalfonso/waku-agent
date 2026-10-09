@@ -438,6 +438,15 @@ suite "judge prompt and offer":
     assert judgeOffer(judgeTurnJson("t_aaa111", "  "), "prov", "m").kind == JNull
     assert judgeOffer(t, "prov", "").kind == JNull
 
+  test "the prompt's length is the sum of its cut parts":
+    let tools = %*[{"type": "tool", "tool": "treg_call",
+      "output": "x".repeat(2000)}]
+    let t = judgeTurnJson("t_aaa111", "did " & "y".repeat(5000),
+      tools, message = "do it")
+    assert judgePromptLength(t) == judgePrompt(t).len
+    let bare = judgeTurnJson("t_aaa111", "done")
+    assert judgePromptLength(bare) == judgePrompt(bare).len
+
   test "the verdict is the lower mark over ten, or null":
     let v = parseVerdict("lead " & goodVerdict & " tail")
     assert v["value"].getFloat() == 0.3

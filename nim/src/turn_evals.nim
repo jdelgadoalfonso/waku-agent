@@ -919,16 +919,21 @@ const
     ## A judge score passes at 0.7. (Same value as the Evals table in
     ## `observability`; the table owns the page, this owns the verdict.)
 
-  judgeRubric* = """You are a strict, fair judge grading one turn of an AI assistant.
+  judgeRubricHead = """You are a strict, fair judge grading one turn of an AI assistant.
 
 The person asked:
-{message}
+"""
+
+  judgeRubricMid = """
 
 The assistant replied:
-{reply}
+"""
 
-The tool outputs the assistant saw this turn (each cut to {output_chars} characters):
-{outputs}
+  judgeRubricToolsHead = """
+
+The tool outputs the assistant saw this turn (each cut to """
+
+  judgeRubricToolsTail = """ characters):
 
 Score two things from 0 to 10:
 - addresses_question: does the reply answer what the person asked?
@@ -938,11 +943,10 @@ Score two things from 0 to 10:
 Reply with ONLY a JSON object, no prose:
 {{"addresses_question": <int 0-10>, "grounded": <int 0-10>, "reason": "<one short sentence>"}}"""
 
-proc judgePrompt*(turn: JsonNode): string =
-  ## The judge's prompt, built from the stored turn only: its message, the
-  ## first 4,000 characters of its reply, and its tool outputs, each cut to
-  ## 800 characters and together to 6,000.
-  var outputs: seq[string] = @[]
+iterator judgeOutputs(turn: JsonNode): string =
+  ## The turn's tool outputs as the prompt shows them: redacted, each cut
+  ## to 800 characters, together to 6,000, each tagged with its tool name.
+  ## The prompt and its length share it, so the two cannot drift apart.
   var used = 0
   let events = turn.jget("events")
   if events.kind == JArray:
@@ -953,31 +957,66 @@ proc judgePrompt*(turn: JsonNode): string =
       text = text[0 ..< min(outputChars, text.len)]
       text = text[0 ..< min(outputsChars - used, text.len)]
       used += text.len
-      outputs.add("[" & (if ev.jget("tool").kind == JString:
-        ev.jget("tool").getStr() else: "tool") & "] " & text)
+      yield "[" & (if ev.jget("tool").kind == JString:
+        ev.jget("tool").getStr() else: "tool") & "] " & text
+
+proc judgePrompt*(turn: JsonNode): string =
+  ## The judge's prompt, built from the stored turn only: its message, the
+  ## first 4,000 characters of its reply, and its tool outputs, each cut to
+  ## 800 characters and together to 6,000. Assembled from its parts, so
+  ## its length is the sum of them.
+  var outputs: seq[string] = @[]
+  for section in judgeOutputs(turn):
+    outputs.add(section)
   let reply = turn.jget("reply").getStr()
-  judgeRubric
-    .replace("{message}", turn.jget("user_message").getStr()[0 ..< min(2000,
-      turn.jget("user_message").getStr().len)])
-    .replace("{reply}", reply[0 ..< min(replyChars, reply.len)])
-    .replace("{output_chars}", $outputChars)
-    .replace("{outputs}", (if outputs.len > 0: outputs.join("\n")
-      else: "(no tools ran this turn)"))
+  let message = turn.jget("user_message").getStr()
+  judgeRubricHead & message[0 ..< min(2000, message.len)] &
+    judgeRubricMid & reply[0 ..< min(replyChars, reply.len)] &
+    judgeRubricToolsHead & $outputChars & judgeRubricToolsTail &
+    (if outputs.len > 0: outputs.join("\n")
+      else: "(no tools ran this turn)")
+
+proc judgePromptLength*(turn: JsonNode): int =
+  ## The length of judgePrompt(turn), without assembling it: the rubric's
+  ## parts plus the cut sections. The "Judge this turn" offer reads this
+  ## for its cost estimate, so a page read never builds a prompt it will
+  ## not send.
+  var outputsLen = 0
+  var sections = 0
+  for section in judgeOutputs(turn):
+    outputsLen += section.len
+    sections += 1
+  let reply = turn.jget("reply").getStr()
+  let message = turn.jget("user_message").getStr()
+  judgeRubricHead.len + min(2000, message.len) +
+    judgeRubricMid.len + min(replyChars, reply.len) +
+    judgeRubricToolsHead.len + ($outputChars).len +
+    judgeRubricToolsTail.len +
+    (if sections > 0: outputsLen + sections - 1
+      else: "(no tools ran this turn)".len)
+
+proc judgeEstimateChars*(chars: int, provider, model: string): float =
+  ## What one judge call should cost for a prompt of `chars` characters:
+  ## a quarter of them as input tokens, plus 300 output tokens, at the
+  ## registry price.
+  let (pIn, pOut) = priceFor(provider, model)
+  round6(chars.float / 4 / 1e6 * pIn + judgeMaxTokens.float / 1e6 * pOut)
 
 proc judgeEstimate*(prompt, provider, model: string): float =
-  ## What one judge call should cost: the prompt's characters divided by 4
-  ## as input tokens, plus 300 output tokens, at the registry price.
-  let (pIn, pOut) = priceFor(provider, model)
-  round6(prompt.len.float / 4 / 1e6 * pIn + judgeMaxTokens.float / 1e6 * pOut)
+  ## What one judge call should cost, from the prompt itself.
+  judgeEstimateChars(prompt.len, provider, model)
 
 proc judgeOffer*(turn: JsonNode, provider, model: string): JsonNode =
   ## What the "Judge this turn" button says before it is pressed: the
   ## model that would judge and its estimated cost. Null for a turn the
   ## route would refuse (no turn id, no reply) or with no model to call.
+  ## The estimate reads the prompt's length, not the prompt: a page read
+  ## scores every turn, and only the judge call needs the text.
   if turn.jget("turn_id").getStr().len == 0 or
       turn.jget("reply").getStr().strip().len == 0 or model.len == 0:
     return newJNull()
-  %*{"model": model, "usd": judgeEstimate(judgePrompt(turn), provider, model)}
+  %*{"model": model,
+    "usd": judgeEstimateChars(judgePromptLength(turn), provider, model)}
 
 proc toCheckInt(node: JsonNode): int =
   if node.kind == JInt:
