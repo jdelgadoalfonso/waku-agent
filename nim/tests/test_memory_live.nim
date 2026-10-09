@@ -428,3 +428,52 @@ suite "wiring":
     assert "dives on Saturdays" in readFile(home / "MEMORY.md")
     db.close()
     removeDir(home)
+
+  test "a fact save_note saved counts as read, so consolidation leaves it out":
+    let home = freshHome("waku-memlive-saved")
+    let db = connectDb(home)
+    let facts = store(db)
+    let episodes = sqliteEpisodeStore(db)
+    logChat(db, "remember Alex",
+      "Saved here. Waku Memory is not connected.")
+    logChat(db, "anything", "ok")
+    # the gate skips: only the saved cell feeds the rule
+    let client = scriptedClient(
+      """{"retrieve": false, "query": "", "reason": "chat"}""",
+      """{"facts": [{"subject": "Alex",
+                    "content": "Alex prefers meetings on 2026-10-05."}],
+         "episode": "noted a preference"}""")
+    var w = newWaku(liveSettings(home), client, db)
+    wireMemory(w, liveSettings(home), db, client, @[])
+    discard w.session.retrieve("what is the weather?", nil)
+    w.savedCell[] = "alex: Alex prefers meetings on 2026-10-05."
+    var kinds: seq[string] = @[]
+    w.afterTurn(proc(kind: string, ev: JsonNode) {.closure.} = kinds.add(kind))
+    assert "consolidation" notin kinds
+    assert listFacts(db).len == 0
+    db.close()
+    removeDir(home)
+
+  test "the same fact is kept when the turn saved nothing":
+    let home = freshHome("waku-memlive-unsaved")
+    let db = connectDb(home)
+    let facts = store(db)
+    let episodes = sqliteEpisodeStore(db)
+    logChat(db, "remember Alex",
+      "Saved here. Waku Memory is not connected.")
+    logChat(db, "anything", "ok")
+    let client = scriptedClient(
+      """{"retrieve": false, "query": "", "reason": "chat"}""",
+      """{"facts": [{"subject": "Alex",
+                    "content": "Alex prefers meetings on 2026-10-05."}],
+         "episode": "noted a preference"}""")
+    var w = newWaku(liveSettings(home), client, db)
+    wireMemory(w, liveSettings(home), db, client, @[])
+    discard w.session.retrieve("what is the weather?", nil)
+    var kinds: seq[string] = @[]
+    w.afterTurn(proc(kind: string, ev: JsonNode) {.closure.} = kinds.add(
+      kind & ":" & $ev.jget("new_facts").getInt(0)))
+    assert "consolidation:1" in kinds
+    assert listFacts(db).len == 1
+    db.close()
+    removeDir(home)

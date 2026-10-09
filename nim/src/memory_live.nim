@@ -502,6 +502,7 @@ proc wireMemory*(w: var Waku, settings: Settings, db: DbConn,
   ## gateways) call this once per agent; tests keep building unwired
   ## agents straight from `newWaku`.
   let cell = w.reportCell   ## the turn's saved report, read through a ref
+  let saved = w.savedCell   ## ditto: the facts save_note saved
   let facts = w.facts       ## ditto: a `var Waku` cannot be captured
   let episodes = w.episodes ## the episodic twin of the line above
   ## What the gate found this turn, kept for consolidation: a recall turn
@@ -530,8 +531,17 @@ proc wireMemory*(w: var Waku, settings: Settings, db: DbConn,
       # read through the agent's own cell, which the turn sets just before
       # (spec 009 B).
       let reportBody = if cell.isNil: "" else: cell[]
-      let recalled = recalledCell
+      # Spec 018: what save_note saved this turn is memory
+      # the turn handled, so consolidation must not extract
+      # the same sentence from the chat row again.
+      let recalled =
+        if saved[].len > 0:
+          (if recalledCell.len > 0: recalledCell & "\n" & saved[]
+           else: saved[])
+        else:
+          recalledCell
       recalledCell = ""
+      saved[] = ""
       let fresh = consolidateIfDue(db, facts, episodes, client, smallModel, everyN,
         notify, reportBody, recalled)
       if fresh > 0 and not notify.isNil:

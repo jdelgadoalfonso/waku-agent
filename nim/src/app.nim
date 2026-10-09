@@ -108,6 +108,12 @@ type
       ## `respond` writes it and the consolidation seam (a closure over a
       ## `var Waku`, which cannot capture the agent itself) reads it. Empty
       ## every other turn.
+    savedCell*: ref string
+      ## The save_note facts THIS turn saved (spec 018), as
+      ## "subject: content" lines: `respond` writes them and the
+      ## consolidation seam reads them alongside the gate's text, so
+      ## a fact the turn just saved is memory the turn handled,
+      ## not a finding to extract again from the chat row.
 
 type
   StoreChoice* = tuple[store: FactStore, name: string]
@@ -220,6 +226,8 @@ proc newWaku*(settings: Settings, client: LlmClient, db: DbConn = nil,
                            settings.otelEndpoint)
   new(result.reportCell)
   result.reportCell[] = ""
+  new(result.savedCell)
+  result.savedCell[] = ""
   result.graphTurn = graphTurn
   result.afterTurn = afterTurn
 
@@ -394,6 +402,18 @@ proc respond*(w: var Waku, userMessage: string, observer: Observer = nil,
   # a due consolidation inserts fact rows on this same connection, which
   # would move `last_insert_rowid()` off the chat row. (-1: no db wired.)
   let chatRow = if w.db.isNil: -1 else: lastChatRowId(w.db)
+  # Spec 018: a fact save_note saved is memory this turn
+  # handled, so consolidation must not extract the same
+  # sentence from the chat row again. Filled every turn —
+  # an empty overwrite is what keeps a stale save from
+  # leaking into a later turn's consolidation.
+  if not w.savedCell.isNil:
+    var saved: seq[string] = @[]
+    for c in res.toolCalls:
+      if c.jget("tool").getStr() == "save_note":
+        saved.add(c.jget("args").jget("subject").getStr() & ": " &
+                  c.jget("args").jget("content").getStr())
+    w.savedCell[] = saved.join("\n")
   if not w.afterTurn.isNil:
     w.afterTurn(notify)
   # Spec 011 (the oracle's order): the receipt is built ONCE, after
