@@ -58,6 +58,11 @@ From the exchanges below, extract:
    only things worth remembering in a month; skip chit-chat and one-offs.
 2. one single-sentence episode summarizing what happened in this conversation.
 
+Extract only what the person said. Never extract from the assistant's replies,
+and never extract what the assistant's memory holds or lacks, such as "no
+address is stored" or "it could not find X". An answer the assistant gave is
+not a fact about the person.
+
 Reply with ONLY this JSON:
 {"facts": [{"subject": "<who/what>", "content": "<one sentence>"}], "episode": "<one sentence>"}
 
@@ -76,6 +81,37 @@ The report:
     ## Port of `REPORT_RULE` with `REPORT_TURN_MAX_FACTS` (= 2) written
     ## out, added to the prompt when the batch saved a report (spec 009 B).
   reportTurnMaxFacts* = 2
+
+  # The assistant's own operating state, in a proposed fact. Each pattern is
+  # narrow on purpose: "work-life balance" and "pays by credit card" are
+  # about the person and are kept; "balance" counts only beside money or an
+  # account.
+  moneyishPattern* = "\\$|\\busd\\b|\\bcredits?\\b|\\bmicro\\b|\\baccount\\b|" &
+    "\\bwallet\\b|\\btop(?:ped)?[- ]?up\\b|\\binsufficient\\b|\\btreg\\b|" &
+    "\\bapi\\b"
+
+  opsStatePattern* = "\\binsufficient\\b|" &
+    "\\b(?:out of|no|remaining|left in)\\s+(?:\\w+\\s+)?credits?\\b|" &
+    "\\bcredits?\\s+(?:left|remaining|balance)\\b|" &
+    "\\d[\\d,.]*\\s*micro(?:-?usd)?\\b|" &
+    "\\b(?:http|status(?: code)?|error(?: code)?)\\s*[45]\\d\\d\\b|" &
+    "\\b(?:returned|got|hit|with|at)\\s+(?:an?\\s+)?(?:http\\s+)?(?:402|429)\\b|" &
+    "\\brate[- ]limit|\\btoo many requests\\b|\\bquota (?:exceeded|hit|reached|used)\\b|" &
+    "\\b\\d[\\d,.]*\\s*k?\\s*(?:input |output |prompt |completion )?tokens\\b|" &
+    "\\b(?:timed out|returned an error|failed with|tool error)\\b|" &
+    "\\b(?:billing|billed|charged|spend|spent)\\b.*\\b(?:treg|api|platform|waku|per call|account)\\b|" &
+    "\\b(?:treg|api|platform|waku)\\b.*\\b(?:billing|billed|charged)\\b|" &
+    "\\b(?:system prompt|context window|tool calls?)\\b"
+
+  # What memory holds or lacks is the assistant's own knowledge state, the
+  # same kind of sentence as a balance or an error. Each pattern needs the
+  # word memory beside the storing verb, so "Sean has no passport" and
+  # "Sean keeps passwords in a notes app" are about the person and stay.
+  memoryStatePattern* = "\\b(?:stored|saved|recorded|kept|held|found|listed)\\s+in\\s+(?:the\\s+)?(?:waku\\s+)?memory\\b|" &
+    "\\b(?:find|locate|located)\\b.*\\bin\\s+(?:the\\s+)?(?:waku\\s+)?memory\\b|" &
+    "\\bno\\s+(?:record|trace|mention)\\s+of\\b.*\\bmemory\\b|" &
+    "\\bmemory\\b.*\\bno\\s+(?:record|trace|mention)\\s+of\\b|" &
+    "\\b(?:waku\\s+)?memory\\s+(?:has|holds|contains|lacks)\\s+(?:no|nothing)\\b"
 
 const
   recallRule* = """
@@ -215,6 +251,34 @@ proc matchingSkills*(home: string, bundled: seq[string],
   for i in 0 ..< min(maxSkills, scored.len):
     chunks.add("### " & scored[i][1] & "\n" & scored[i][2])
   return chunks.join("\n\n")
+
+proc opsState*(fact: JsonNode): bool =
+  ## True when a proposed fact is about the assistant's own
+  ## operating state (a balance, credits, billing, a 402 or
+  ## 429, a rate limit, a tool error, a token count, how the
+  ## harness works) rather than about the user. Such a fact
+  ## is stale within the hour, so it is never kept. Port of
+  ## `is_ops_state`: `balance` counts only beside money or an
+  ## account, so "work-life balance" and "pays by credit
+  ## card" stay facts about the person.
+  let text = fact.jget("subject").getStr() & " " &
+    fact.jget("content").getStr()
+  if text.findAll(re("\\bbalance\\b", flags = {reIgnoreCase})).len > 0 and
+      text.findAll(re(moneyishPattern, flags = {reIgnoreCase})).len > 0:
+    return true
+  text.findAll(re(opsStatePattern, flags = {reIgnoreCase})).len > 0
+
+proc memoryState*(fact: JsonNode): bool =
+  ## True when a proposed fact only describes what memory
+  ## holds or lacks, such as "no address is stored in memory".
+  ## The assistant said it, not the person, and it is stale
+  ## as soon as the thing is saved. Port of `is_memory_state`:
+  ## each pattern needs the word memory beside the storing
+  ## verb, so "Sean has no passport" and "Sean keeps
+  ## passwords in a notes app" are about the person and stay.
+  let text = fact.jget("subject").getStr() & " " &
+    fact.jget("content").getStr()
+  text.findAll(re(memoryStatePattern, flags = {reIgnoreCase})).len > 0
 
 proc aboutReport*(fact: JsonNode, report: string): bool =
   ## A fact whose subject the report names is a finding, and the report
@@ -358,6 +422,16 @@ proc consolidateIfDue*(db: DbConn, facts: FactStore, episodes: EpisodeStore,
       var kept: seq[JsonNode] = @[]
       for fact in items:
         kept.add(fact)
+      # The assistant's own operating state — a balance, a 402,
+      # a token count, what memory holds or lacks — is never a
+      # fact about the person: stale within the hour, whatever
+      # the summariser proposed. Dropped before the report rule,
+      # like Python's `kept_if_due`.
+      var durable: seq[JsonNode] = @[]
+      for fact in kept:
+        if not opsState(fact) and not memoryState(fact):
+          durable.add(fact)
+      kept = durable
       if reportBody.len > 0:
         var aboutPerson: seq[JsonNode] = @[]
         for fact in kept:

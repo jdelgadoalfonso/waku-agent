@@ -208,6 +208,78 @@ suite "consolidation":
     db.close()
     removeDir(home)
 
+suite "operating state is never a fact":
+  const opsFacts = [
+    "User's treg balance is $0.759 USD (759,000 micro), enabling completion of full research passes.",
+    "User's treg balance of $0.00188 is insufficient to complete YouTube research.",
+    "The TikHub search returned a 402 when the balance ran out.",
+    "treg rate-limited the Aviato calls.",
+    "The research turn used 328.5k input tokens.",
+    "Sean is out of treg credits."]
+  const userFacts = [
+    "User researches competitor funding with treg.",
+    "Sean values work-life balance.",
+    "Sean pays for his tools with a credit card.",
+    "Sean's startup spends about $500 a month on AWS."]
+
+  test "a balance, a 402 or a token count is operating state":
+    for content in opsFacts:
+      assert opsState(%*{"subject": "user", "content": content}), content
+
+  test "a fact about the person is not operating state":
+    for content in userFacts:
+      assert not opsState(%*{"subject": "sean", "content": content}), content
+
+  test "what memory holds or lacks is the assistant's state, not the person's":
+    assert memoryState(%*{"subject": "company",
+      "content": "The user does not have the company's business address " &
+        "stored in memory and requested it be provided for future use " &
+        "on legal pages and footers."})
+    assert memoryState(%*{"subject": "company",
+      "content": "No record of Sean's passport number exists in memory."})
+    assert memoryState(%*{"subject": "company",
+      "content": "The assistant could not find the user's address in memory."})
+    assert memoryState(%*{"subject": "company",
+      "content": "Waku Memory has no business address for the company."})
+
+  test "a fact about the person is not memory state":
+    for content in ["Sean has no passport.",
+        "Alex prefers morning meetings.",
+        "Sean does not keep his passwords in a notes app.",
+        "The user connected Claude Code to Waku Memory."]:
+      assert not memoryState(%*{"subject": "sean", "content": content}), content
+
+  test "consolidation keeps the person's facts and drops the operating state":
+    let home = freshHome("waku-memlive-ops")
+    let db = connectDb(home)
+    let facts = store(db)
+    let episodes = sqliteEpisodeStore(db)
+    logChat(db, "hi", "hello")
+    logChat(db, "ok", "bye")
+    var proposed: seq[JsonNode] = @[]
+    for content in opsFacts:
+      proposed.add(%*{"subject": "user", "content": content})
+    for content in userFacts:
+      proposed.add(%*{"subject": "user", "content": content})
+    let distilled = newJObject()
+    distilled["facts"] = %proposed
+    distilled["episode"] = %"Researched Letta's funding with treg."
+    let client = scriptedClient($distilled)
+    assert consolidateIfDue(db, facts, episodes, client, "mini", 1) ==
+      userFacts.len
+    let kept = listFacts(db)
+    assert kept.len == userFacts.len
+    # newest first, so the person's facts come back reversed
+    for i, row in kept:
+      assert row.content == userFacts[userFacts.len - 1 - i]
+    db.close()
+    removeDir(home)
+
+  test "the summariser is told to extract only what the person said":
+    assert "Extract only what the person said" in summarizerPrompt
+    assert "what the assistant's memory holds or lacks" in
+      summarizerPrompt
+
 suite "restates":
   const recalled = "Letta raised a $10M seed (2024-08-01) at a $60M " &
     "valuation, the largest disclosed round among Mem0's competitors. " &
