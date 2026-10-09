@@ -256,7 +256,10 @@ proc runEvalsTurnsCmd*(dotenvStart = "", argv: seq[string] = @[]): int =
   var window = "7d"
   var i = 0
   while i < argv.len:
-    if argv[i] == "--window" and i + 1 < argv.len:
+    if argv[i] == "--window":
+      if i + 1 >= argv.len:
+        echo "--window takes one of: " & observability.windows.join(", ")
+        return 2
       window = argv[i + 1]
       inc i, 2
     else:

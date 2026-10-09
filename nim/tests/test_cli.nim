@@ -426,6 +426,13 @@ suite "phase 15 evals turns command":
     restoreEnv(saved)
     removeDir(home)
 
+  test "a dangling --window names the choices and exits 2":
+    let saved = scrubEnv()
+    let home = freshHome("waku-cli-evals-dangwin")
+    assert runEvalsTurnsCmd(home, @["--window"]) == 2
+    restoreEnv(saved)
+    removeDir(home)
+
   test "turns print offline from the home's traces":
     let saved = scrubEnv()
     let home = freshHome("waku-cli-evals-turns")
