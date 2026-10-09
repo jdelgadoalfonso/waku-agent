@@ -309,3 +309,21 @@ el juez corre solo cuando la persona lo pide, escribiendo un evento
   "a dangling --window names the choices and exits 2". Suite
   completa Nim 1439 OK / 0 FAILED. Los tres SUGGESTION de G3/G4
   siguen pendientes (limpieza, no bloqueante).
+- **L17** (seguimiento de SUGGESTION, 2026-10-09): aplicados los
+  tres hallazgos advisory SUGGESTION de G3 y G4, commits `bc9a517`,
+  `8a79d97` y `bcc7ae4` en la rama feature. (1)
+  `R3-bundled-skill-dirs-in-loop`: `payload` ya no evalúa
+  `bundledSkillDirs()` dentro del loop por turno — la lista se
+  calcula una vez por página. (2) `R3-turns-report-duplicates-build`:
+  `payload` y `turnsReport` comparten `buildTurns` (joins de scores
+  tardíos, research flag, `buildTurn`), así la tabla del CLI y la
+  página no pueden desacoplarse. (3)
+  `R3-judge-offer-builds-prompt-per-read`: la oferta del juez estima
+  el costo desde las longitudes de los cortes (`judgePromptLength`
+  sobre el iterator `judgeOutputs` compartido) sin materializar el
+  prompt en cada lectura; el rubric se ensambla por concatenación,
+  lo que además evita que el template sustituya placeholders que
+  aparezcan en un mensaje o reply almacenado. Pin nuevo: "the
+  prompt's length is the sum of its cut parts". Suite completa Nim
+  1440 OK / 0 FAILED. Con esto los cinco hallazgos advisory de G3
+  y G4 están resueltos.
