@@ -1478,18 +1478,14 @@ proc evalsInfo*(home: string, repo: string = "",
     "last_run": lastRun(report, history),
     "release": releaseInfo(releaseFile)}
 
-proc payload*(home: string, provider: string = "", model: string = "",
-    window: string = "7d", nowMs: int64 = 0,
-    servers: openArray[string] = [], repo: string = "",
-    hosted: bool = false, releaseFile: string = "",
-    judgeModel: string = "", generatedAt: string = ""): JsonNode =
-  ## Everything the Observability page draws, in one answer. Without a
-  ## judge model every turn's `judge_offer` reads null; with one it names
-  ## the model and its estimated cost (`turn_evals.judge_offer`).
-  ## `generatedAt` overrides the stamp for deterministic pins; ""
-  ## computes it, like `nowIso`.
-  let win = validWindow(window)
-  let (events, errors, files) = readEvents(home)
+proc buildTurns(events: seq[JsonNode], home: string,
+    servers: openArray[string], provider, model: string): seq[JsonNode] =
+  ## Every turn of one home, built the way the page and the CLI
+  ## table both show it: grouped from the events, each turn's late
+  ## score events joined in (by turn id, skipping copies the turn
+  ## already holds), its research flag set and the five checks
+  ## scored. `payload` and `turnsReport` share it, so the page and
+  ## the table cannot drift apart.
   var late = newJObject()
   for ev in events:
     if ev.kind == JObject and ev.jget("type").getStr() == "score" and
@@ -1500,7 +1496,7 @@ proc payload*(home: string, provider: string = "", model: string = "",
       late[tid].add(copy(ev))
   let grouped = groupTurns(events)
   let skillDirs = bundledSkillDirs()
-  var built: seq[JsonNode] = @[]
+  result = @[]
   for t in grouped:
     let tid = t.jget("turn_id").getStr()
     var extra: seq[JsonNode] = @[]
@@ -1517,7 +1513,22 @@ proc payload*(home: string, provider: string = "", model: string = "",
           extra.add(ev)
     let research = isResearch(matchingSkillNames(home, skillDirs,
       t.jget("user_message").getStr()))
-    built.add(buildTurn(t, servers, provider, model, extra, research))
+    result.add(buildTurn(t, servers, provider, model, extra, research))
+
+proc payload*(home: string, provider: string = "", model: string = "",
+    window: string = "7d", nowMs: int64 = 0,
+    servers: openArray[string] = [], repo: string = "",
+    hosted: bool = false, releaseFile: string = "",
+    judgeModel: string = "", generatedAt: string = ""): JsonNode =
+  ## Everything the Observability page draws, in one answer. Without a
+  ## judge model every turn's `judge_offer` reads null; with one it names
+  ## the model and its estimated cost (`turn_evals.judge_offer`).
+  ## `generatedAt` overrides the stamp for deterministic pins; ""
+  ## computes it, like `nowIso`.
+  let win = validWindow(window)
+  let (events, errors, files) = readEvents(home)
+  let grouped = groupTurns(events)
+  let built = buildTurns(events, home, servers, provider, model)
   let tools = toolStats(events, servers, win, nowMs)
   let spend = spendHome(home, events, servers)
   let byDay = spendByDay(home, events, 14, servers)
@@ -1560,34 +1571,8 @@ proc turnsReport*(home: string, window: string = "7d",
   let clock = if nowMs > 0: nowMs
     else: int64(getTime().toUnix) * 1000
   let (events, _, _) = readEvents(home)
-  var late = newJObject()
-  for ev in events:
-    if ev.kind == JObject and ev.jget("type").getStr() == "score" and
-        ev.jget("turn_id").getStr().len > 0:
-      let tid = ev.jget("turn_id").getStr()
-      if not late.hasKey(tid):
-        late[tid] = newJArray()
-      late[tid].add(copy(ev))
-  let grouped = groupTurns(events)
   let servers = mcpServerNames(home)
-  var built: seq[JsonNode] = @[]
-  for t in grouped:
-    let tid = t.jget("turn_id").getStr()
-    var extra: seq[JsonNode] = @[]
-    if late.hasKey(tid):
-      let inside = t.jget("events")
-      for ev in late[tid]:
-        var found = false
-        if inside.kind == JArray:
-          for own in inside:
-            if own == ev:
-              found = true
-              break
-        if not found:
-          extra.add(ev)
-    let research = isResearch(matchingSkillNames(home, bundledSkillDirs(),
-      t.jget("user_message").getStr()))
-    built.add(buildTurn(t, servers, "", "", extra, research))
+  let built = buildTurns(events, home, servers, "", "")
   let startMs = windowStartMs(win, clock)
   var inside: seq[JsonNode] = @[]
   for t in built:
