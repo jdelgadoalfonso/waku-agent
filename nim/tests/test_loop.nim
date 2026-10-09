@@ -19,12 +19,16 @@ proc toolResp(id, name: string, input: JsonNode): JsonNode =
 type Script = ref object
   items: seq[JsonNode]
   pos: int
+  reqs*: seq[JsonNode]
+    ## Every request the client saw, in order — the request-side
+    ## pins (tool_choice, the final system) are only legible here.
 
 proc scriptedClient(script: Script): LlmClient =
   ## Play back the scripted responses in order (cursor, never `delete`:
   ## `let`-aliasing a seq element and then deleting its slot dangles the
   ## reference under ORC and corrupts the heap downstream).
   LlmClient(create: proc(req: JsonNode): JsonNode =
+    script.reqs.add(copy(req))
     result = script.items[script.pos]
     inc script.pos)
 
@@ -76,17 +80,71 @@ suite "phase 3d run_loop":
     assert res.toolCalls[0]["output"].getStr() == "Error: unknown tool 'nope'"
     assert res.reply == "ok"
 
-  test "iteration limit stops with the honest message":
+  test "iteration limit asks once more, tools off, and answers from it":
     var items: seq[JsonNode] = @[]
-    for i in 1 .. 5:
+    for i in 1 .. 2:
       items.add(toolResp("t" & $i, "echo", %*{"text": "x"}))
+    items.add(textResp("From what I gathered: done."))
     let script = Script(items: items)
+    var trims = 0
     var messages = @[%*{"role": "user", "content": "go"}]
+    var llmEvents: seq[JsonNode] = @[]
     let res = runLoop(scriptedClient(script), "m", "sys", messages,
-                      echoRegistry(), 2, 2048)
-    assert res.reply == iterationLimitReply
+                      echoRegistry(), 2, 2048,
+                      proc(kind: string, ev: JsonNode) =
+                        if kind == "llm": llmEvents.add(ev),
+                      trim = proc(m: var seq[JsonNode]) = inc trims)
+    assert res.reply == "From what I gathered: done."
+    assert res.limitReached
     assert res.iterations == 2
     assert res.toolCalls.len == 2
+    # the third call is the tools-off final answer, not another loop
+    assert script.reqs.len == 3
+    let final = script.reqs[2]
+    assert final["tool_choice"] == %*{"type": "none"}
+    assert final["system"].getStr().endsWith("\n\n" & limitNote)
+    assert final["tools"].len == 1
+    # trim ran inside the second iteration and once more
+    # before the final call, like Python's `_final_answer`
+    assert trims == 2
+    # the turn's working memory ends with the final answer's text
+    assert messages.len == 6
+    assert messages[5]["role"].getStr() == "assistant"
+    assert messages[5]["content"][0]["text"].getStr() ==
+      "From what I gathered: done."
+    assert llmEvents.len == 3
+    assert llmEvents[2]["kind"].getStr() == "final"
+    assert llmEvents[2]["final_answer"].getBool()
+    assert llmEvents[2]["iteration"].getInt() == 3
+
+  test "a final call that fails falls back to the honest message":
+    var calls = 0
+    let client = LlmClient(create: proc(req: JsonNode): JsonNode =
+      inc calls
+      if calls <= 2:
+        toolResp("t" & $calls, "echo", %*{"text": "x"})
+      else:
+        raise newException(CatchableError, "provider down"))
+    var messages = @[%*{"role": "user", "content": "go"}]
+    let res = runLoop(client, "m", "sys", messages, echoRegistry(), 2, 2048)
+    assert res.reply == iterationLimitReply
+    assert res.limitReached
+    assert res.iterations == 2
+    assert res.toolCalls.len == 2
+
+  test "a final call with no text falls back to the honest message":
+    var calls = 0
+    let client = LlmClient(create: proc(req: JsonNode): JsonNode =
+      inc calls
+      if calls <= 2:
+        toolResp("t" & $calls, "echo", %*{"text": "x"})
+      else:
+        %*{"stop_reason": "end_turn", "usage": {"in": 1, "out": 1},
+           "content": []})
+    var messages = @[%*{"role": "user", "content": "go"}]
+    let res = runLoop(client, "m", "sys", messages, echoRegistry(), 2, 2048)
+    assert res.reply == iterationLimitReply
+    assert res.limitReached
 
   test "stream path emits text deltas then assembles":
     var createCalls = 0

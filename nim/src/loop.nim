@@ -36,6 +36,10 @@ type
     reply*: string
     toolCalls*: seq[JsonNode]
     iterations*: int
+    limitReached*: bool
+      ## True when the turn hit max_iterations and the reply came
+      ## from the one tools-off call after it (guardrail 2), not
+      ## from a natural end. Port of `LoopResult.limit_reached`.
     receipt*: JsonNode = newJNull()
     readFirst*: seq[JsonNode] = @[]
     used*: seq[JsonNode] = @[]
@@ -80,6 +84,15 @@ proc meteredClient*(client: LlmClient, kind, model: string,
 const iterationLimitReply* =
   "(I hit my iteration limit before finishing — try breaking the request into smaller steps.)"
 
+const limitNote* =
+  "You have reached the step limit for this turn and cannot call any more " &
+  "tools. Answer now from what you already gathered; say plainly what is " &
+  "missing or what failed."
+  ## `LIMIT_NOTE`: what the one tools-off call after the iteration
+  ## limit rides on its system prompt. The loop's own
+  ## `iterationLimitReply` is only the fallback when that call
+  ## fails or writes nothing.
+
 proc errorText*(exc: ref CatchableError): string =
   ## What the user reads when a call fails. Port of `error_text`: a refusal
   ## that already wrote a human sentence wins; anything else keeps
@@ -93,6 +106,47 @@ proc errorText*(exc: ref CatchableError): string =
 proc textReply*(content: JsonNode): string =
   ## The human-visible reply: concatenated text blocks.
   textOf(content)
+
+proc finalAnswer*(client: LlmClient, model, system: string,
+                  messages: var seq[JsonNode], tools: ToolRegistry,
+                  maxTok: int, notify: Observer, trim: Trim,
+                  iteration: int): string =
+  ## The one tools-off call after the iteration limit: its text, or
+  ## "" when it failed or wrote none. Port of `_final_answer`. The
+  ## tool definitions are still sent, because Anthropic refuses a
+  ## history with tool_use blocks and no tools; `tool_choice`
+  ## "none" is what stops the model calling one.
+  if not trim.isNil:
+    trim(messages)
+  var req = %*{"model": model,
+               "system": system & "\n\n" & limitNote,
+               "max_tokens": maxTok}
+  req["messages"] = %messages
+  req["tools"] = %tools.schemas()
+  req["tool_choice"] = %*{"type": "none"}
+  var response: JsonNode
+  try:
+    response = client.create(req)
+  except CatchableError:
+    return ""
+  # kind "final", not "loop": the waterfall keeps it in the last
+  # loop's row and the receipt counts it apart; final_answer is
+  # the flag to look for.
+  notify("llm", %*{"iteration": iteration, "kind": "final",
+    "final_answer": true,
+    "stop_reason": response["stop_reason"].getStr(),
+    "usage": {"in": usageNum(response["usage"], "in"),
+      "out": usageNum(response["usage"], "out")}})
+  var blocks = newJArray()
+  for b in response["content"]:
+    if b.kind == JObject and b.jget("type").getStr() == "text":
+      blocks.add(b)
+  if blocks.len > 0:
+    messages.add(%*{"role": "assistant", "content": blocks})
+  var text = ""
+  for b in blocks:
+    text.add(b.jget("text").getStr())
+  text
 
 proc runLoop*(client: LlmClient, model, system: string,
               messages: var seq[JsonNode], tools: ToolRegistry,
@@ -164,5 +218,13 @@ proc runLoop*(client: LlmClient, model, system: string,
       toolResults.add(%*{"type": "tool_result",
         "tool_use_id": call["id"].getStr(), "content": output})
     messages.add(%*{"role": "user", "content": toolResults})
-  result.reply = iterationLimitReply
+  # ---- guardrail 2: ran out of iterations. Everything gathered so
+  # far is in `messages`, so ask once more with tools off for an
+  # answer from it, rather than throwing it away. If that call
+  # fails, say so the old way.
+  result.limitReached = true
+  result.reply = finalAnswer(client, model, system, messages, tools,
+                             maxTok, notify, trim, maxIter + 1)
+  if result.reply.len == 0:
+    result.reply = iterationLimitReply
   return result
