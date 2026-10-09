@@ -1499,6 +1499,7 @@ proc payload*(home: string, provider: string = "", model: string = "",
         late[tid] = newJArray()
       late[tid].add(copy(ev))
   let grouped = groupTurns(events)
+  let skillDirs = bundledSkillDirs()
   var built: seq[JsonNode] = @[]
   for t in grouped:
     let tid = t.jget("turn_id").getStr()
@@ -1514,7 +1515,7 @@ proc payload*(home: string, provider: string = "", model: string = "",
               break
         if not found:
           extra.add(ev)
-    let research = isResearch(matchingSkillNames(home, bundledSkillDirs(),
+    let research = isResearch(matchingSkillNames(home, skillDirs,
       t.jget("user_message").getStr()))
     built.add(buildTurn(t, servers, provider, model, extra, research))
   let tools = toolStats(events, servers, win, nowMs)
