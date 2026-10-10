@@ -63,7 +63,7 @@ shootout-coding: ## coding round via pi, scored by tests: make shootout-coding R
 lint:
 	$(PY) -m ruff check waku evals scripts hosted
 
-# The Nim port builds on its own: stdlib plus db_connector, no venv, nothing
+# The Nim port builds on its own: stdlib plus db_connector plus mandatory mimalloc_nim,
 # from pyproject.toml. Both targets `cd nim` first because the suite's pins
 # read the checkout relative to the working directory (tests/test_cli.nim
 # walks up to waku/providers.toml), so what runs here is the command a person

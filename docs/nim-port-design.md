@@ -23,7 +23,7 @@ passes the ported deterministic evals phase by phase.
 ```
 nim/
   README.md            # how to build (nimble), what is ported, what is not
-  waku.nimble          # single package, no required deps beyond stdlib where possible
+  waku.nimble          # single package: stdlib plus db_connector plus mandatory mimalloc_nim
   src/
     config.nim         # Settings + .env cwd-walk (port of waku/config.py)
     providers.nim      # providers.toml parse + models_for/get_client shapes

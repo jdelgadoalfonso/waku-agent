@@ -1,7 +1,11 @@
 # Package metadata for the Waku Nim port.
-# Offline: `nimble build` and `nimble test` make no network calls.
+# `nimble install --depsOnly` is the only step that touches the network
+# (it fetches `db_connector` and `mimalloc_nim`); `nimble build` and
+# `nimble test` make no network calls once the dependencies are installed.
 # `db_connector` is the stdlib db_sqlite successor (same API, links the
-# system SQLite); it is the only non-stdlib dependency and ships phase 1+.
+# system SQLite) and ships phase 1+. `mimalloc_nim` is mandatory: it
+# optimizes dynamic memory usage, activated at compile time with
+# `-d:useMimalloc` (plus `import mimalloc/config` in the .nims file).
 
 version       = "0.0.1"
 # The one editable copy of the version number. `src/waku.nim` reads this line
@@ -18,6 +22,7 @@ bin           = @["waku"]
 
 requires "nim >= 2.0.0"
 requires "db_connector >= 0.1.0"
+requires "https://github.com/jdelgadoalfonso/mimalloc_nim.git#main"
 
 # The offline suite, written down instead of discovered. `nimble test` finds
 # `tests/` on its own, so nothing about what RUNS changes here: the point is

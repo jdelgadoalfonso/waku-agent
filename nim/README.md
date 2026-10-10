@@ -26,8 +26,10 @@ turn, hand-rolled protobuf, no SDK).
 ## Build and test
 
 Nim 2.0 or newer is required. The package uses the standard library plus
-`db_connector` (the stdlib `db_sqlite` successor, already installed — no
-network), so `nimble build` and `nimble test` make no network calls.
+`db_connector` (the stdlib `db_sqlite` successor) and `mimalloc_nim`
+(mandatory, optimizes dynamic memory usage). `nimble install --depsOnly`
+is the only step that touches the network; once installed, `nimble build`
+and `nimble test` make no network calls.
 
 ```sh
 cd nim
@@ -36,6 +38,16 @@ nimble test       # compiles and runs every tests/test_*.nim suite
 nimble buildStyle # optional ANSI styling -> ./waku_style
 nimble testStyle  # the styled renderer pins (-d:wakuStyle)
 ```
+
+## Memory allocator is mimalloc (mandatory)
+
+`mimalloc_nim` optimizes dynamic memory usage and is a mandatory
+`requires` entry. It activates at compile time: the `.nims` file carries
+`import mimalloc/config` and the compile adds `-d:useMimalloc`
+(`-d:mimallocDynamic` links it dynamically instead of statically).
+Without the flag the import is a no-op. Mimalloc itself is MIT; a binary
+that links it statically must retain its LICENSE
+(`mimalloc/src/mimalloc/LICENSE` inside the package) with the distribution.
 
 ## Live TLS is a build switch, not a default
 
@@ -100,9 +112,9 @@ cells, so wide characters do not move the frame.
 
 No new package (rule 3): `terminal_style` is vendored under
 `vendor/terminal_style` (MIT; see `vendor/THIRD_PARTY_NOTICES.md`)
-and reached with `--path`, so `requires` stays stdlib plus
-`db_connector`, and `nimble build`/`nimble test` stay offline and
-dependency-free. There is no `illwill` and no full-screen TUI in
+and reached with `--path`, so it adds nothing to `requires`.
+`requires` stays stdlib plus `db_connector` plus mandatory
+`mimalloc_nim`. There is no `illwill` and no full-screen TUI in
 this unit; `waku chat` remains a line-based REPL.
 
 ## Facts can live in mem0 instead of sqlite
@@ -262,7 +274,7 @@ the SPA routes answer with the same missing-frontend 404 Python gives.
 
 ## What is ported so far
 
-- `waku.nimble` declares one package (stdlib plus `db_connector`).
+- `waku.nimble` declares one package (stdlib plus `db_connector` plus mandatory `mimalloc_nim`).
 - `src/config.nim` defines the `Settings` object (provider, apiKey, model,
   home, otelEndpoint) with `WAKU_PROVIDER`, `WAKU_API_KEY`, `WAKU_MODEL`,
   `WAKU_HOME` and `OTEL_EXPORTER_OTLP_ENDPOINT` env overrides,

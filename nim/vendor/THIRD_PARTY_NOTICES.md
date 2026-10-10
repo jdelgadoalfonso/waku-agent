@@ -10,9 +10,10 @@ dependency to `waku.nimble`.
 - License: MIT (`terminal_style/LICENSE`)
 - Used for: optional ANSI colors, attributes, ANSI parsing and
   cell-aware text layout in `nim/src/style.nim`.
-- Not used by the default build. `nimble build` and
-  `nimble test` remain dependency-free and offline; only
-  `nimble buildStyle` compiles against the vendored sources.
+- Not used by the default build. The vendored sources add no `requires`
+  entry; only `nimble buildStyle` compiles against them. (`nimble build`
+  and `nimble test` still need the `requires` dependencies installed,
+  now including mandatory `mimalloc_nim`.)
 
 The vendored copy is upstream `src/` plus `LICENSE` and
 `README.md`, unmodified. Do not edit it here; sync from

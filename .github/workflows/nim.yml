@@ -10,7 +10,7 @@
 # the switch is that the default build never grows the dependency.
 #
 # `nimble install` is the only step that touches the network (it pulls
-# db_connector). The suite itself is offline and needs no API key, so this
+# db_connector and mimalloc_nim). The suite itself is offline and needs no API key, so this
 # workflow has no secret to leak and no judge eval to skip.
 name: nim
 
@@ -37,7 +37,8 @@ jobs:
       - uses: jiro498/nim-toolchain-action@v1
         with:
           version: "2.3.1"
-      # Dependencies only: db_connector, the stdlib db_sqlite successor. The
+      # Dependencies only: db_connector, the stdlib db_sqlite successor, plus
+      # mandatory mimalloc_nim (dynamic memory allocator). The
       # package itself is never installed — it is the thing being built.
       - name: Install dependencies
         run: nimble install -y --depsOnly
@@ -65,8 +66,8 @@ jobs:
   # No existing step above was touched.
   #
   # Everything the suite needs is here: the checkout (the dashboard
-  # assets embed at compile time), the same pinned compiler, the same
-  # one dependency, and the OpenSSL development headers — the ONLY thing
+  # assets embed at compile time), the same pinned compiler, the same two
+  # dependencies, and the OpenSSL development headers — the ONLY thing
   # the default job does not need, and the reason this build cannot just
   # be a flag on the job above.
   #
