@@ -30,11 +30,14 @@
 ## Two divergences from Python, both documented in the phase task file:
 ##
 ## - `/api/data` is a STATUS SUBSET (generated_at, home, provider, model,
-##   usage, connections, trace pointer), not `collect()`. The full blob
+##   usage, trace pointer), not `collect()`. The full blob
 ##   (turns from traces, db introspection, skills, graph topologies, eval
 ##   report) is most of dashboard.py and lands across the remaining 8x
 ##   units; the route contract pins PATHS, not payload keys, so the
-##   subset keeps `test_route_contract.py` green.
+##   subset keeps `test_route_contract.py` green. `connections` is NOT
+##   part of the subset: it carries the full card views (`group`, `fields`
+##   included), exactly like Python's `collect()`, because the Connections
+##   tab groups by them.
 ## - Response bodies render with stdlib `$` (compact JSON) instead of
 ##   Python's `json.dumps` spaced separators. Files the dashboard READS
 ##   (usage.jsonl, chat meta) keep `jsonDumps` parity; HTTP bodies are
@@ -1214,6 +1217,51 @@ proc providersSection*(d: DashboardDeps): JsonNode =
                    "install_command": view.installCommand,
                    "setup_url": view.setupUrl})
 
+proc connectionsSection*(d: DashboardDeps): JsonNode =
+  ## Port of `"connections": [asdict(view) for view in list_connections()]`
+  ## — the full card rows the Connections tab groups by `group` and opens
+  ## modals from (`fields`). Same shape and seams as `providersSection`:
+  ## stored health and the gateway hook feed the status when present.
+  ## A stub without `group`/`fields` collapses every card into "Tools"
+  ## and leaves Channels/Productivity/Memory empty, so the shape is the
+  ## contract.
+  var health: HealthFn = nil
+  if not d.store.isNil:
+    let store = d.store
+    health = proc(key: string): IntegrationStatus =
+      let (found, status) = storedHealth(store, key)
+      if found:
+        status
+      else:
+        IntegrationStatus(state: configured,
+          message: "configured — not tested yet")
+  result = newJArray()
+  for view in listConnections(d.providers, d.env, health = health,
+      gatewayStatus = d.gatewayStatus):
+    var fields = newJArray()
+    for f in view.fields:
+      var opts = newJArray()
+      for o in f.options:
+        opts.add(%o)
+      var labels = newJArray()
+      for o in f.optionLabels:
+        labels.add(%o)
+      fields.add(%*{"name": f.name, "label": f.label,
+                     "kind": $f.kind, "required": f.required,
+                     "secret": f.secret, "configured": f.configured,
+                     "last4": f.last4, "options": opts,
+                     "value": f.value, "help": f.help,
+                     "option_labels": labels})
+    result.add(%*{"key": view.key, "group": view.group,
+                   "name": view.name, "what": view.what,
+                   "status": {"state": $view.status.state,
+                     "message": view.status.message,
+                     "checked_at": (if view.status.checkedAt.len > 0:
+                       %view.status.checkedAt else: newJNull())},
+                   "fields": fields,
+                   "install_command": view.installCommand,
+                   "setup_url": view.setupUrl})
+
 proc traceSection*(home: string): JsonNode =
   ## `(wake_scans, trace_tail, trace_file)`: the Ops tab's inline trace —
   ## last raw lines plus the heard-everything scans. `trace_errors` stays
@@ -1255,10 +1303,7 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
   var byProvider = newJArray()
   for row in usage.byProvider:
     byProvider.add(row)
-  var conns = newJArray()
-  for view in listConnections(d.providers, d.env):
-    conns.add(%*{"key": view.key, "state": $view.status.state,
-                 "message": view.status.message})
+  let conns = connectionsSection(d)
   let tpath = tracePath(d.home, d.today)
   var traceInfo: JsonNode
   if fileExists(tpath):
@@ -1977,7 +2022,8 @@ proc viewToJson*(view: IntegrationView): JsonNode =
      "what": view.what,
      "status": %*{"state": $view.status.state,
                      "message": view.status.message,
-                     "checked_at": view.status.checkedAt},
+                     "checked_at": (if view.status.checkedAt.len > 0:
+                       %view.status.checkedAt else: newJNull())},
      "fields": fields, "install_command": view.installCommand,
      "setup_url": view.setupUrl}
 

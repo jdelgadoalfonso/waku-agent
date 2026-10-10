@@ -289,6 +289,34 @@ suite "phase 8a /api/data status":
     assert node["trace"]["file"].getStr() == "none"
     removeDir(root)
 
+  test "connections carry full card views like Python collect()":
+    # The Connections tab groups cards by `group` and opens modals from
+    # `fields` (views.js). Stubs without those keys collapse every card
+    # into "Tools" and leave Channels/Productivity/Memory empty, so the
+    # shape is the contract, not just the array.
+    let root = freshDir("waku-dash-dataconnviews")
+    createDir(root / "static")
+    let node = parseJson(handleGet(testDeps(root, root / "static"),
+      "/api/data")[2])
+    let conns = node["connections"]
+    assert conns.kind == JArray
+    assert conns.len > 0
+    var groups: seq[string] = @[]
+    for item in conns:
+      assert item["key"].getStr().len > 0
+      assert item["group"].getStr().len > 0
+      assert item["name"].getStr().len > 0
+      assert item["what"].getStr().len > 0
+      assert item["status"]["state"].getStr().len > 0
+      assert item["fields"].kind == JArray
+      let g = item["group"].getStr()
+      if g notin groups:
+        groups.add(g)
+    for g in ["Channels", "Calendar & Productivity",
+        "Memory & Storage", "Search & Observability"]:
+      assert g in groups, g
+    removeDir(root)
+
   test "trace file name is reported when today has one":
     let root = freshDir("waku-dash-datatrace")
     createDir(root / "static")
@@ -1468,6 +1496,27 @@ suite "phase 8b POST connections and providers":
     let node = parseJson(handlePost(d, "/api/connections/test",
       """{"key": "tavily"}""")[2])
     assert node["status"]["message"].getStr() == "no test available"
+    removeDir(root)
+
+  test "view checked_at is null until a check stamps it, like Python":
+    # Python's `asdict` renders an unchecked row's `checked_at=None` as
+    # JSON null; `%*` on an empty string renders `""`, which the tab
+    # tolerates (both are falsy) but is not the contract.
+    let root = freshDir("waku-dash-connchecked")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    d.env["TAVILY_API_KEY"] = "x"
+    var node = parseJson(handlePost(d, "/api/connections/test",
+      """{"key": "tavily"}""")[2])
+    assert node["status"]["checked_at"].kind == JNull
+    writeFile(root / "connections_health.json",
+      """{"tavily": {"state": "connected", "message": "ok", """ &
+      """"checked_at": "2026-10-01T00:00:00Z"}}""")
+    var d2 = testDeps(root, root / "static")
+    d2.env["TAVILY_API_KEY"] = "x"
+    node = parseJson(handlePost(d2, "/api/connections/test",
+      """{"key": "tavily"}""")[2])
+    assert node["status"]["checked_at"].getStr() == "2026-10-01T00:00:00Z"
     removeDir(root)
 
   test "a gateway row renders the status the seam reports":
