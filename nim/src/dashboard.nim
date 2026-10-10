@@ -399,7 +399,7 @@ proc splitTarget*(target: string): (string, Table[string, string]) =
 # ---------------------------------------------------------------------------
 # Compile-time asset embed (9a-1) — the dashboard frontend in the binary.
 #
-# `waku/ops/static/` holds 55 files / ~668 KB (largest: `style.css`,
+# `waku/ops/static/` holds 62 files / ~600 KB (largest: `style.css`,
 # 67 KB) and EVERY one of them embeds byte-identically, the three
 # `.woff2` fonts included: `staticRead` keeps raw bytes, so there is no
 # escaping, no codegen pass and NO asset left behind for size or format.

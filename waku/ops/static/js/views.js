@@ -99,8 +99,11 @@ function memSemantic(d){
 }
 function memEpisodic(d){
   const src = d.episodes_source || "sqlite";
+  // The episodic backend differs per build (Notion in Python, Obsidian in
+  // the Nim port), so the error names the backend that actually failed.
+  const srcName = src === "notion" ? "Notion" : src;
   let h = `<div class="meta" style="margin-bottom:var(--space-2)">backend: ${uiBadge(esc(src), "value")}</div>`;
-  if (d.episodes_error) h += uiCard(`<span class="empty">Could not read episodes from Notion: ${esc(d.episodes_error)}</span>`);
+  if (d.episodes_error) h += uiCard(`<span class="empty">Could not read episodes from ${esc(srcName)}: ${esc(d.episodes_error)}</span>`);
   h += uiNotice("note", `<b>Why is this small?</b> <span class="r">Episodic memory holds one <i>distilled</i> summary per
     consolidation, not every message. The raw, blow-by-blow conversation lives in the
     ${uiLink("<code>chat_log</code> table", "#database/chat_log")}
@@ -278,8 +281,9 @@ function stProvider(){ return (D.settings || {}).provider || "anthropic"; }
 const CONNECTION_GROUPS = ["Channels", "Productivity", "Memory", "Tools"];
 // "Memory", not "Storage". The registry already calls this group "Memory &
 // Storage"; the display map was dropping the half that says what these
-// actually are. Notion is the episodic store, Supabase the semantic one, and
-// every hosted memory service that joins them is semantic too — none of it is
+// actually are. The episodic backend (Notion in Python, Obsidian in the Nim
+// port) and Supabase as one semantic backend, and every hosted memory
+// service that joins them is semantic too — none of it is
 // generic storage, and Memory is one of the four pillars the rest of the
 // dashboard is organised around.
 const CONNECTION_GROUP_MAP = {
@@ -620,11 +624,15 @@ const VIEWS = {
     if (sub !== "overview"){
       const t = tables.find(x => x.name === sub);
       if (!t) return h + uiCard(`<span class="empty">no such table</span>`);
-      const notionNote = (t.name === "episodes" && d.episodes_source === "notion")
-        ? `<div class="meta" style="margin-bottom:var(--space-2)">Episodes currently live in Notion — see
+      // The episodic backend differs per build (Notion in Python, Obsidian
+      // in the Nim port): name whichever one is live, and keep Python's
+      // capitalised "Notion" exactly as it was.
+      const liveBackend = d.episodes_source === "notion" ? "Notion" : (d.episodes_source || "sqlite");
+      const remoteNote = (t.name === "episodes" && d.episodes_source && d.episodes_source !== "sqlite")
+        ? `<div class="meta" style="margin-bottom:var(--space-2)">Episodes currently live in ${esc(liveBackend)} — see
             ${uiLink("Memory ▸ Episodic", "#memory/episodic")}.
             The rows below are the old local copy in state.db.</div>` : "";
-      return h + notionNote + `<div class="meta" style="margin-bottom:var(--space-2)">${DB_DESC[t.name]||""}</div>` + dbTable(t);
+      return h + remoteNote + `<div class="meta" style="margin-bottom:var(--space-2)">${DB_DESC[t.name]||""}</div>` + dbTable(t);
     }
     const kb = (db.size/1024).toFixed(1);
     h += uiNotice("note", `<b>Database vs Memory.</b> <span class="r">This is the raw persistence layer — the literal SQLite

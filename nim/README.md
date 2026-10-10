@@ -250,7 +250,7 @@ down costs that turn's spans and nothing else.
 ## The dashboard frontend is inside the binary
 
 `src/dashboard.nim` freezes `waku/ops/static/` into the executable at
-compile time (`staticRead`, 55 files, ~668 KB, the `.woff2` fonts
+compile time (`staticRead`, 62 files, ~600 KB, the `.woff2` fonts
 included — bytes, not text). Nothing is copied into `nim/`, nothing under
 `design/` is touched (AGENTS.md rule 8), and LICENSE-BRAND still holds:
 those files are included unmodified, so they reach the binary exactly as
