@@ -31,8 +31,10 @@ network), so `nimble build` and `nimble test` make no network calls.
 
 ```sh
 cd nim
-nimble build    # builds the waku binary
-nimble test     # compiles and runs every tests/test_*.nim suite
+nimble build      # builds the waku binary
+nimble test       # compiles and runs every tests/test_*.nim suite
+nimble buildStyle # optional ANSI styling -> ./waku_style
+nimble testStyle  # the styled renderer pins (-d:wakuStyle)
 ```
 
 ## Live TLS is a build switch, not a default
@@ -74,6 +76,34 @@ nimble together, and a build needs the checkout for it, the one the embedded
 dashboard assets need anyway. From the repo root, `make nim-build` and
 `make nim-test` are those same two commands (they `cd nim` first, because the
 suite's pins read the checkout relative to the working directory).
+
+## Optional styling is a build switch, not a default
+
+The default CLI prints the same words in plain text. A styled
+build turns the banner, the live observer lines, the `/memory`
+panel, the prompt, the reply label and the bye line into ANSI
+colours, and nothing else changes:
+
+```sh
+cd nim
+nimble buildStyle  # -d:wakuStyle -> ./waku_style
+nimble testStyle   # tests/test_style.nim in the styled build
+```
+
+`src/style.nim` owns the seam: `plainRenderer()` is the default
+every build gets, and `terminalRenderer()` uses the vendored
+`terminal_style` only when `-d:wakuStyle` is set. `NO_COLOR`,
+`TERM=dumb` and a non-terminal stdout keep the styled binary plain,
+so redirected output and dumb terminals stay readable. Panels are `┌─┐│└┘` with a cyan
+border and the title on the top border; text is measured in display
+cells, so wide characters do not move the frame.
+
+No new package (rule 3): `terminal_style` is vendored under
+`vendor/terminal_style` (MIT; see `vendor/THIRD_PARTY_NOTICES.md`)
+and reached with `--path`, so `requires` stays stdlib plus
+`db_connector`, and `nimble build`/`nimble test` stay offline and
+dependency-free. There is no `illwill` and no full-screen TUI in
+this unit; `waku chat` remains a line-based REPL.
 
 ## Facts can live in mem0 instead of sqlite
 
@@ -379,12 +409,21 @@ episode; `settle` waits for the graph to stop growing, not just the episodes.
 - `src/brief.nim` ports `ops/brief.py` (`runBrief` → outbox txt).
 - `src/client.nim` ports `get_client` (row lookup, key scoping, default
   models, endpoint resolution, helpful startup errors).
+- `src/style.nim` is the optional styling seam: `plainRenderer()` for
+  the default build, `terminalRenderer()` under `-d:wakuStyle`, with
+  the vendored `terminal_style` doing the ANSI work.
 - `src/cli.nim` ports `gateway/cli.py` (REPL with `/memory`, read-only
-  snapshot, live observer lines, `terminal` thread).
+  snapshot, live observer lines, `terminal` thread). Python decorates this
+  surface with `rich`; the default build prints the same words in plain
+  text, because `rich` would be a new dependency. The optional
+  `-d:wakuStyle` build routes these surfaces through `style.Renderer`
+  and the vendored `terminal_style`, so the decoration is opt-in. The
+  same rule covers `brief`, `gather` and `connections`: panels and
+  colours become undecorated lines with identical content.
 - `src/waku.nim` dispatches `chat` (default), `brief`, `gather`,
-  `connections`, `skill install/export` and the four gateway commands for
-  real; unknown commands exit 1 with the usage text, and `connect` is the
-  one command still reporting phase scaffolding.
+  `connections`, `skill install/export`, `connect` (both sign-ins: Google
+  loopback OAuth and Waku Memory over the MCP bridge) and the four gateway
+  commands for real; unknown commands exit 1 with the usage text.
 - `src/skills.nim` ports `memory/procedural/installer.py` + `exporter.py`
   (phase 5a): `skill install` fetches + validates a SKILL.md and drops it
   into WAKU_HOME/skills (fetch injected, tests run offline); `skill export`

@@ -289,7 +289,6 @@ proc makeAppleTools*(seams: AppleSeams): seq[Tool] =
                                     "description": "default 7"}}},
     fn: proc(args: JsonNode): string =
       let days = intArg(args, "days_ahead", 7)
-      let cals = getEnv("WAKU_APPLE_CALENDARS")
       let key = "cal:" & $days
       if calCache.hasKey(key) and
           epochTime() - calCache[key].at < 600.0:

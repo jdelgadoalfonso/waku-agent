@@ -77,3 +77,30 @@ task buildTls, "Compiles the same binary with live TLS (needs the OpenSSL header
 task testTls, "Runs tests/test_tls.nim in the live-TLS build (offline, no key)":
   exec "nim c -r --hints:off " & tlsDefines &
     " -o:tests/test_tls_flagged tests/test_tls.nim"
+
+# Optional ANSI styling, and the ONE place its switch is typed.
+#
+# `-d:wakuStyle` says a developer wants the CLI's optional
+# decoration; without it every surface prints plain text. The
+# styling code lives in `src/style.nim`, which compiles in both
+# builds; only this flag makes it import the vendored
+# `terminal_style` and wrap output in SGR controls.
+#
+# No new package (rule 3): `terminal_style` is vendored under
+# `vendor/terminal_style` (MIT, see `vendor/THIRD_PARTY_NOTICES.md`)
+# and reached with `--path`, so `requires` and `nimble build` are
+# untouched. `NO_COLOR` and `TERM=dumb` disable it at run time.
+#
+# The binary is written as `waku_style`, NOT over `waku`, for the
+# same reason as `waku_tls`: a styled build and a default build
+# can sit in the same tree.
+const styleDefines* = "-d:wakuStyle"
+const stylePath* = "--path:vendor/terminal_style"
+
+task buildStyle, "Compiles the same binary with optional ANSI styling":
+  exec "nim c --hints:off " & stylePath & " " & styleDefines &
+    " -o:waku_style src/waku.nim"
+
+task testStyle, "Runs the styled renderer pins (offline, no key)":
+  exec "nim c -r --hints:off " & stylePath & " " & styleDefines &
+    " -o:tests/test_style_flagged tests/test_style.nim"

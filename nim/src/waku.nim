@@ -9,14 +9,14 @@
 ## wires the four gateway commands (`telegram`, `discord`, `whatsapp`,
 ## `voice`) to their real loops over one real agent each. Phase 15
 ## (`evals turns`) prints the turn-eval table from this home's traces
-## and ledger, offline and with no client built. `connect` is the only
-## command still reporting not-yet-implemented.
+## and ledger, offline and with no client built. `connect` runs both
+## sign-ins (Google loopback OAuth and Waku Memory over the MCP bridge).
 ##
 ## Exit codes follow Python: unknown command → 1 with the usage text.
-## Two deliberate divergences: `--help`/`--version` exit 0 (Unix
+## One deliberate divergence: `--help`/`--version` exit 0 (Unix
 ## convention; Python has no such flags, so bare `waku --help` there is
-## usage+1), and known-but-unported commands report to stderr and exit 0
-## (phase scaffolding — Python has no such state).
+## usage+1). Every name in `cliCommands` has a real handler, so there is
+## no known-but-unported stub left.
 
 import std/httpclient
 import std/json
@@ -25,6 +25,10 @@ import std/strutils
 import std/syncio
 import std/tables
 import std/times
+
+when defined(wakuStyle):
+  import std/terminal
+  import ./style
 
 import ./apple
 import ./brief
@@ -231,7 +235,10 @@ proc runChat*(dotenvStart = ""): int =
   except ClientConfigError as exc:
     stderr.writeLine(exc.msg)
     return 1
-  runRepl(w)
+  when defined(wakuStyle):
+    runRepl(w, terminalRenderer(terminalWidth()))
+  else:
+    runRepl(w)
   return 0
 
 proc runBriefCmd*(dotenvStart = ""): int =
@@ -628,9 +635,6 @@ proc runCommand*(args: seq[string], dotenvStart = "",
     return runWhatsappCmd(dotenvStart)
   if args[0] == "voice":  # phase 7d2: the live voice session
     return runVoiceCmd(dotenvStart)
-  if args[0] in cliCommands:  # known but later phase: honest stub (connect)
-    stderr.writeLine "nim port phase 4: " & args[0] & " not yet implemented"
-    return 0
   writeUsage()  # unknown, like Python: usage + exit 1
   return 1
 
