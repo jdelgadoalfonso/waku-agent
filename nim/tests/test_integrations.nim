@@ -44,7 +44,7 @@ suite "phase 5d1 static registry":
       ("google_calendar", "Calendar & Productivity"),
       ("apple_calendar", "Calendar & Productivity"),
       ("apple_tools", "Calendar & Productivity"),
-      ("notion", "Memory & Storage"),
+      ("obsidian", "Memory & Storage"),
       ("mem0", "Memory & Storage"),
       ("zep", "Memory & Storage"),
       ("langmem", "Memory & Storage"),
@@ -70,12 +70,14 @@ suite "phase 5d1 static registry":
       assert row.env[i].kind == textField
     assert row.normalize != nil
 
-  test "notion choice options, defaults and normalize marker":
-    let row = findRow(INTEGRATIONS, "notion")
+  test "obsidian choice options, defaults and no normalize hook":
+    let row = findRow(INTEGRATIONS, "obsidian")
     assert row.env[0].kind == choiceField
     assert row.env[0].default == "sqlite"
-    assert row.env[0].options == @["sqlite", "notion"]
-    assert row.normalize != nil
+    assert row.env[0].options == @["sqlite", "obsidian"]
+    assert row.normalize == nil
+    assert row.env[1].name == "WAKU_OBSIDIAN_VAULT"
+    assert row.env[1].required
     assert findRow(INTEGRATIONS, "telegram").normalize == nil
 
   test "spot extras, imports, setup urls and reloads":
@@ -109,9 +111,9 @@ suite "phase 5d1 enabled predicates":
     assert tools.enabled(env, macOs)
     assert not cal.enabled(envOf([]), macOs)
 
-  test "notion store selector compares the store var":
-    let row = findRow(INTEGRATIONS, "notion")
-    assert row.enabled(envOf([("WAKU_EPISODIC_STORE", "notion")]), linuxOs)
+  test "obsidian store selector compares the store var":
+    let row = findRow(INTEGRATIONS, "obsidian")
+    assert row.enabled(envOf([("WAKU_EPISODIC_STORE", "obsidian")]), linuxOs)
     assert not row.enabled(envOf([("WAKU_EPISODIC_STORE", "sqlite")]), linuxOs)
     assert not row.enabled(envOf([]), linuxOs)
     assert findRow(INTEGRATIONS, "mem0").enabled(
@@ -313,14 +315,12 @@ WAKU_PROVIDER=anthropic
 
 # ── Memory & Storage ──
 
-# ── Notion ──
-# Stores episodic memory in a Notion database.
-# Install: pip install -e '.[notion]'
-# Setup: https://www.notion.so/my-integrations
-# Choices: sqlite, notion.
+# ── Obsidian ──
+# Stores episodic memory as notes in your local Obsidian vault.
+# Choices: sqlite, obsidian.
 # WAKU_EPISODIC_STORE=sqlite
-# NOTION_TOKEN=
-# NOTION_EPISODES_DATABASE_ID=
+# Root of your local Obsidian vault. Episodes live under waku/episodes/.
+# WAKU_OBSIDIAN_VAULT=
 
 # ── Mem0 ──
 # Stores semantic memory in the Mem0 service.
@@ -390,7 +390,7 @@ suite "phase 5d1 env example":
       assert ("# " & row.what) in blockText
     assert "# TELEGRAM_BOT_TOKEN=" in blockText
     assert "# Set to 1 to enable." in blockText
-    assert "# Choices: sqlite, notion." in blockText
+    assert "# Choices: sqlite, obsidian." in blockText
     assert "# Install: pip install -e '.[telegram]'" in blockText
     assert "# Setup: https://t.me/BotFather" in blockText
     assert "# WAKU_GOOGLE_CALENDAR_ID=primary" in blockText
@@ -402,32 +402,6 @@ suite "phase 5d1 env example":
     assert renderEnvExampleBlock(providers) == goldenExpected
 
 suite "phase 5d1 normalize":
-  test "plain notion id passes through verbatim, stripped":
-    assert normalizeDatabaseId("  abc123  ") == "abc123"
-
-  test "notion url extracts the lowercase 32-hex path id":
-    assert normalizeDatabaseId(
-      "https://www.notion.so/My-Db-ABCDEF1234567890abcdef1234567890?v=1234") ==
-      "abcdef1234567890abcdef1234567890"
-
-  test "notion url without an id raises the exact message":
-    for url in ["https://www.notion.so/no-id-here", "https://notion.so"]:
-      try:
-        discard normalizeDatabaseId(url)
-        assert false, "expected ValueError for " & url
-      except ValueError as e:
-        assert e.msg == "Notion database link must include a database ID in its path"
-
-  test "notionNormalize rewrites only the database field":
-    var values = envOf([("NOTION_EPISODES_DATABASE_ID",
-      "https://www.notion.so/x-ABCDEF1234567890abcdef1234567890"),
-      ("NOTION_TOKEN", "tok")])
-    values = notionNormalize(values)
-    assert values["NOTION_EPISODES_DATABASE_ID"] ==
-      "abcdef1234567890abcdef1234567890"
-    assert values["NOTION_TOKEN"] == "tok"
-    assert notionNormalize(envOf([])) == envOf([])
-
   test "positiveInt accepts valid and empty values":
     assert positiveInt(envOf([])) == envOf([])
     assert positiveInt(envOf([("DISCORD_MAX_TURNS_PER_HOUR", "10")])) ==
@@ -639,9 +613,8 @@ suite "phase 5d2 testIntegration":
     assert nc.status.state == notConfigured
     assert nc.status.message == "integration is disabled"
     let env = envOf([("WAKU_EPISODIC_STORE", "sqlite"),
-                     ("NOTION_TOKEN", "tok"),
-                     ("NOTION_EPISODES_DATABASE_ID", "dbid")])
-    let cfg = testIntegration("notion", @[], env,
+                     ("WAKU_OBSIDIAN_VAULT", "/vault")])
+    let cfg = testIntegration("obsidian", @[], env,
       store, emptyProbes(), linuxOs)
     assert cfg.status.state == configured
     assert cfg.status.message == "integration is disabled"
@@ -685,14 +658,13 @@ suite "phase 5d2 testIntegration":
     let store = newHealthStore(home)
     var seen = initTable[string, string]()
     var probes = emptyProbes()
-    probes["notion"] = proc(values: Table[string, string]) {.closure.} =
+    probes["obsidian"] = proc(values: Table[string, string]) {.closure.} =
       seen = values
-    let env = envOf([("WAKU_EPISODIC_STORE", "notion"),
-                     ("NOTION_TOKEN", "t"),
-                     ("NOTION_EPISODES_DATABASE_ID", "d")])
-    discard testIntegration("notion", @[], env, store, probes, linuxOs)
-    assert seen["NOTION_TOKEN"] == "t"
-    assert seen["WAKU_EPISODIC_STORE"] == "notion"
+    let env = envOf([("WAKU_EPISODIC_STORE", "obsidian"),
+                     ("WAKU_OBSIDIAN_VAULT", "/vault")])
+    discard testIntegration("obsidian", @[], env, store, probes, linuxOs)
+    assert seen["WAKU_OBSIDIAN_VAULT"] == "/vault"
+    assert seen["WAKU_EPISODIC_STORE"] == "obsidian"
 
 suite "phase 5d2 applyIntegration":
   test "unknown key and provider rows are rejected":
@@ -723,11 +695,11 @@ suite "phase 5d2 applyIntegration":
   test "choice fields validate against their options":
     let home = tmpDir5d2("apply-choice")
     var env = envOf([])
-    let res = applyIntegration("notion",
+    let res = applyIntegration("obsidian",
       envOf([("WAKU_EPISODIC_STORE", "bogus")]), @[], env,
       newHealthStore(home), home / ".env", emptyProbes())
     assert not res.ok
-    assert res.error == "WAKU_EPISODIC_STORE must be one of: sqlite, notion"
+    assert res.error == "WAKU_EPISODIC_STORE must be one of: sqlite, obsidian"
     assert not res.canForce
 
   test "normalize failures surface with force allowed":

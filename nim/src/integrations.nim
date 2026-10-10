@@ -41,10 +41,12 @@
 ##   and is skipped.
 ##
 ## Name mapping for the underscored Python helpers: `_configured` is
-## `fieldConfigured`, `_status` is `integrationStatus`, `_positive_int` is
-## `positiveInt`, `_notion_normalize` is `notionNormalize`, and
-## `normalize_database_id` is `normalizeDatabaseId`. Nim identifiers cannot
-## start with an underscore.
+## `fieldConfigured`, `_status` is `integrationStatus` and `_positive_int`
+## is `positiveInt`. Nim identifiers cannot start with an underscore.
+##
+## This port replaces the Python `notion` episodic row with `obsidian`
+## (local vault files): no `notionNormalize`/`normalizeDatabaseId` port,
+## no extra to install, no token to probe.
 
 import std/algorithm
 import std/json
@@ -155,7 +157,7 @@ proc keyEnabled(keyEnv: string): EnabledFn =
     env.getOrDefault(k, "").len > 0
 
 proc storeEnabled(varName, backend: string): EnabledFn =
-  ## Enabled while a store-selector var names this backend (notion, mem0,
+  ## Enabled while a store-selector var names this backend (obsidian, mem0,
   ## zep, langmem, supabase rows).
   let v = varName
   let b = backend
@@ -185,55 +187,6 @@ proc positiveInt*(values: Table[string, string]): Table[string, string] =
     if not ok:
       raise newException(ValueError,
         "DISCORD_MAX_TURNS_PER_HOUR must be a positive integer")
-
-proc isHexChar(c: char): bool =
-  c in {'0' .. '9', 'a' .. 'f'}
-
-proc normalizeDatabaseId*(value: string): string =
-  ## Port of `normalize_database_id` (`waku/memory/episodic/notion_store.py`):
-  ## a URL with scheme+netloc yields the bounded 32-hex id from its path
-  ## (case-insensitive); anything else passes through verbatim, stripped.
-  ## Raises `ValueError` with the exact Python message when a URL has no id.
-  let v = value.strip()
-  let schemeEnd = v.find("://")
-  if schemeEnd > 0 and schemeEnd + 3 < v.len:
-    # Scheme + non-empty netloc is a URL, like Python's
-    # `parsed.scheme and parsed.netloc` — the id must be in its path.
-    let afterScheme = schemeEnd + 3
-    let slash = v.find('/', afterScheme)
-    if slash <= afterScheme:
-      raise newException(ValueError,
-        "Notion database link must include a database ID in its path")
-    var pathEnd = v.len
-    for i in slash ..< v.len:
-      if v[i] == '?' or v[i] == '#':
-        pathEnd = i
-        break
-    let path = v[slash ..< pathEnd].toLowerAscii()
-    var i = 0
-    while i + 32 <= path.len:
-      var allHex = true
-      for j in 0 ..< 32:
-        if not isHexChar(path[i + j]):
-          allHex = false
-          break
-      if allHex:
-        let beforeOk = i == 0 or not isHexChar(path[i - 1])
-        let afterOk = i + 32 >= path.len or not isHexChar(path[i + 32])
-        if beforeOk and afterOk:
-          return path[i ..< i + 32]
-      inc i
-    raise newException(ValueError,
-      "Notion database link must include a database ID in its path")
-  v
-
-proc notionNormalize*(values: Table[string, string]): Table[string, string] =
-  ## Port of `_notion_normalize`: runs the Notion database id through
-  ## `normalizeDatabaseId`, leaves every other field alone.
-  result = values
-  let value = result.getOrDefault("NOTION_EPISODES_DATABASE_ID", "")
-  if value.len > 0:
-    result["NOTION_EPISODES_DATABASE_ID"] = normalizeDatabaseId(value)
 
 let INTEGRATIONS*: seq[Integration] = @[
   Integration(key: "telegram", group: "Channels", name: "Telegram",
@@ -299,20 +252,17 @@ let INTEGRATIONS*: seq[Integration] = @[
               kind: boolField)],
     extra: "", importName: "", setupUrl: "", reload: agent,
     enabled: darwinEnabled("WAKU_APPLE_TOOLS")),
-  Integration(key: "notion", group: "Memory & Storage", name: "Notion",
-    what: "Stores episodic memory in a Notion database.",
+  Integration(key: "obsidian", group: "Memory & Storage", name: "Obsidian",
+    what: "Stores episodic memory as notes in your local Obsidian vault.",
     env: @[EnvField(name: "WAKU_EPISODIC_STORE", label: "Episodic store",
               kind: choiceField, default: "sqlite",
-              options: @["sqlite", "notion"]),
-            EnvField(name: "NOTION_TOKEN", label: "Integration token",
-              required: true, secret: true),
-            EnvField(name: "NOTION_EPISODES_DATABASE_ID",
-              label: "Episodes database ID", required: true)],
-    extra: "notion", importName: "notion_client",
-    setupUrl: "https://www.notion.so/my-integrations", reload: agent,
-    enabled: storeEnabled("WAKU_EPISODIC_STORE", "notion"),
-    normalize: (proc(v: Table[string, string]): Table[string, string] {.closure.} =
-      notionNormalize(v))),
+              options: @["sqlite", "obsidian"]),
+            EnvField(name: "WAKU_OBSIDIAN_VAULT", label: "Vault path",
+              required: true,
+              help: "Root of your local Obsidian vault. " &
+                "Episodes live under waku/episodes/.")],
+    extra: "", importName: "", setupUrl: "", reload: agent,
+    enabled: storeEnabled("WAKU_EPISODIC_STORE", "obsidian")),
   Integration(key: "mem0", group: "Memory & Storage", name: "Mem0",
     what: "Stores semantic memory in the Mem0 service.",
     env: @[EnvField(name: "WAKU_SEMANTIC_STORE", label: "Semantic store",

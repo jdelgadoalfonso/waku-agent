@@ -203,12 +203,12 @@ suite "phase 7d2 supervisor env fields":
       else: check "unexpected gateway " & key == ""
 
   test "a non-gateway row never joins the supervisor":
-    # `google_calendar` reloads the agent and `notion` reloads nothing,
+    # `google_calendar` reloads the agent and `obsidian` reloads nothing,
     # so both are none of the supervisor's business — the same filter
     # Python applies with `item.reload.value == "gateway"`.
     for (key, _) in gatewayEnvFields():
       check key != "google_calendar"
-      check key != "notion"
+      check key != "obsidian"
 
 # ── reconcile, shutdown and the two panel seams ───────────────────────
 
