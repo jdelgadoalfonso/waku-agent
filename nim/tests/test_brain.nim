@@ -135,7 +135,9 @@ suite "backend answer shapes":
   test "a report's marker never reaches the prompt text":
     let doc = $(%*{"entries": [{"id": "m1",
       "body": reportMarkerOf & "\n\n# Rival map\n\nbody here"}]})
-    assert brainEntries(doc)[0]["text"].getStr() == "# Rival map body here"
+    assert brainEntries(doc)[0]["title"].getStr() == "Rival map"
+    assert brainEntries(doc)[0]["text"].getStr() == "",
+      "no Summary section means no snippet window: the card reads the title"
 
 let stubDigest: proc(body: string): string {.closure.} =
   proc(body: string): string =
@@ -277,7 +279,6 @@ proc usedEntry(id, title, text, created: string, report: bool): JsonNode =
 suite "brain context":
   test "empty stays empty":
     assert brainContext(@[], newJObject()) == ""
-
   test "reports come first even when older, newest first inside groups":
     let used = @[
       usedEntry("9", "", "Alex prefers mornings", "2026-10-05", false),
@@ -315,3 +316,69 @@ suite "brain context":
       @[usedEntry("9", "", "fact text", "2026-10-05", false)], newJObject())
     assert "Start from this." in factsOnly
     assert brainGetTool notin factsOnly
+
+# Port of `evals/deterministic/test_used_from_memory.py` (9a62ace): the
+# chat's "Used from memory" list reads as prose. A search snippet is a
+# window into a body, and for a report it often lands in Sources or
+# metrics — the card showed it raw. Reports read as title + first Summary
+# line (from the whole body when get reads it); facts lose fences and JSON
+# but keep Waku Memory's <<match>> marks.
+const
+  sourcesSnippet = "cognee.ai\\\"}, \"url\": \"https://docs.data.aviato.co/api/companies\", " &
+    "\"via\": \"treg:aviato.companies.funding_rounds\", \"cost_usd\": 0.01}]"
+  metricsSnippet = "value\": 20}, {\"label\": \"<<Mem0>> Starter\", " &
+    "\"value\": \"$19 a month\", \"note\": \"2026-09\"}"
+  competitorReport = reportMarkerOf & "\n# Funding of Mem0's competitors, 2026-10-05\n\n" &
+    "## Summary\n- Letta has the largest disclosed round: a $10M seed in 2024-09.\n" &
+    "- Zep raised $2.3M.\n\n## Sources\n```json\n[{\"title\": \"cognee.ai\"}]\n```\n"
+
+suite "used from memory reads as prose":
+  test "a report shows its title and first summary line, not its sources":
+    # Numeric ids: the get tool takes an integer, so only those reports
+    # can be read whole (the existing "read once" pin uses "7" too).
+    let doc = $(%*{"entries": [
+      {"id": "11", "kind": "semantic", "created_at": "2026-10-05T03:23:00Z",
+       "snippet": sourcesSnippet},
+      {"id": "12", "kind": "semantic", "created_at": "2026-10-04T03:23:00Z",
+       "snippet": metricsSnippet}]})
+    let backend = digestBackend(@[doc, """{"entries": []}"""],
+      $(%*{"memory": {"id": "11", "body": competitorReport}}))
+    let (_, used, _, _) = readFirst("research mem0's competitors", backend)
+    assert used.len == 2
+    for u in used:
+      assert u["title"].getStr() == "Funding of Mem0's competitors, 2026-10-05"
+      assert u["text"].getStr() ==
+        "Letta has the largest disclosed round: a $10M seed in 2024-09."
+
+  test "a report that could not be read shows no JSON":
+    let doc = $(%*{"entries": [
+      {"id": "rep-1", "kind": "semantic", "snippet": sourcesSnippet},
+      {"id": "rep-2", "kind": "semantic",
+       "snippet": reportMarkerOf & "\n# Mem0 pricing\n## Summary\n- Mem0's <<Starter>> plan is $19 a month."}]})
+    let (_, used, _, _) = readFirst("research mem0 pricing",
+      stubBackend(false, doc, """{"entries": []}"""))
+    assert used[0]["text"].getStr() == "" and used[0]["title"].getStr() == "",
+      "the card reads \"Report\""
+    assert used[1]["title"].getStr() == "Mem0 pricing"
+    assert used[1]["text"].getStr() == "Mem0's <<Starter>> plan is $19 a month."
+
+  test "a fact loses fenced code and JSON but keeps its match marks":
+    let doc = $(%*{"entries": [
+      {"id": "f-1", "kind": "reference",
+       "snippet": "Sean compares <<Mem0>> with Zep. ```json\n{\"plan\": \"pro\", \"seats\": 5}\n``` He prefers Zep."},
+      {"id": "f-2", "kind": "reference", "snippet": metricsSnippet},
+      {"id": "f-3", "kind": "reference",
+       "snippet": "Mem0 raised a $24M Series A in 2025-10, per \"TechCrunch\": a lead."}]})
+    let (_, used, _, _) = readFirst("research mem0",
+      stubBackend(false, doc, """{"entries": []}"""))
+    assert used[0]["text"].getStr() == "Sean compares <<Mem0>> with Zep. He prefers Zep."
+    assert "{" notin used[1]["text"].getStr() and "\":" notin used[1]["text"].getStr()
+    assert used[2]["text"].getStr() ==
+      "Mem0 raised a $24M Series A in 2025-10, per \"TechCrunch\": a lead."
+
+  test "the prompt reads the same clean text":
+    let doc = $(%*{"entries": [{"id": "f-2", "kind": "reference",
+      "created_at": "2026-10-01", "snippet": metricsSnippet}]})
+    let (_, _, context, _) = readFirst("research mem0",
+      stubBackend(false, doc, """{"entries": []}"""))
+    assert "\"label\"" notin context and "value\":" notin context

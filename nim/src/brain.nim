@@ -38,6 +38,7 @@
 ## `created_at` is empty rather than invented.
 
 import std/json
+import std/re
 import std/strutils
 
 import ./tools
@@ -141,15 +142,72 @@ proc startsMarker*(body: string): bool =
     s2 = s2[1 .. ^1]
   s2.startsWith(reportMarkerOf)
 
-proc entryText*(body: string): string =
-  ## What one memory may put in the prompt: the body (or snippet) with
-  ## the report marker gone, whitespace folded, capped at `textChars`.
-  ## Port of Python's `_text`.
-  var body2 = body.replace(reportMarkerOf, "").strip()
-  body2 = body2.splitWhitespace().join(" ")
-  if body2.len > textChars:
-    body2 = body2[0 ..< textChars - 1] & "…"
-  body2
+proc reportTitle*(body: string): string =
+  ## A report's `# ` line, when the body that came back still has it.
+  ## Port of Python's `_title`.
+  for line in body.splitLines():
+    if line.startsWith("# "):
+      return line[2 .. ^1].strip()
+  ""
+
+proc firstSummaryLine*(body: string): string =
+  ## The first bullet under a report's `## Summary`, when the body that
+  ## came back still has that section. Port of Python's
+  ## `_first_summary_line`.
+  var inside = false
+  for line in body.splitLines():
+    if line.startsWith("## "):
+      inside = line[3 .. ^1].strip().toLowerAscii() == "summary"
+    elif inside:
+      let item = line.strip()
+      if item.startsWith("- ") or item.startsWith("* "):
+        return item[2 .. ^1].strip()
+  ""
+
+let
+  fenceRe = re(r"```.*?```", {reDotAll})
+    ## A fenced code block, possibly spanning lines.
+  loneFenceRe = re(r"```\w*")
+    ## A fence run left open (or the tag of one already removed).
+  commentRe = re(r"<!--.*?-->", {reDotAll})
+    ## An HTML comment — the report marker among them.
+  jsonPairRe = re("""\\?"?[\w$.\- ]*\\?"\s*:\s*(?:\\?"(?:[^"\\]|\\.)*?\\?"|-?[\d.]+|true|false|null)""")
+    ## One JSON `"key": value` pair, plain or backslash-escaped.
+  jsonDebrisRe = re("""\\?"\s*[}\]]+|[{}\[\]]+|\\\"|(?<=\s),(?=\s)|^\s*[,:]+""")
+    ## Brackets, stray quotes and commas left after the pairs are gone.
+  punctSpaceRe = re(r"\s+([,;.])")
+  multiCommaRe = re(r"[,;](?:\s*[,;])+")
+
+proc proseOf*(text: string): string =
+  ## `text` without fenced code, comments (the report marker among them)
+  ## and JSON fragments, on one line. Port of Python's `_prose`: Waku
+  ## Memory's `<<match>>` marks stay where they are in prose.
+  var cleaned = text.replace(commentRe, " ")
+  cleaned = cleaned.replace(fenceRe, " ")
+  cleaned = cleaned.replace(loneFenceRe, " ")
+  cleaned = cleaned.replace(jsonPairRe, " ")
+  cleaned = cleaned.replace(jsonDebrisRe, " ")
+  cleaned = cleaned.splitWhitespace().join(" ")
+  cleaned = cleaned.replace(punctSpaceRe, "$1")
+  cleaned = cleaned.replace(multiCommaRe, ",")
+  cleaned.strip(chars = {' ', ',', ';', ':'})
+
+proc clipText*(text: string): string =
+  ## `text` capped at `textChars`, ellipsis included. Port of Python's
+  ## `_clip`.
+  if text.len > textChars:
+    text[0 ..< textChars - 1] & "…"
+  else:
+    text
+
+proc entryText*(body: string, isReport: bool): string =
+  ## What one memory may put in the prompt: a report's first Summary line
+  ## (its title is shown beside it), any other memory's prose — capped at
+  ## `textChars`. Port of Python's `_text`.
+  if isReport:
+    clipText(firstSummaryLine(body))
+  else:
+    clipText(proseOf(body))
 
 proc jsonEntries*(doc: JsonNode): seq[JsonNode] =
   ## Waku Memory's own answer shape (`{"entries": [...]}`), read exactly
@@ -170,16 +228,13 @@ proc jsonEntries*(doc: JsonNode): seq[JsonNode] =
     let body = e.jget("body").getStr()
     let snippet = e.jget("snippet").getStr()
     let whole = if body.len > 0: body else: snippet
-    var title = ""
-    for line in whole.splitLines():
-      if line.startsWith("# "):
-        title = line[2 .. ^1].strip()
-        break
     let kind = e.jget("kind").getStr()
-    result.add(%*{"id": id, "title": title, "text": entryText(whole),
+    let isRep = startsMarker(whole) or kind == "semantic"
+    result.add(%*{"id": id,
+      "title": (if isRep: reportTitle(whole) else: ""),
+      "text": entryText(whole, isRep),
       "created_at": e.jget("created_at").getStr(),
-      "kind": kind,
-      "report": (startsMarker(whole) or kind == "semantic")})
+      "kind": kind, "report": isRep})
 
 proc brainEntries*(text: string): seq[JsonNode] =
   ## One `{id, title, text, created_at, kind, report}` per hit. Three
@@ -206,9 +261,10 @@ proc brainEntries*(text: string): seq[JsonNode] =
   template flushEntry() =
     if curId.len > 0:
       let body = curLines.join("\n")
+      let isRep = startsMarker(body) or curKind == reportType
       result.add(%*{"id": curId, "title": curTitle,
-        "text": entryText(body), "created_at": %"", "kind": curKind,
-        "report": startsMarker(body) or curKind == reportType})
+        "text": entryText(body, isRep), "created_at": %"", "kind": curKind,
+        "report": isRep})
       curId = ""
       curTitle = ""
       curKind = ""
@@ -287,25 +343,32 @@ proc reportBody*(text: string): string =
     return candidate
   ""
 
+proc readReport*(backend: BrainBackend, id: string): tuple[body, digest: string] =
+  ## One earlier report's whole body and its digest, or ("", "") when
+  ## the read failed or the memory is not a report. One `get` call at
+  ## most: a failed read keeps the search snippet and the turn goes on.
+  ## Port of Python's `_report_body` plus the digest read in `read_first`.
+  if not digestReady(backend):
+    return ("", "")
+  var n = 0
+  if not parseGetId(id, n):
+    return ("", "")
+  var text = ""
+  try:
+    text = backend.get(%*{"id": n})
+  except CatchableError:
+    return ("", "")
+  let body = reportBody(text)
+  if body.len == 0:
+    return ("", "")
+  (body, backend.digest(body))
+
 proc reportDigest*(backend: BrainBackend, id: string): string =
   ## One earlier report's digest, read with the backend's get, or ""
   ## when the read failed or the memory is not a report. Port of
   ## Python's `_report_digest` (which catches everything: the snippet
   ## stands in and the turn goes on).
-  if not digestReady(backend):
-    return ""
-  var n = 0
-  if not parseGetId(id, n):
-    return ""
-  var text = ""
-  try:
-    text = backend.get(%*{"id": n})
-  except CatchableError:
-    return ""
-  let body = reportBody(text)
-  if body.len == 0:
-    return ""
-  backend.digest(body)
+  readReport(backend, id).digest
 
 proc brainContext*(used: seq[JsonNode],
     digests: JsonNode = newJObject()): string =
@@ -375,8 +438,9 @@ proc readFirst*(message: string,
   ## the backend is disconnected and when nothing was found — and a
   ## failed search is skipped, never fatal. With a `get` and a `digest`
   ## on the backend (S1), each earlier report found is read once, at
-  ## most `reportReadLimit`, and kept as its digest; a failed read keeps
-  ## its search snippet.
+  ## most `reportReadLimit`, and kept as its digest, with its title and
+  ## text refreshed from the whole body; a failed read keeps its search
+  ## snippet.
   result = (calls: @[], used: @[], context: "", digests: newJObject())
   if not brainConnected(backend):
     return result
@@ -419,13 +483,24 @@ proc readFirst*(message: string,
     return result
   if digestReady(backend):
     var read = 0
-    for u in result.used:
-      if not u["report"].getBool():
+    for i in 0 ..< result.used.len:
+      if not result.used[i]["report"].getBool():
         continue
       if read >= reportReadLimit:
         break
       inc read
-      let found = reportDigest(backend, u["id"].getStr())
-      if found.len > 0:
-        result.digests[u["id"].getStr()] = %found
+      let id = result.used[i]["id"].getStr()
+      let (body, digest) = readReport(backend, id)
+      if digest.len == 0:
+        continue
+      # The whole report, in place of whatever window of it the search
+      # snippet showed: its digest, and its own title and first Summary
+      # line. Port of the whole-body refresh in Python's `read_first`.
+      result.digests[id] = %digest
+      let fullTitle = reportTitle(body)
+      if fullTitle.len > 0:
+        result.used[i]["title"] = %fullTitle
+      let summary = clipText(firstSummaryLine(body))
+      if summary.len > 0:
+        result.used[i]["text"] = %summary
   result.context = brainContext(result.used, result.digests)
