@@ -70,6 +70,18 @@ type
     url*: string
     authEnv*: string
     oauth*: bool
+    tasks*: seq[string]
+      ## The task tags every tool this server publishes
+      ## inherits (§4.3). Empty means "always send": a
+      ## server without `tasks` keeps the current behavior
+      ## and always reaches the model, whatever the turn's
+      ## signal.
+    `when`*: seq[string]
+      ## The phrases that mean a turn needs this server
+      ## (§4.2): a message containing any of them,
+      ## case-insensitively, adds the server's `tasks` to
+      ## that turn's filter signal. The name is mcp.json's
+      ## own, backticked because `when` is a Nim keyword.
 
   McpToolMeta* = object
     ## One tool a server lists: the wire name plus what the model reads.
@@ -116,7 +128,53 @@ proc parseMcpConfig*(text: string): seq[McpServerSpec] =
       spec.authEnv = entry["auth_env"].getStr()
     if entry.hasKey("oauth") and entry["oauth"].kind == JBool:
       spec.oauth = entry["oauth"].getBool()
+    # §4.3: the optional per-server task tags. A `tasks`
+    # that is not an array of strings is config the file
+    # cannot use: it is ignored (the tags stay empty, so
+    # the server stays always visible), never refused —
+    # Waku still starts, like a server that declares no
+    # tasks at all. `when` reads the same way, and also
+    # accepts one bare phrase, like Python's
+    # derive_task_tags reads it.
+    if entry.hasKey("tasks") and entry["tasks"].kind == JArray:
+      for t in entry["tasks"]:
+        if t.kind == JString:
+          spec.tasks.add(t.getStr())
+    if entry.hasKey("when"):
+      if entry["when"].kind == JString:
+        spec.`when`.add(entry["when"].getStr())
+      elif entry["when"].kind == JArray:
+        for w in entry["when"]:
+          if w.kind == JString:
+            spec.`when`.add(w.getStr())
     result.add(spec)
+
+proc deriveTaskTags*(message: string,
+                     specs: seq[McpServerSpec]): seq[string] =
+  ## The per-turn filter signal from the user's message
+  ## (proposal §4.2) — the port of `derive_task_tags` in
+  ## `waku/runtime/session.py`, which lives here because
+  ## the signal is read out of mcp.json's server specs.
+  ## Each server contributes its `tasks` when any of its
+  ## `when` phrases appears in the message, case-
+  ## insensitively. A server that declares tasks but no
+  ## `when` contributes nothing on its own — a tag with no
+  ## trigger would fire on every turn, which is a false
+  ## positive, not a filter. The result may be empty;
+  ## runLoop reads that as allow-by-default and sends the
+  ## full set (§4.4).
+  let msg = message.toLowerAscii()
+  for spec in specs:
+    var needed = false
+    for phrase in spec.`when`:
+      if phrase.len > 0 and phrase.toLowerAscii() in msg:
+        needed = true
+        break
+    if not needed:
+      continue
+    for tag in spec.tasks:
+      if tag notin result:
+        result.add(tag)
 
 proc validateSpec*(spec: McpServerSpec,
                    env: Table[string, string]): string =
@@ -282,27 +340,33 @@ proc callToolVia*(exchange: ExchangeFn, server, tool: string,
     return "MCP call " & server & "_" & tool & " failed: " & exc.msg
 
 proc toolFor*(server, tname: string, meta: McpToolMeta,
-              exchange: ExchangeFn): Tool =
+              exchange: ExchangeFn, tags: seq[string] = @[]): Tool =
   ## One server tool as a `Tool`: the model reads `modelSafeName`, the
   ## server hears its own `meta.name`. A PROC, not a loop body, on
   ## purpose: a `let` inside a `for` is ONE binding that every closure
   ## shares, so a loop-built registry called the LAST tool of the list
   ## under every name (found live against `engram mcp`: `mem_search`
   ## asked the server for `mem_update`). Parameters are per call, so each
-  ## closure here keeps its own name.
+  ## closure here keeps its own name. `tags` are the server's task
+  ## tags (§4.3), inherited by the tool so the per-turn filter can
+  ## hold it back; a server without `tasks` passes the empty set,
+  ## which `schemasFor` reads as "always send".
   result = Tool(
     name: modelSafeName(server, tname),
     description: "[MCP:" & server & "] " & meta.description,
     inputSchema: meta.inputSchema,
+    tags: tags,
     fn: proc(args: JsonNode): string {.closure.} =
       callToolVia(exchange, server, tname, args))
 
 proc toRegistryTools*(server: string, metas: seq[McpToolMeta],
-                      exchange: ExchangeFn): seq[Tool] =
+                      exchange: ExchangeFn,
+                      tags: seq[string] = @[]): seq[Tool] =
   ## Port of the `Tool(...)` construction in `MCPBridge.start`, one
-  ## `toolFor` per meta (see why it is a proc).
+  ## `toolFor` per meta (see why it is a proc). `tags` are the
+  ## server's task tags (§4.3), inherited by every tool.
   for meta in metas:
-    result.add(toolFor(server, meta.name, meta, exchange))
+    result.add(toolFor(server, meta.name, meta, exchange, tags))
 
 proc expectsReply*(line: string): bool =
   ## JSON-RPC framing rule for the stdio transport: a message without
@@ -542,10 +606,12 @@ proc callToolViaHttp*(post: HttpPostFn, url, sessionId, bearer, server,
 
 proc toRegistryToolsHttp*(server: string, metas: seq[McpToolMeta],
                             post: HttpPostFn, url, sessionId,
-                            bearer: string): seq[Tool] =
+                            bearer: string,
+                            tags: seq[string] = @[]): seq[Tool] =
   ## Port of the `Tool(...)` construction in `MCPBridge.start` for
   ## remote servers: the model reads `modelSafeName`, the server hears
-  ## its own `meta.name` over the recorded `HttpPostFn`.
+  ## its own `meta.name` over the recorded `HttpPostFn`. `tags` are the
+  ## server's task tags (§4.3), inherited by every tool.
   for meta in metas:
     let tname = meta.name
     let pp = post
@@ -556,6 +622,7 @@ proc toRegistryToolsHttp*(server: string, metas: seq[McpToolMeta],
       name: modelSafeName(server, tname),
       description: "[MCP:" & server & "] " & meta.description,
       inputSchema: meta.inputSchema,
+      tags: tags,
       fn: proc(args: JsonNode): string {.closure.} =
         callToolViaHttp(pp, uu, ss, bb, server, tname, args)))
 
@@ -571,7 +638,7 @@ proc connectOneHttp(post: HttpPostFn, spec: McpServerSpec,
   let fromEnv = bearerFor(spec, env)
   let bearer = if fromEnv.len > 0: fromEnv else: storedBearer
   return (toRegistryToolsHttp(spec.name, metas, post, spec.url, sid,
-    bearer), sid)
+    bearer, spec.tasks), sid)
 
 proc liveSleep*(seconds: float) =
   ## The live `SleepFn`: the real wait a person spends on a consent
@@ -663,7 +730,8 @@ proc connectAll*(specs: seq[McpServerSpec], env: Table[string, string],
         raise newException(IOError, "no stdio transport for '" & s.name &
           "'")
       let exc = makeExchange(s)
-      return (true, "", toRegistryTools(s.name, listToolsVia(exc, s), exc))
+      return (true, "", toRegistryTools(s.name, listToolsVia(exc, s), exc,
+        s.tasks))
     except CatchableError as exc:
       return (false, exc.msg, @[])
   for spec in specs:

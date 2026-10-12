@@ -190,7 +190,9 @@ pip install -e '.[mcp]'
 ```
 
 Create `~/.waku/mcp.json` and any Model Context Protocol server's tools appear to
-the agent, namespaced `<server>_<tool>` (and in the dashboard's Tools ▸ MCP tab):
+the agent, namespaced `<server>_<tool>` (and in the dashboard's Tools ▸ MCP tab). A
+server can declare `tasks` and `when` so its tools reach the model only on matching
+turns; a server without `tasks` appears on every turn as before:
 
 ```json
 {"servers": [{"name": "fs", "command": "npx",

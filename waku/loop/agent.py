@@ -96,6 +96,7 @@ def run_loop(
     observer: Observer | None = None,
     stream: bool = False,
     trim: Callable[[list[dict]], None] | None = None,
+    task_tags: set[str] | None = None,
 ) -> LoopResult:
     """Run one agent turn. `messages` is mutated in place — after the call it
     contains the full working memory of the turn (assistant thoughts, tool
@@ -109,10 +110,26 @@ def run_loop(
     before each later call, so one large result is not re-sent on every
     iteration after it. app.py chains reports.shrink_read, which cuts a whole
     earlier research report to its digest, and trim.shrink_seen, which cuts
-    any other long result to its opening; None leaves `messages` as they are."""
+    any other long result to its opening; None leaves `messages` as they are.
+
+    `task_tags` is the per-turn filter signal (mcp-per-turn-filter
+    proposal §4.1): the schemas sent to the model come from
+    tools.schemas_for(task_tags), so a turn that names one
+    task carries only that task's MCP tools. None or an empty
+    signal is allow-by-default (§4.4) and sends the full set —
+    the registry itself is untouched, so execute() still runs
+    a tool the filter held back."""
     notify = observer or (lambda kind, ev: None)
     result = LoopResult(reply="")
     can_stream = stream and hasattr(client.messages, "stream")
+    # The turn's view of the registry, computed once: the same
+    # filtered set goes out on every call this turn, including
+    # the tools-off call after the iteration limit, which must
+    # still carry the schemas its history's tool_use blocks name.
+    schemas = tools.schemas_for(task_tags)
+    # §4.4: what the model actually saw this turn, for traces
+    # and the dashboard — the names, in registry order.
+    tools_sent = [t["name"] for t in schemas]
 
     for iteration in range(1, max_iterations + 1):
         result.iterations = iteration
@@ -125,7 +142,7 @@ def run_loop(
             try:
                 with client.messages.stream(
                     model=model, system=system, messages=messages,
-                    tools=tools.schemas(), max_tokens=max_tokens,
+                    tools=schemas, max_tokens=max_tokens,
                 ) as s:
                     for delta in s.text_stream:
                         notify("text", {"delta": delta})
@@ -143,11 +160,12 @@ def run_loop(
                 model=model,
                 system=system,
                 messages=messages,
-                tools=tools.schemas(),
+                tools=schemas,
                 max_tokens=max_tokens,
             )
         notify("llm", {"iteration": iteration, "stop_reason": response.stop_reason,
-                       "usage": {"in": response.usage.input_tokens, "out": response.usage.output_tokens}})
+                       "usage": {"in": response.usage.input_tokens, "out": response.usage.output_tokens},
+                       "tools_sent": tools_sent})
 
         # the assistant's turn (text and/or tool requests) joins working memory
         messages.append({"role": "assistant", "content": response.content})
@@ -178,15 +196,16 @@ def run_loop(
     # in `messages`, so ask once more with tools off for an answer from it,
     # rather than throwing it away. If that call fails, say so the old way.
     result.limit_reached = True
-    result.reply = _final_answer(client, model, system, messages, tools, max_tokens,
-                                 notify, trim, max_iterations + 1) or LIMIT_REPLY
+    result.reply = _final_answer(client, model, system, messages, schemas,
+                                 max_tokens, notify, trim, max_iterations + 1) or LIMIT_REPLY
     return result
 
 
-def _final_answer(client, model: str, system: str, messages: list[dict], tools: ToolRegistry,
+def _final_answer(client, model: str, system: str, messages: list[dict], schemas: list,
                   max_tokens: int, notify: Observer, trim, iteration: int) -> str:
     """The one tools-off call after max_iterations: its text, or "" when it
-    failed or wrote none. The tool definitions are still sent, because
+    failed or wrote none. The tool definitions are still sent (this
+    turn's filtered set, never the full registry), because
     Anthropic refuses a history with tool_use blocks and no tools; tool_choice
     "none" is what stops the model calling one."""
     if trim is not None:
@@ -194,7 +213,7 @@ def _final_answer(client, model: str, system: str, messages: list[dict], tools: 
     try:
         response = client.messages.create(
             model=model, system=f"{system}\n\n{LIMIT_NOTE}", messages=messages,
-            tools=tools.schemas(), tool_choice={"type": "none"}, max_tokens=max_tokens)
+            tools=schemas, tool_choice={"type": "none"}, max_tokens=max_tokens)
     except Exception as exc:
         log.warning("the final answer after the iteration limit failed: %s", error_text(exc))
         return ""
@@ -202,7 +221,8 @@ def _final_answer(client, model: str, system: str, messages: list[dict], tools: 
     # and the receipt counts it apart; final_answer is the flag to look for
     notify("llm", {"iteration": iteration, "kind": "final", "final_answer": True,
                    "stop_reason": response.stop_reason,
-                   "usage": {"in": response.usage.input_tokens, "out": response.usage.output_tokens}})
+                   "usage": {"in": response.usage.input_tokens, "out": response.usage.output_tokens},
+                   "tools_sent": [t["name"] for t in schemas]})
     text = [b for b in response.content if b.type == "text"]
     if text:
         messages.append({"role": "assistant", "content": text})

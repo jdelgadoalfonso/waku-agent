@@ -6,6 +6,7 @@ session → loop. If you want to understand the repo in one place, start here.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from waku.config import Settings, load_settings
@@ -16,13 +17,30 @@ from waku.loop.models import get_client
 from waku.memory import brain, reports
 from waku.ops import receipt as receipts
 from waku.ops.tracing import Tracer, compose, metered
-from waku.runtime.session import Session
+from waku.runtime.session import Session, derive_task_tags
 from waku.tools import build_registry
 from waku.tools.waku_memory import get_via, remember_via, search_via, tool_name
 
 # The Waku Memory tools that read memory. What they return this turn is
 # already kept, so consolidation must not keep it again.
 MEMORY_READS = ("memory.search", "memory.get", "memory.recall")
+
+
+def _mcp_servers(home) -> list[dict]:
+    """mcp.json's server entries — the per-turn filter's
+    signal source (mcp-per-turn-filter §4.2/§4.3). Read from
+    the file, like the dashboard and the trace's server
+    names, because the declarations (tasks/when) describe
+    intent even for a server that did not connect this run."""
+    config = home / "mcp.json"
+    if not config.exists():
+        return []
+    try:
+        servers = json.loads(config.read_text(encoding="utf-8")).get("servers", [])
+    except (OSError, ValueError):
+        return []
+    return [s for s in servers if isinstance(s, dict)]
+
 
 log = logging.getLogger(__name__)
 
@@ -227,6 +245,12 @@ class Waku:
                 notify("tool", call)
             system += known.context
 
+        # The per-turn filter signal (mcp-per-turn-filter §4.2):
+        # the message decides which task-tagged MCP tools this
+        # turn's model call sees. No match → empty signal →
+        # the full set (allow-by-default, §4.4).
+        task_tags = derive_task_tags(user_message, _mcp_servers(self.settings.home))
+
         result = run_loop(
             client=self.client,
             model=self.settings.model,
@@ -237,6 +261,7 @@ class Waku:
             max_tokens=self.settings.max_tokens,
             observer=notify,
             stream=stream,
+            task_tags=task_tags,
             # before each later call, a whole earlier report the model read
             # is cut to its digest (spec 009 A), and any other long result it
             # read is cut to its opening (waku/loop/trim.py)

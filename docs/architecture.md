@@ -272,7 +272,7 @@ shows those instead. A proxy that does not know the turn leaves the estimate.
 - `waku/tools/` — what the agent can call: `calendar.py`, `google_calendar.py`,
   `apple.py`, `notes.py`, `messages.py`, `search.py`, `github.py`,
   `workspace.py`, `memory_admin.py`, the MCP client and `experimental.py`.
-  `registry.py` decides which are on.
+  `registry.py` decides which are registered. The per-turn filter decides which reach the model on a turn: `schemas_for()` sends only the tools whose tags match the turn, and a server without `tasks` in `mcp.json` reaches every turn.
 - `waku/memory/` — semantic (FTS5), episodic and procedural (SKILL.md) memory,
   plus `retrieval_gate.py` (hero 1: does this turn need memory?) and
   `consolidation.py` (every N exchanges), `reports.py` (a research report

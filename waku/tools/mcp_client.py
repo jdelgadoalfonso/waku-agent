@@ -37,6 +37,12 @@ HTTP+SSE transport is deprecated and is deliberately not supported here.
 Each server's tools register as `<server>_<tool>` on the ToolRegistry. A server
 that fails to connect is skipped with a warning — Waku still starts.
 
+A server may also declare `tasks`: a list of tags ("code",
+"calendar") that each of its tools inherits, so the per-turn
+filter can hold its schemas back until a turn needs them
+(proposal §4.3). A server without `tasks` always reaches the
+model, as before.
+
 A remote server keeps each session in its own memory, so a server that
 restarts (a redeploy) forgets every session it had and answers the next call
 with HTTP 404 "Session not found". The MCP spec says the client must then
@@ -121,6 +127,28 @@ def _auth_hint(spec: dict, auth_dir: Path) -> str:
     )
 
 
+def _server_tasks(spec: dict) -> set[str]:
+    """The task tags a server declares in mcp.json (§4.3).
+
+    `tasks` is an optional list of tags that every tool the
+    server publishes inherits, so the per-turn filter can hold
+    its schemas back until a turn needs them. A server without
+    `tasks` keeps the current behavior and always reaches the
+    model. A `tasks` that is not a list is config the file
+    cannot use: it is ignored with a warning, so the server
+    stays always visible and Waku still starts.
+    """
+    tasks = spec.get("tasks")
+    if tasks is None:
+        return set()
+    if not isinstance(tasks, list):
+        log.warning("mcp.json: server '%s' declares a 'tasks' that "
+                    "is not a list; the server stays always visible",
+                    spec.get("name"))
+        return set()
+    return {tag for tag in tasks if isinstance(tag, str)}
+
+
 class MCPBridge:
     def __init__(self, config_path: Path, timeout: float = 30.0,
                  call_timeout: float | None = None):
@@ -173,6 +201,9 @@ class MCPBridge:
         from waku.tools.treg import resolve
 
         servers = resolve(servers)
+        # Each server's spec by name, so the tools built below carry
+        # the server's `tasks` tags (§4.3).
+        specs = {s["name"]: s for s in servers}
         # Before the coroutine, not as fut.result()'s argument: _deadline is
         # the first import of the `mcp` package in this thread, and
         # _connect_one imports it on the loop thread. Two threads importing it
@@ -192,6 +223,11 @@ class MCPBridge:
                     # rename above is only how the model refers to the tool,
                     # never what goes back over the wire.
                     fn=(lambda srv=srv, tname=meta["name"], **kw: self.call(srv, tname, kw)),
+                    # The server's task tags (§4.3), inherited by every
+                    # tool it publishes. A server without `tasks` passes
+                    # an empty set, which schemas_for() reads as
+                    # "always send".
+                    tags=_server_tasks(specs.get(srv, {})),
                 ))
         return tools
 

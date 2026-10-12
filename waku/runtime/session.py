@@ -51,6 +51,38 @@ LOOKUP_RULE = ("\nWhen a lookup of the same target (a channel, profile, company 
                "user gave, or ask them for it.")
 
 
+def derive_task_tags(user_message: str, servers) -> set[str]:
+    """The per-turn filter signal from the user's message
+    (mcp-per-turn-filter proposal §4.2).
+
+    Each server in `servers` (mcp.json's entries) may declare
+    `tasks`: tags its tools inherit, and `when`: the phrases
+    that mean the turn needs them. A server contributes its
+    tasks when any of its `when` phrases appears in the message,
+    case-insensitively. A server that declares tasks but no
+    `when` contributes nothing on its own — a tag with no
+    trigger would fire on every turn, which is a false positive,
+    not a filter. The result may be empty; run_loop reads that
+    as allow-by-default and sends the full set (§4.4)."""
+    message = (user_message or "").lower()
+    tags: set[str] = set()
+    for spec in servers or []:
+        if not isinstance(spec, dict):
+            continue
+        when = spec.get("when")
+        phrases = ([when] if isinstance(when, str)
+                   else [w for w in when if isinstance(w, str)]
+                   if isinstance(when, list) else [])
+        # an empty phrase would match every message, so it is no
+        # signal at all
+        if not any(p and p.lower() in message for p in phrases):
+            continue
+        tasks = spec.get("tasks")
+        if isinstance(tasks, list):
+            tags.update(t for t in tasks if isinstance(t, str))
+    return tags
+
+
 def load_soul(settings: Settings) -> str:
     """SOUL.md is the editable persona file, created on first run. Changing it
     changes who your Waku is — that's procedural memory at its simplest."""

@@ -108,17 +108,24 @@ proc llmNode*(name: string, promptTemplate: string, outKey: string,
 proc agentNode*(name: string, outKey: string, client: LlmClient,
                 model: string, system: string, tools: ToolRegistry,
                 maxIterations = 10, maxTokens = 2048, messageKey = "message",
+                taskTags: seq[string] = @[],
                 kind = "agent", maxVisits = 1, onError = ""): Node =
   ## A full run_loop turn as one node — the sub-agent story. Same loop, same
   ## tracing (the engine tags its llm/tool events with node=), just a scoped
   ## tool registry and its own working memory. runLoop itself is untouched.
   ## Python keeps the LoopResult object in state; JsonNode is the state
   ## dialect here, so the turn serializes to reply / tool_calls / iterations.
+  ## `taskTags` is the per-turn filter signal (mcp-per-turn-filter §4.2),
+  ## derived by the builder the same way `runFullTurn` derives it — the
+  ## turn's message against mcp.json's `tasks`/`when` declarations — and
+  ## handed to the node like any other input. Empty means allow-by-default:
+  ## the full set (§4.4).
 
   proc run(state: JsonNode, notify: Observer): JsonNode =
     var messages = @[%*{"role": "user", "content": state[messageKey]}]
     let turn = runLoop(client, model, system, messages, tools,
-                       maxIterations, maxTokens, notify)
+                       maxIterations, maxTokens, notify,
+                       taskTags = taskTags)
     var outp = newJObject()
     outp[outKey] = %*{"reply": turn.reply, "tool_calls": %turn.toolCalls,
                       "iterations": turn.iterations}

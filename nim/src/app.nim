@@ -55,6 +55,7 @@ import ./episodes
 import ./factstore
 import ./langmem
 import ./mem0
+import ./mcp
 import ./obsidian
 import ./pgvector
 import ./zep
@@ -293,9 +294,22 @@ proc runFullTurn*(w: var Waku, userMessage: string, notify: Observer,
       notify("tool", call)
     if known.context.len > 0:
       system = system & "\n" & known.context
+  # The per-turn filter signal (mcp-per-turn-filter §4.2): the
+  # message decides which task-tagged MCP tools this turn's model
+  # call sees. The declarations are read from mcp.json itself —
+  # like the dashboard's and the trace's server names — because
+  # they describe intent even for a server that did not connect
+  # this run. No match, or no readable file, is an empty signal:
+  # the full set (allow-by-default, §4.4).
+  var mcpSpecs: seq[McpServerSpec] = @[]
+  try:
+    mcpSpecs = loadMcpServers(w.settings.home)
+  except ValueError:
+    discard
+  let taskTags = deriveTaskTags(userMessage, mcpSpecs)
   var res = runLoop(w.client, w.settings.model, system, messages, w.tools,
           w.settings.maxIterations, w.settings.maxTokens, notify, stream,
-          chainTrim(toTrim(shrinkRead), toTrim(shrinkSeen)))
+          chainTrim(toTrim(shrinkRead), toTrim(shrinkSeen)), taskTags)
   res.readFirst = knownCalls
   res.used = knownUsed
   return res

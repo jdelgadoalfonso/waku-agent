@@ -8,7 +8,7 @@ adapted from launch-agentic-rag's app/agents/tools/registry.py.)
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -24,6 +24,11 @@ class Tool:
     # (delegate_task uses this to relay pi's live events). The underscore keeps
     # it out of the model-facing schema — the model never supplies it.
     wants_notify: bool = False
+    # Optional tags for the per-turn filter (mcp-per-turn-filter
+    # proposal §4.2): empty means "always send", so flagship tools
+    # keep their current behavior. MCP tools inherit their server's
+    # task tags.
+    tags: set[str] = field(default_factory=set)
 
     def to_api(self) -> dict[str, Any]:
         """The shape the Messages API expects in its `tools=` parameter."""
@@ -46,6 +51,20 @@ class ToolRegistry:
 
     def schemas(self) -> list[dict[str, Any]]:
         return [t.to_api() for t in self._tools.values()]
+
+    def schemas_for(self, task_tags: set[str] | None) -> list[dict[str, Any]]:
+        """The per-turn view run_loop sends as its `tools=` parameter
+        (proposal §4.1). A None or empty signal is allow-by-default and
+        returns the full set; otherwise a tool is sent when it has no
+        tags, or its tags intersect the signal. The registry keeps every
+        tool either way — execute() still runs a filtered-out name when
+        the history already contains its call."""
+        if not task_tags:
+            return self.schemas()
+        return [
+            t.to_api() for t in self._tools.values()
+            if not t.tags or t.tags & task_tags
+        ]
 
     def execute(self, name: str, args: dict[str, Any], notify=None) -> str:
         """Run one tool call safely: the model observes errors as text instead

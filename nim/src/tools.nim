@@ -41,6 +41,11 @@ type
     inputSchema*: JsonNode
     fn*: ToolFn
     wantsNotify*: bool
+    tags*: seq[string]
+      ## Optional tags for the per-turn filter (mcp-per-turn-filter
+      ## proposal §4.2): empty means "always send", so flagship tools
+      ## keep their current behavior. MCP tools inherit their server's
+      ## task tags.
 
   ToolRegistry* = object
     tools*: seq[Tool]
@@ -62,6 +67,28 @@ proc schemas*(reg: ToolRegistry): seq[JsonNode] =
   ## Every tool's API shape, in registration order.
   for t in reg.tools:
     result.add(t.toApi())
+
+proc tagsMatch(tags, taskTags: seq[string]): bool =
+  ## Whether any of `tags` appears in `taskTags` — the set
+  ## intersection the filter tests, as a linear scan: both are
+  ## short (a server's declared tasks against a turn's signal).
+  for t in tags:
+    if t in taskTags:
+      return true
+  return false
+
+proc schemasFor*(reg: ToolRegistry, taskTags: seq[string]): seq[JsonNode] =
+  ## The per-turn view `runLoop` sends as its `tools=` parameter
+  ## (proposal §4.1). An empty signal is allow-by-default (§4.4)
+  ## and returns the full set; otherwise a tool is sent when it has
+  ## no tags, or its tags intersect the signal. The registry keeps
+  ## every tool either way — `execute` still runs a filtered-out
+  ## name when the history already contains its call.
+  if taskTags.len == 0:
+    return reg.schemas()
+  for t in reg.tools:
+    if t.tags.len == 0 or tagsMatch(t.tags, taskTags):
+      result.add(t.toApi())
 
 proc execute*(reg: ToolRegistry, name: string, args: JsonNode): string =
   ## Run one tool call safely: the model observes errors as text instead of
