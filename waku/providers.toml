@@ -219,6 +219,22 @@ small_model = "deepseek-v4-flash"
 key_url = "https://opencode.ai/zen"
 price = [0.435, 0.87]
 
+# Cline serves many labs' models behind one OpenAI-compatible Chat
+# Completions endpoint, with `provider/model` ids like OpenRouter. The
+# defaults below are the docs' own picks: claude-sonnet-4-6 for best coding
+# performance, deepseek-chat for fast and cheap responses. The price tracks
+# the main default (Claude Sonnet at $3.00/M in, $15.00/M out); the live
+# catalog overrides it per model where one exists.
+
+[cline]
+kind = "openai"
+key_env = "CLINE_API_KEY"
+base_url = "https://api.cline.bot/api/v1"
+model = "anthropic/claude-sonnet-4-6"
+small_model = "deepseek/deepseek-chat"
+key_url = "https://app.cline.bot"
+price = [3.0, 15.0]
+
 # The hosted free tier. Hidden on a local machine: with no
 # WAKU_PLATFORM_BASE_URL set it appears in no page, list or error message,
 # and never in .env.example. In a tenant container the four WAKU_PLATFORM_*
