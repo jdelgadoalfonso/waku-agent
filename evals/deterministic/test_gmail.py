@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import sys
+from datetime import UTC, datetime
 from types import ModuleType
 
 import pytest
@@ -383,6 +384,16 @@ def _sending_registry(tmp_path, monkeypatch, service, *, send_for_real, build_ra
     return build_registry(conn, settings, None), conn
 
 
+class _FrozenNow:
+    """datetime.now() pinned to one instant, so two drafts land in the same one."""
+
+    def __init__(self, fixed):
+        self._fixed = fixed
+
+    def now(self, tz=None):
+        return self._fixed
+
+
 def _drafts(home):
     outbox = home / "outbox"
     return sorted(outbox.glob("*.txt")) if outbox.exists() else []
@@ -496,3 +507,27 @@ def test_a_refused_send_degrades_to_a_sentence(tmp_path, monkeypatch):
 
     assert "insufficient scope" in out
     assert not out.startswith("Error running")
+
+
+def test_two_drafts_in_the_same_second_both_survive(tmp_path, monkeypatch):
+    """The outbox is the user's text, not a cache: a second draft to the same
+    person must never overwrite the first. Time is frozen here so the collision
+    is the tested situation rather than a lucky gap between microseconds."""
+    registry, conn = _sending_registry(tmp_path, monkeypatch, None, send_for_real=False, build_raises=True)
+    frozen = datetime(2026, 8, 5, 9, 0, 0, tzinfo=UTC)
+    monkeypatch.setattr(gmail, "datetime", _FrozenNow(frozen))
+    try:
+        first = registry.execute(
+            "gmail_send", {"to": "ana@example.com", "subject": "One", "body": "first"}
+        )
+        second = registry.execute(
+            "gmail_send", {"to": "ana@example.com", "subject": "Two", "body": "second"}
+        )
+    finally:
+        conn.close()
+
+    drafts = _drafts(tmp_path)
+    assert len(drafts) == 2
+    texts = "\n".join(p.read_text(encoding="utf-8") for p in drafts)
+    assert "first" in texts and "second" in texts
+    assert first != second

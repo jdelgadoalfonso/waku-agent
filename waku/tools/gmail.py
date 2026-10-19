@@ -161,6 +161,12 @@ def _draft(
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
     safe_to = "".join(c if c.isalnum() else "-" for c in to)[:40]
     path = home / "outbox" / f"{stamp}-{safe_to}.txt"
+    # A second draft to the same person must never overwrite the first: the
+    # outbox holds the user's own words, not a cache we may drop.
+    n = 1
+    while path.exists():
+        n += 1
+        path = home / "outbox" / f"{stamp}-{safe_to}-{n}.txt"
     path.parent.mkdir(parents=True, exist_ok=True)
     headers = [f"To: {to}", f"Subject: {subject}"]
     if thread_id:
