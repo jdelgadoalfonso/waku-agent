@@ -61,6 +61,15 @@ def build_registry(conn: sqlite3.Connection, settings: Settings, memory=None) ->
         for t in apple.make_tools():
             registry.register(t)
 
+    # Gmail, read side (opt-in; own token at .waku/gmail-token.json). Registered
+    # only with WAKU_GMAIL on, so an untouched machine carries no mail tool in
+    # any prompt. gmail_send lands behind its own switch in a later commit.
+    if settings.gmail:
+        from waku.tools import gmail
+
+        for t in gmail.make_tools(settings.home):
+            registry.register(t)
+
     # Read-only GitHub via the gh CLI (opt-in; uses gh's own auth, no token here).
     if getattr(settings, "gh_tool", False):
         from waku.tools import github
