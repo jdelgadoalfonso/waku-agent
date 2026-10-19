@@ -7,6 +7,7 @@ import std/json
 import std/os
 import std/strutils
 import std/unittest
+import std/uri
 
 import ../src/connect
 import ../src/mcp
@@ -90,13 +91,25 @@ suite "connect google":
     let doc = %*{"access_token": "ya", "refresh_token": "rt",
                   "expires_in": 3600}
     let msg = googleConnect(home, googleSeams(doc))
-    assert "connected (read-only via credentials.json override)" in msg
+    assert "connected (via credentials.json override)" in msg
     assert "google-token.json" in msg
     let cached = parseJson(readFile(home / "google-token.json"))
     assert cached["token"].getStr() == "ya"
     assert cached["refresh_token"].getStr() == "rt"
     assert cached["client_id"].getStr() == "cid"
     assert cached["expiry"].getBiggestInt() == 1700003600
+    # One consent covers the calendar and, for parity, Gmail's two scopes.
+    var asked: seq[string]
+    for scope in cached["scopes"]:
+      asked.add(scope.getStr())
+    assert asked == googleConsentScopes()
+
+  test "one consent asks for the calendar and Gmail scopes":
+    let client = %*{"client_id": "cid", "client_secret": "cs"}
+    let url = googleAuthUrl(client, "http://localhost:1")
+    assert encodeUrl(googleScope) in url
+    for scope in gmailScopes:
+      assert encodeUrl(scope) in url
 
 suite "connect waku-memory":
   test "a fresh home is added, then signed in":

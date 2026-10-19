@@ -36,7 +36,15 @@ const
     ## What `waku connect` accepts, in registry order.
 
   googleScope* = "https://www.googleapis.com/auth/calendar.events.readonly"
-    ## The one read-only scope both client sources request.
+    ## The one read-only scope the calendar's client sources request.
+
+  gmailScopes* = @["https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send"]
+    ## Gmail parity, deliberately scope-only: this binary carries no Gmail
+    ## tools (the row in `integrations.nim` plus these scopes is the whole
+    ## port, and `docs/status.md` declares the asymmetry), but a sign-in here
+    ## must not leave the same home unable to read mail once the Python side
+    ## asks. Sending still needs WAKU_GMAIL_SEND there.
 
   googleAuthUri* = "https://accounts.google.com/o/oauth2/auth"
   googleTokenUri* = "https://oauth2.googleapis.com/token"
@@ -133,6 +141,12 @@ proc googleClient*(home: string): tuple[found: bool, client: JsonNode,
     return (false, newJNull(), "")
   return (false, newJNull(), "")
 
+proc googleConsentScopes*(): seq[string] =
+  ## What one consent asks for: the calendar's read scope plus Gmail's, so a
+  ## single click covers both capabilities.
+  @[googleScope] & gmailScopes
+
+
 proc googleAuthUrl*(client: JsonNode, redirectUri: string): string =
   ## The consent URL for the loopback flow (offline scope, so the cached
   ## token carries a refresh token).
@@ -141,7 +155,7 @@ proc googleAuthUrl*(client: JsonNode, redirectUri: string): string =
     if u.len > 0: u else: googleAuthUri
   authUri & "?client_id=" & encodeUrl(client.jget("client_id").getStr()) &
     "&redirect_uri=" & encodeUrl(redirectUri) &
-    "&response_type=code&scope=" & encodeUrl(googleScope) &
+    "&response_type=code&scope=" & encodeUrl(googleConsentScopes().join(" ")) &
     "&access_type=offline&prompt=consent"
 
 proc googleExchangeBody*(client: JsonNode, code, redirectUri: string): string =
@@ -205,7 +219,7 @@ proc googleConnect*(home: string, seams: GoogleSeams): string =
     "token_uri": tokenUri,
     "client_id": client.jget("client_id").getStr(),
     "client_secret": client.jget("client_secret").getStr(),
-    "scopes": [googleScope], "expiry": seams.nowUnix + expiresIn}
+    "scopes": googleConsentScopes(), "expiry": seams.nowUnix + expiresIn}
   let path = home / "google-token.json"
   try:
     createDir(home)
@@ -213,8 +227,8 @@ proc googleConnect*(home: string, seams: GoogleSeams): string =
   except IOError as exc:
     return "Google sign-in failed or was cancelled (" & exc.msg &
       "). Nothing was saved."
-  return "Google Calendar connected (read-only via " & source & "). " &
-    "Token cached at " & path & "."
+  return "Google connected (via " & source & "): calendar read-only, " &
+    "plus the mail scopes the Gmail tools use. Token cached at " & path & "."
 
 proc addMemoryServer*(home: string): tuple[status: string, spec: JsonNode] =
   ## Make sure `mcp.json` names Waku Memory: "added", "present", "moved"

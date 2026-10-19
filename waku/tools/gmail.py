@@ -29,7 +29,11 @@ from pathlib import Path
 from waku.tools.registry import Tool
 
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
+# Reading asks for the narrow scope; the one-time consent covers sending too, so
+# flipping WAKU_GMAIL_SEND later never needs a second approval window.
 DEFAULT_SCOPES = [GMAIL_READONLY_SCOPE]
+CONSENT_SCOPES = [GMAIL_READONLY_SCOPE, GMAIL_SEND_SCOPE]
 # Both numbers exist because the model can pass any `limit` it likes: one caps
 # what we ask Gmail for, the other what a single reply may dump into a prompt.
 DEFAULT_LIMIT = 10
@@ -47,6 +51,50 @@ _SETUP_HINT = (
 
 def _token_path(home: Path) -> Path:
     return home / "gmail-token.json"
+
+
+def connect(home: Path) -> str:
+    """Open the browser, get consent for mail, cache the token — the ONE place
+    a Gmail window may appear, called from the CLI or the dashboard, never
+    mid-turn. Same loopback door and same OAuth client as the calendar, but its
+    own file: revoking mail leaves the calendar working, and vice versa."""
+    try:
+        from google_auth_oauthlib.flow import InstalledAppFlow
+    except ImportError:
+        return _INSTALL_HINT
+
+    from waku.tools.google_calendar import BUNDLED_CLIENT_CONFIG
+
+    own = home / "credentials.json"
+    try:
+        if own.exists():
+            flow = InstalledAppFlow.from_client_secrets_file(
+                str(own), scopes=CONSENT_SCOPES
+            )
+            source = "credentials.json override"
+        else:
+            bundled = BUNDLED_CLIENT_CONFIG.get("installed", {})
+            if not bundled.get("client_id") or not bundled.get("client_secret"):
+                return (
+                    "Gmail's bundled OAuth client is not configured yet. Add "
+                    f"{home / 'credentials.json'} to use your own Desktop OAuth client."
+                )
+            flow = InstalledAppFlow.from_client_config(
+                BUNDLED_CLIENT_CONFIG, scopes=CONSENT_SCOPES
+            )
+            source = "bundled OAuth client"
+        # port=0 = any free local port; the redirect lands back on this machine.
+        creds = flow.run_local_server(port=0)
+    except Exception as exc:
+        return f"Gmail sign-in failed or was cancelled ({type(exc).__name__}). Nothing was saved."
+
+    path = _token_path(home)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(creds.to_json(), encoding="utf-8")
+    return (
+        f"Gmail connected via {source}: read access, plus send access that stays "
+        f"unused until WAKU_GMAIL_SEND is on. Token cached at {path}."
+    )
 
 
 def _load_credentials(home: Path, scopes: list[str]):

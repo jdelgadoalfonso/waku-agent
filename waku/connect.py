@@ -26,11 +26,29 @@ def usage() -> str:
 
 
 def connect(name: str, home: Path) -> str:
-    target = CONNECTORS.get(name.strip().lower())
+    key = name.strip().lower()
+    target = CONNECTORS.get(key)
     if target is None:
         return f"Nothing called '{name}' to connect. " + usage()
     module_name, _, fn_name = target.partition(":")
-    return getattr(importlib.import_module(module_name), fn_name)(home)
+    reply = getattr(importlib.import_module(module_name), fn_name)(home)
+    return reply + _mail_consent(key, home)
+
+
+def _mail_consent(name: str, home: Path) -> str:
+    """`waku connect google` is the command an unconnected mailbox tells the
+    user to run, so with WAKU_GMAIL on it grants mail too: its own approval and
+    its own token, on the same loopback door. With the flag off nobody gets an
+    extra Google screen for a capability they never enabled."""
+    if name != "google":
+        return ""
+    from waku.config import load_settings
+
+    if not load_settings().gmail:
+        return ""
+    from waku.tools import gmail
+
+    return " " + gmail.connect(home)
 
 
 def cli_main(argv: list[str]) -> int:

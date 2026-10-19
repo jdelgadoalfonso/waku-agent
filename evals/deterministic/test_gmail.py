@@ -531,3 +531,94 @@ def test_two_drafts_in_the_same_second_both_survive(tmp_path, monkeypatch):
     texts = "\n".join(p.read_text(encoding="utf-8") for p in drafts)
     assert "first" in texts and "second" in texts
     assert first != second
+
+
+# --- consent: its own approval, its own file -------------------------------
+#
+# S6/D2: mail gets a token of its own. Signing in to the calendar must not
+# silently widen the calendar's token, and revoking mail must not break it.
+
+
+_ASKED: list[dict] = []
+
+
+class _FakeFlow:
+    """InstalledAppFlow stand-in. Records what consent was asked for, and never
+    opens a browser."""
+
+    @classmethod
+    def from_client_secrets_file(cls, path, scopes=None):
+        _ASKED.append({"source": path, "scopes": list(scopes or [])})
+        return cls()
+
+    @classmethod
+    def from_client_config(cls, config, scopes=None):
+        _ASKED.append({"source": "bundled", "scopes": list(scopes or [])})
+        return cls()
+
+    def run_local_server(self, port=0):
+        return _FakeCredentials()
+
+
+class _FakeCredentials:
+    def to_json(self):
+        return '{"token": "fake-access-token", "refresh_token": "r"}'
+
+
+@pytest.fixture
+def flow(monkeypatch):
+    module = ModuleType("google_auth_oauthlib.flow")
+    module.InstalledAppFlow = _FakeFlow
+    monkeypatch.setitem(sys.modules, "google_auth_oauthlib", ModuleType("google_auth_oauthlib"))
+    monkeypatch.setitem(sys.modules, "google_auth_oauthlib.flow", module)
+    _ASKED.clear()
+    return _ASKED
+
+
+def test_connect_grants_mail_read_and_send_into_its_own_file(tmp_path, flow):
+    """S6: the consent asks for both mail scopes, and the token lands in
+    gmail-token.json while the calendar's file is left alone."""
+    (tmp_path / "credentials.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "google-token.json").write_text('{"token": "calendar"}', encoding="utf-8")
+
+    out = gmail.connect(tmp_path)
+
+    assert flow[0]["scopes"] == [gmail.GMAIL_READONLY_SCOPE, gmail.GMAIL_SEND_SCOPE]
+    assert (tmp_path / "gmail-token.json").exists()
+    assert (tmp_path / "google-token.json").read_text(encoding="utf-8") == '{"token": "calendar"}'
+    assert "gmail-token.json" in out
+
+
+def test_connect_without_the_extra_opens_no_browser(tmp_path, monkeypatch):
+    """No [gcal] extra is a sentence naming the install, not a crash and not a
+    half-finished consent."""
+    monkeypatch.setitem(sys.modules, "google_auth_oauthlib.flow", None)
+
+    out = gmail.connect(tmp_path)
+
+    assert "gcal" in out
+    assert not (tmp_path / "gmail-token.json").exists()
+
+
+def test_connect_google_also_grants_mail_only_when_gmail_is_enabled(tmp_path, monkeypatch):
+    """S7 names `waku connect google` as the fix for an unconnected mailbox, so
+    that command has to grant mail too -- but only for a person who turned
+    WAKU_GMAIL on. Nobody else gets an extra Google approval screen."""
+    from waku import connect as connect_module
+    from waku.tools import google_calendar
+
+    calls = []
+    monkeypatch.setattr(google_calendar, "connect", lambda home: calls.append("calendar") or "calendar: ok")
+    monkeypatch.setattr(gmail, "connect", lambda home: calls.append("gmail") or "gmail: ok")
+    monkeypatch.setenv("WAKU_HOME", str(tmp_path))
+
+    monkeypatch.delenv("WAKU_GMAIL", raising=False)
+    off = connect_module.connect("google", tmp_path)
+    assert calls == ["calendar"]
+    assert "gmail: ok" not in off
+
+    calls.clear()
+    monkeypatch.setenv("WAKU_GMAIL", "1")
+    on = connect_module.connect("google", tmp_path)
+    assert calls == ["calendar", "gmail"]
+    assert "calendar: ok" in on and "gmail: ok" in on
