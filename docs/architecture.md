@@ -270,7 +270,7 @@ shows those instead. A proxy that does not know the turn leaves the estimate.
   structure around the loop. The loop never changes, a graph node can be a loop
   turn, and every failure fails open to the plain loop.
 - `waku/tools/` — what the agent can call: `calendar.py`, `google_calendar.py`,
-  `apple.py`, `notes.py`, `messages.py`, `search.py`, `github.py`,
+  `gmail.py`, `apple.py`, `notes.py`, `messages.py`, `search.py`, `github.py`,
   `workspace.py`, `memory_admin.py`, the MCP client and `experimental.py`.
   `registry.py` decides which are registered. The per-turn filter decides which reach the model on a turn: `schemas_for()` sends only the tools whose tags match the turn, and a server without `tasks` in `mcp.json` reaches every turn.
 - `waku/memory/` — semantic (FTS5), episodic and procedural (SKILL.md) memory,

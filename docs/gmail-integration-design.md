@@ -1,7 +1,9 @@
 # Gmail as a Waku capability
 
-**Status:** proposal — nothing implemented. Needs a maintainer's yes before any
-code (conventions §2: a new core tool is a Proposal).
+**Status:** implemented. The row, the three tools, the draft-first send guard
+and the separate mail consent are in; the one reduction from the sketch below
+(the row's third env field and its probe) is recorded under "The Connections
+row".
 
 **Related:** [providers-registry.md](providers-registry.md) (the precedent for
 "capability as data"), [integrations.md](integrations.md),
@@ -102,13 +104,22 @@ if it were empty.
 ```toml
 [gmail]
 key = "gmail", group = "Calendar & Productivity", name = "Gmail"
-env = WAKU_GMAIL (BOOL), WAKU_GMAIL_SEND (BOOL), WAKU_GMAIL_QUERY_LIMIT (TEXT, default 10)
+env = WAKU_GMAIL (BOOL), WAKU_GMAIL_SEND (BOOL)
 extra = "gcal", import_name = "googleapiclient"
 setup_url = the Google Cloud console Gmail API page
 reload = AGENT
 enabled = bool(WAKU_GMAIL)
-probe = a cheap profile call (getProfile) that reports the address or the reason
 ```
+
+Two reductions from the sketch above, both to match the row it sits beside
+rather than to invent a third shape:
+
+- no `WAKU_GMAIL_QUERY_LIMIT`: `gmail_search`'s `limit` argument already carries
+  the per-call size, and an env field nothing reads is a dialog control that
+  lies. The tool caps itself at 25.
+- no `probe`: the Google Calendar row beside it has none either, and a probe
+  here would spend a network call on every Connections poll to answer a
+  question the first `gmail_search` answers for free.
 
 Productivity is not a category of its own: the group string is
 `"Calendar & Productivity"`, shared with `google_calendar`, `apple_calendar` and

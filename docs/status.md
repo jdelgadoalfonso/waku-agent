@@ -6,7 +6,7 @@
 Read this before opening a PR or filing an issue: most of what is already
 known-broken is below, and half of it already has a fix in flight.
 
-**Last updated:** 2026-09-23
+**Last updated:** 2026-10-19
 
 ---
 
@@ -29,6 +29,12 @@ both, so the repo's "Latest" release always matches `pip install waku-agent`.
 **The dashboard uses the Waku Memory design system**, and
 `test_design_system.py` keeps it from drifting. See
 [context/design-system.md](context/design-system.md).
+
+**Mail is a capability, off until you ask for it.** `WAKU_GMAIL=1` adds
+`gmail_search` and `gmail_read`; `gmail_send` drafts into `~/.waku/outbox/`
+until the separate `WAKU_GMAIL_SEND` switch turns real delivery on.
+`waku connect google` grants mail in its own `~/.waku/gmail-token.json`, so
+revoking it leaves the calendar alone.
 
 ## Known broken
 
@@ -58,6 +64,12 @@ Additionally, and worth stating because people ask:
 - **No Windows CI.** The Windows bugs so far (#140, #141, both fixed) were
   found by contributors, not by us. Every Windows claim in this repo is
   untested.
+
+- **No Gmail tools in the Nim port.** `nim/` carries the Connections row and
+  asks for the mail scopes at sign-in, but `gmail_search`, `gmail_read` and
+  `gmail_send` are Python-only on purpose (decision D3 in
+  [gmail-integration-design.md](gmail-integration-design.md)). There is no
+  `nim/src/gmail.nim` and nothing to hunt for.
 - **The judge evals are not in CI.** `make gate` runs deterministic evals at
   100% plus a judge threshold, and CI runs only the first half. The judge tier
   needs an API key, which CI does not have.

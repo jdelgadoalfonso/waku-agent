@@ -90,6 +90,38 @@ The target defaults to the signed-in user's `primary` calendar; set
 local database. Google failures never roll back the local event, and attendee
 notifications are suppressed (`sendUpdates=none`).
 
+## Read and answer mail (Gmail)
+
+Mail is its own capability behind its own switch, and the client libraries are
+the ones the calendar already uses — nothing new is installed:
+
+```bash
+pip install -e '.[gcal]'
+waku connect google          # grants mail too, in its own token file
+WAKU_GMAIL=1 waku            # gmail_search and gmail_read join the prompt
+```
+
+`waku connect google` asks for mail access in a second, separate approval and
+caches `~/.waku/gmail-token.json` with the `gmail.readonly` and `gmail.send`
+scopes. Revoking mail therefore leaves the calendar working, and vice versa.
+Like the calendar's sign-in it needs your own Desktop OAuth client at
+`~/.waku/credentials.json` until a project-owned one ships.
+
+`gmail_send` writes a draft into `~/.waku/outbox/` and answers "Nothing was
+sent — review it there", exactly like `send_message`. Real delivery is a
+second, separate switch, because an email cannot be unsent:
+
+```bash
+WAKU_GMAIL=1 WAKU_GMAIL_SEND=1 waku
+```
+
+With `WAKU_GMAIL` off the three tools are not registered at all: no prompt
+space and no failure possible. With it on and no usable token, every call
+answers with the command that fixes it instead of reporting an empty mailbox.
+
+The Nim port carries the Connections row and asks for the mail scopes at
+sign-in, but its tools are Python-only on purpose: see [status.md](status.md).
+
 ## Share one memory with your other agents (Waku Memory)
 
 Waku's own memory is local. Each fact is also written to `~/.waku/memory/`,
