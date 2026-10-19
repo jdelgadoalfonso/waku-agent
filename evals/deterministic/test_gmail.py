@@ -121,6 +121,10 @@ class _FakeMessages:
         self._captured.setdefault("gets", []).append(kwargs)
         return _FakeRequest(self._store[kwargs["id"]], self._error)
 
+    def send(self, **kwargs):
+        self._captured.setdefault("sends", []).append(kwargs)
+        return _FakeRequest({"id": "sent-1"}, self._error)
+
 
 class _FakeService:
     def __init__(self, store, captured, error=None):
@@ -222,8 +226,6 @@ def _registry_with(tmp_path, monkeypatch, service, *, build_raises=False, token=
     settings.ensure_home()
     conn = connect(settings.home)
     return build_registry(conn, settings, None), conn
-
-
 def test_the_tools_are_registered_only_when_the_flag_is_on(tmp_path):
     """Both directions in one test, so an inverted flag cannot pass: a machine
     that never asked for Gmail must carry no Gmail tool in its prompt, and
@@ -242,8 +244,12 @@ def test_the_tools_are_registered_only_when_the_flag_is_on(tmp_path):
 
     assert registry_off.get("gmail_search") is None
     assert registry_off.get("gmail_read") is None
+    assert registry_off.get("gmail_send") is None
     assert registry_on.get("gmail_search") is not None
     assert registry_on.get("gmail_read") is not None
+    # Present even with WAKU_GMAIL_SEND off: drafting is what it does then, and
+    # a tool the model cannot see would make "draft an email" impossible.
+    assert registry_on.get("gmail_send") is not None
 
 
 def test_a_missing_token_is_an_honest_sign_in_hint(tmp_path, monkeypatch):
@@ -356,3 +362,137 @@ def test_missing_gcal_extra_names_the_install_and_the_sign_in(tmp_path, monkeypa
 
     assert "gcal" in out
     assert "connect google" in out
+
+
+# --- sending: the irreversible half ----------------------------------------
+#
+# An email cannot be unsent, so these tests are about WHICH of two things
+# happened, not merely that a string came back: a draft on disk and no API
+# call, or a real send and no draft. `build_raises` is what makes the first
+# claim strong — with the switch off, gmail_send must not even construct a
+# Gmail client.
+
+
+def _sending_registry(tmp_path, monkeypatch, service, *, send_for_real, build_raises=False, token=True):
+    _install_fake_gmail(monkeypatch, service, build_raises=build_raises)
+    if token:
+        (tmp_path / "gmail-token.json").write_text('{"token": "x"}', encoding="utf-8")
+    settings = Settings(home=tmp_path, gmail=True, gmail_send=send_for_real)
+    settings.ensure_home()
+    conn = connect(settings.home)
+    return build_registry(conn, settings, None), conn
+
+
+def _drafts(home):
+    outbox = home / "outbox"
+    return sorted(outbox.glob("*.txt")) if outbox.exists() else []
+
+
+def test_send_drafts_and_says_so_when_the_second_switch_is_off(tmp_path, monkeypatch):
+    """S5: with WAKU_GMAIL_SEND unset, "send an email to Ana" drafts. The
+    exploding builder proves no mail left the machine."""
+    registry, conn = _sending_registry(tmp_path, monkeypatch, None, send_for_real=False, build_raises=True)
+    try:
+        out = registry.execute(
+            "gmail_send", {"to": "ana@example.com", "subject": "Lunch", "body": "10am?"}
+        )
+    finally:
+        conn.close()
+
+    drafts = _drafts(tmp_path)
+    assert len(drafts) == 1
+    text = drafts[0].read_text(encoding="utf-8")
+    assert "To: ana@example.com" in text
+    assert "Subject: Lunch" in text
+    assert "10am?" in text
+    assert "Nothing was sent" in out
+    assert drafts[0].name in out
+
+
+def test_send_for_real_reaches_the_api_and_writes_no_draft(tmp_path, monkeypatch):
+    """The other direction of the same switch: WAKU_GMAIL_SEND=1 delivers, and
+    the local outbox stays empty so the two paths cannot both look taken."""
+    captured = {}
+    registry, conn = _sending_registry(
+        tmp_path, monkeypatch, _FakeService({}, captured), send_for_real=True
+    )
+    try:
+        out = registry.execute(
+            "gmail_send", {"to": "ana@example.com", "subject": "Lunch", "body": "10am?"}
+        )
+    finally:
+        conn.close()
+
+    assert _drafts(tmp_path) == []
+    payload = captured["sends"][0]
+    assert payload["userId"] == "me"
+    raw = payload["body"]["raw"]
+    message = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode()
+    assert "To: ana@example.com" in message
+    assert "Subject: Lunch" in message
+    assert "10am?" in message
+    assert "sent-1" in out
+
+
+def test_a_reply_keeps_the_thread_and_the_reply_headers(tmp_path, monkeypatch):
+    """Answering a thread must land in that thread, not start a new one; the
+    headers are what mail clients use to fold it there."""
+    captured = {}
+    registry, conn = _sending_registry(
+        tmp_path, monkeypatch, _FakeService({}, captured), send_for_real=True
+    )
+    try:
+        registry.execute(
+            "gmail_send",
+            {
+                "to": "ana@example.com",
+                "subject": "Re: Lunch",
+                "body": "Sounds good",
+                "thread_id": "t-42",
+                "in_reply_to": "<abc@mail.example.com>",
+            },
+        )
+    finally:
+        conn.close()
+
+    payload = captured["sends"][0]
+    assert payload["body"]["threadId"] == "t-42"
+    raw = payload["body"]["raw"]
+    message = base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode()
+    assert "In-Reply-To: <abc@mail.example.com>" in message
+
+
+def test_send_without_a_token_never_reports_success(tmp_path, monkeypatch):
+    """Asked to send and unable to sign in: the answer names the fix. It must
+    never read like something was delivered, and nothing is drafted either --
+    a fake draft would hide that the mailbox was never reached."""
+    registry, conn = _sending_registry(
+        tmp_path, monkeypatch, None, send_for_real=True, build_raises=True, token=False
+    )
+    try:
+        out = registry.execute(
+            "gmail_send", {"to": "ana@example.com", "subject": "Lunch", "body": "10am?"}
+        )
+    finally:
+        conn.close()
+
+    assert "connect google" in out
+    assert "Sent" not in out
+    assert _drafts(tmp_path) == []
+
+
+def test_a_refused_send_degrades_to_a_sentence(tmp_path, monkeypatch):
+    """A revoked scope or a quota error is text the model can report, not an
+    exception that ends the turn."""
+    captured = {}
+    service = _FakeService({}, captured, error=RuntimeError("insufficient scope"))
+    registry, conn = _sending_registry(tmp_path, monkeypatch, service, send_for_real=True)
+    try:
+        out = registry.execute(
+            "gmail_send", {"to": "ana@example.com", "subject": "Lunch", "body": "10am?"}
+        )
+    finally:
+        conn.close()
+
+    assert "insufficient scope" in out
+    assert not out.startswith("Error running")

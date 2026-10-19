@@ -67,7 +67,7 @@ def build_registry(conn: sqlite3.Connection, settings: Settings, memory=None) ->
     if settings.gmail:
         from waku.tools import gmail
 
-        for t in gmail.make_tools(settings.home):
+        for t in gmail.make_tools(settings.home, send=settings.gmail_send):
             registry.register(t)
 
     # Read-only GitHub via the gh CLI (opt-in; uses gh's own auth, no token here).

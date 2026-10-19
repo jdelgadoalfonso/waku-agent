@@ -23,6 +23,7 @@ take down a chat turn.
 from __future__ import annotations
 
 import base64
+from datetime import UTC, datetime
 from pathlib import Path
 
 from waku.tools.registry import Tool
@@ -151,8 +152,46 @@ def _read(service, message_id: str) -> str:
     )
 
 
-def make_tools(home: Path) -> list[Tool]:
-    """gmail_search and gmail_read, registered only when WAKU_GMAIL is on."""
+def _draft(
+    home: Path, to: str, subject: str, body: str, thread_id: str, in_reply_to: str
+) -> str:
+    """The send_message bargain: a file a person can read, edit and send
+    themselves. Deliberately needs no token — nothing leaves the machine, so
+    asking for credentials here would only hide the draft behind a sign-in."""
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+    safe_to = "".join(c if c.isalnum() else "-" for c in to)[:40]
+    path = home / "outbox" / f"{stamp}-{safe_to}.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    headers = [f"To: {to}", f"Subject: {subject}"]
+    if thread_id:
+        headers.append(f"X-Waku-Thread: {thread_id}")
+    if in_reply_to:
+        headers.append(f"In-Reply-To: {in_reply_to}")
+    path.write_text("\n".join(headers) + f"\n\n{body}\n", encoding="utf-8")
+    return (
+        f"Draft to {to} placed in outbox ({path.name}). Nothing was sent — review it there."
+    )
+
+
+def _raw_message(to: str, subject: str, body: str, in_reply_to: str) -> str:
+    """RFC 822 as Gmail's API wants it: base64url, no line wrapping of our own.
+    Only text/plain — an HTML body this tool never wrote would be a guess."""
+    headers = [
+        f"To: {to}",
+        f"Subject: {subject}",
+        "MIME-Version: 1.0",
+        'Content-Type: text/plain; charset="utf-8"',
+    ]
+    if in_reply_to:
+        headers.append(f"In-Reply-To: {in_reply_to}")
+    message = "\n".join(headers) + "\n\n" + body
+    return base64.urlsafe_b64encode(message.encode("utf-8")).decode()
+
+
+def make_tools(home: Path, send: bool = False) -> list[Tool]:
+    """gmail_search, gmail_read and gmail_send, registered only when WAKU_GMAIL
+    is on. `send` is the second switch (WAKU_GMAIL_SEND): with it off, sending
+    means drafting locally."""
 
     def gmail_search(query: str = "", limit: int = DEFAULT_LIMIT) -> str:
         service, problem = _service(home)
@@ -173,6 +212,31 @@ def make_tools(home: Path) -> list[Tool]:
             return _read(service, message_id)
         except Exception as exc:
             return f"Gmail could not open {message_id} ({type(exc).__name__}: {str(exc)[:120]})"
+
+    def gmail_send(
+        to: str = "",
+        subject: str = "",
+        body: str = "",
+        thread_id: str = "",
+        in_reply_to: str = "",
+    ) -> str:
+        if not to:
+            return "gmail_send needs a recipient address — call it again with one."
+        # Drafting first is not a fallback, it is the default: the switch has to
+        # be turned on deliberately before this repo can send mail in your name.
+        if not send:
+            return _draft(home, to, subject, body, thread_id, in_reply_to)
+        service, problem = _service(home)
+        if service is None:
+            return problem
+        try:
+            payload: dict = {"raw": _raw_message(to, subject, body, in_reply_to)}
+            if thread_id:
+                payload["threadId"] = thread_id
+            sent = service.users().messages().send(userId="me", body=payload).execute()
+        except Exception as exc:
+            return f"Gmail could not send to {to} ({type(exc).__name__}: {str(exc)[:120]})"
+        return f"Sent to {to} (message {sent.get('id', '?')})."
 
     return [
         Tool(
@@ -216,5 +280,33 @@ def make_tools(home: Path) -> list[Tool]:
                 "required": ["message_id"],
             },
             fn=gmail_read,
+        ),
+        Tool(
+            name="gmail_send",
+            description=(
+                "Write an email in the user's name. By default it is placed in the "
+                "local outbox as a draft and NOTHING IS SENT — say so plainly and let "
+                "the user review and send it. Only when WAKU_GMAIL_SEND is on does it "
+                "deliver, and then it returns the sent message id. Pass thread_id and "
+                "in_reply_to to answer an existing thread instead of starting one."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "to": {"type": "string", "description": "Recipient address"},
+                    "subject": {"type": "string", "description": "Subject line"},
+                    "body": {"type": "string", "description": "Plain-text body"},
+                    "thread_id": {
+                        "type": "string",
+                        "description": "Optional: the thread to answer (from gmail_read)",
+                    },
+                    "in_reply_to": {
+                        "type": "string",
+                        "description": "Optional: the Message-ID being answered",
+                    },
+                },
+                "required": ["to", "body"],
+            },
+            fn=gmail_send,
         ),
     ]
