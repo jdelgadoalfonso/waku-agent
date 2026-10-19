@@ -237,6 +237,18 @@ let INTEGRATIONS*: seq[Integration] = @[
     extra: "gcal", importName: "googleapiclient",
     setupUrl: "https://developers.google.com/calendar/api/quickstart/python",
     reload: agent, enabled: keyEnabled("WAKU_GOOGLE_CALENDAR")),
+  Integration(key: "gmail", group: "Calendar & Productivity", name: "Gmail",
+    what: "Lets Waku search, read and answer email. Off until you enable it: " &
+          "every registered tool rides in every prompt.",
+    env: @[EnvField(name: "WAKU_GMAIL", label: "Enable Gmail", kind: boolField),
+            EnvField(name: "WAKU_GMAIL_SEND", label: "Send for real",
+              kind: boolField,
+              help: "Off means gmail_send writes a draft to the outbox instead " &
+                    "of sending. An email cannot be unsent, so real delivery " &
+                    "is a separate switch.")],
+    extra: "gcal", importName: "googleapiclient",
+    setupUrl: "https://developers.google.com/gmail/api/quickstart/python",
+    reload: agent, enabled: keyEnabled("WAKU_GMAIL")),
   Integration(key: "apple_calendar", group: "Calendar & Productivity",
     name: "Apple Calendar",
     what: "Lets Waku work with Apple Calendar on this Mac.",

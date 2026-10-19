@@ -185,6 +185,16 @@ INTEGRATIONS: tuple[Integration, ...] = (
                  EnvField("WAKU_GOOGLE_CALENDAR_ID", "Calendar ID", default="primary")),
                 "gcal", "googleapiclient", "https://developers.google.com/calendar/api/quickstart/python",
                 ReloadMode.AGENT, lambda env: bool(env.get("WAKU_GOOGLE_CALENDAR")), None),
+    Integration("gmail", "Calendar & Productivity", "Gmail",
+                "Lets Waku search, read and answer email. Off until you enable it: "
+                "every registered tool rides in every prompt.",
+                (EnvField("WAKU_GMAIL", "Enable Gmail", FieldKind.BOOL),
+                 EnvField("WAKU_GMAIL_SEND", "Send for real", FieldKind.BOOL,
+                          help="Off means gmail_send writes a draft to the outbox instead of "
+                               "sending. An email cannot be unsent, so real delivery is a "
+                               "separate switch.")),
+                "gcal", "googleapiclient", "https://developers.google.com/gmail/api/quickstart/python",
+                ReloadMode.AGENT, lambda env: bool(env.get("WAKU_GMAIL")), None),
     Integration("apple_calendar", "Calendar & Productivity", "Apple Calendar",
                 "Lets Waku work with Apple Calendar on this Mac.",
                 (EnvField("WAKU_APPLE_CALENDAR", "Enable Apple Calendar", FieldKind.BOOL),

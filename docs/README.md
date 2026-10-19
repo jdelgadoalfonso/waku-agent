@@ -32,6 +32,7 @@ into four groups.
 | [loop-vs-graph.md](loop-vs-graph.md) | when a turn needs shape, and why the loop never changes |
 | [agent-graphs-design.md](agent-graphs-design.md) | the graph engine's design and its fail-open rule |
 | [mcp-per-turn-filter-design.md](mcp-per-turn-filter-design.md) | selective MCP tools: the per-turn filter and its `tasks`/`when` config |
+| [gmail-integration-design.md](gmail-integration-design.md) | Gmail as a capability: the three tools, the draft-first send guard, and its open decisions |
 | [providers-registry.md](providers-registry.md) | adding a model provider: one table in `waku/providers.toml` |
 | [memory-backends-playbook.md](memory-backends-playbook.md) | seeing your memories in each provider's own console |
 | [benchmarks.md](benchmarks.md) | what has been measured, and how |

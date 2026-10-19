@@ -35,13 +35,14 @@ const linuxOs = "linux"
 const macOs = "macosx"
 
 suite "phase 5d1 static registry":
-  test "all 13 keys present in order with their groups":
+  test "all 14 keys present in order with their groups":
     let got = INTEGRATIONS.mapIt((it.key, it.group))
     assert got == @[
       ("telegram", "Channels"),
       ("discord", "Channels"),
       ("whatsapp", "Channels"),
       ("google_calendar", "Calendar & Productivity"),
+      ("gmail", "Calendar & Productivity"),
       ("apple_calendar", "Calendar & Productivity"),
       ("apple_tools", "Calendar & Productivity"),
       ("obsidian", "Memory & Storage"),
@@ -301,6 +302,16 @@ WAKU_PROVIDER=anthropic
 # Set to 1 to enable.
 # WAKU_GOOGLE_CALENDAR=
 # WAKU_GOOGLE_CALENDAR_ID=primary
+
+# ── Gmail ──
+# Lets Waku search, read and answer email. Off until you enable it: every registered tool rides in every prompt.
+# Install: pip install -e '.[gcal]'
+# Setup: https://developers.google.com/gmail/api/quickstart/python
+# Set to 1 to enable.
+# WAKU_GMAIL=
+# Off means gmail_send writes a draft to the outbox instead of sending. An email cannot be unsent, so real delivery is a separate switch.
+# Set to 1 to enable.
+# WAKU_GMAIL_SEND=
 
 # ── Apple Calendar ──
 # Lets Waku work with Apple Calendar on this Mac.

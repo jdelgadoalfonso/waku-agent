@@ -242,6 +242,20 @@ class Settings:
     google_calendar_id: str = field(
         default_factory=lambda: os.getenv("WAKU_GOOGLE_CALENDAR_ID", "") or "primary"
     )
+    # Gmail as a capability: search, read and answer mail. Off by default for the
+    # same reason as gh_tool — every registered tool ships in every prompt, so
+    # reaching a person's inbox is a deliberate act. The account is authorised by
+    # `waku connect google`, which stores its own gmail-token.json; no key here.
+    gmail: bool = field(
+        default_factory=lambda: os.getenv("WAKU_GMAIL", "") in ("1", "true", "yes")
+    )
+    # Real delivery is a second, separate switch: with this off gmail_send writes
+    # a draft to the outbox (the send_message bargain) instead of sending. An
+    # email cannot be unsent, so the irreversible half never rides on the same
+    # flag that opens the mailbox.
+    gmail_send: bool = field(
+        default_factory=lambda: os.getenv("WAKU_GMAIL_SEND", "") in ("1", "true", "yes")
+    )
     # Give the agent read/write access to Apple Calendar, Mail, Reminders, Notes
     # (macOS; first use triggers the system Automation permission prompts).
     apple_tools: bool = field(
