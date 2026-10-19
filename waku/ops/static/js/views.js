@@ -437,9 +437,10 @@ function connectionModalKeydown(event){
 
 const VIEWS = {
   models(d){
-    // Provider card grid (logo / status dot / edit / enable-disable). Editing
-    // happens in a modal opened from a card; both live in js/models.js.
-    return modelsGrid(d);
+    // The shortlist first (what the chat switcher shows, across every
+    // provider), then the provider card grid. Editing happens in a modal
+    // opened from a card; both live in js/models.js.
+    return yourModelsCard(d.settings || {}) + modelsGrid(d);
   },
   connections(d){
     const items = d.connections || [], mcpItems = d.mcp_connections || [];

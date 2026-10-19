@@ -111,3 +111,15 @@ def test_app_js_is_gone():
     """The monolith was split; index.html must not load the old single file."""
     assert not (STATIC / "app.js").exists(), "stale app.js still present"
     assert "/static/app.js" not in INDEX, "index.html still references app.js"
+
+
+def test_the_models_view_renders_the_shortlist_and_the_grid():
+    """A card function nothing calls renders nothing, and no browser raises for
+    it: `yourModelsCard()` is what shows the pinned shortlist the chat switcher
+    uses, so the Models view must compose it. It went missing once exactly that
+    way — the function stayed in js/models.js and the view returned the provider
+    grid alone — which is why this pin names both halves, not just the card."""
+    body = re.search(r"models\(d\)\{(.*?)\n  \},", JS_SRC, re.DOTALL)
+    assert body, "the Models view is no longer shaped models(d){...}"
+    assert "yourModelsCard(" in body.group(1), "the Models view stopped rendering Your models"
+    assert "modelsGrid(" in body.group(1), "the Models view stopped rendering the provider grid"
