@@ -622,3 +622,21 @@ def test_connect_google_also_grants_mail_only_when_gmail_is_enabled(tmp_path, mo
     on = connect_module.connect("google", tmp_path)
     assert calls == ["calendar", "gmail"]
     assert "calendar: ok" in on and "gmail: ok" in on
+
+
+def test_read_truncates_a_huge_body(tmp_path, monkeypatch):
+    """One email must not be able to eat the turn's context: the proposal caps a
+    body at 8000 characters, and the cut is announced so the model can say the
+    message was longer."""
+    captured = {}
+    huge = "x" * 9000
+    service = _FakeService({"m1": _message("m1", body=huge)}, captured)
+    registry, conn = _registry_with(tmp_path, monkeypatch, service)
+    try:
+        out = registry.execute("gmail_read", {"message_id": "m1"})
+    finally:
+        conn.close()
+
+    body = out.split("\n\n", 1)[1]  # the headers above may contain the char too
+    assert body.count("x") == gmail.MAX_BODY_CHARS
+    assert "truncated" in body

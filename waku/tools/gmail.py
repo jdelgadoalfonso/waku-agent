@@ -37,7 +37,10 @@ CONSENT_SCOPES = [GMAIL_READONLY_SCOPE, GMAIL_SEND_SCOPE]
 # Both numbers exist because the model can pass any `limit` it likes: one caps
 # what we ask Gmail for, the other what a single reply may dump into a prompt.
 DEFAULT_LIMIT = 10
-MAX_LIMIT = 20
+MAX_LIMIT = 25
+# One email must not be able to eat the turn's context; the cut is announced so
+# the model can say the message was longer instead of summarising half of it.
+MAX_BODY_CHARS = 8000
 
 _INSTALL_HINT = (
     "Gmail support is not installed — run: pip install -e '.[gcal]', then "
@@ -193,6 +196,11 @@ def _read(service, message_id: str) -> str:
     msg = service.users().messages().get(id=message_id, format="full").execute()
     payload = msg.get("payload") or {}
     body = _body_text(payload) or msg.get("snippet", "")
+    if len(body) > MAX_BODY_CHARS:
+        body = (
+            body[:MAX_BODY_CHARS]
+            + f"\n[... truncated at {MAX_BODY_CHARS} characters]"
+        )
     return (
         f"From: {_header(payload, 'From')}\n"
         f"Date: {_header(payload, 'Date')}\n"
