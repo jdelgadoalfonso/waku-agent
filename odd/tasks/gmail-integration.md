@@ -186,8 +186,10 @@ la aprobación. Nada de código antes de ese sí.
   verdad — el peor error posible en un camino irreversible. Corregido: las tres
   tools se registran juntas (como Python, que lo pinea en
   `evals/deterministic/test_gmail.py:250`), `gmailSend` decide el efecto, y se
-  corrigieron las frases de `docs/integrations.md`, `nim/src/config.nim` y el
-  comentario de `makeGmailTools`. Menores corregidos en el mismo commit: (F3)
+  corrigió el comentario de `makeGmailTools`, que era el que contradecía al
+  código; las frases de `docs/integrations.md` y `nim/src/config.nim` ya
+  describían el comportamiento correcto y solo la de `integrations.md` quedó
+  aclarada en T9. Menores corregidos en el mismo commit: (F3)
   `createDir` puede lanzar `IOError` u `OSError` y ahora se atrapan ambos, así
   que un outbox que no se puede escribir sigue contestando "nothing was sent";
   (F4) un token vencido sin `refresh_token` se trata como no conectado en vez de

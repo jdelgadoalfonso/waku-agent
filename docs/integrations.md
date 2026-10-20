@@ -120,8 +120,9 @@ space and no failure possible. With it on and no usable token, every call
 answers with the command that fixes it instead of reporting an empty mailbox.
 
 The Nim port carries the same three tools: `WAKU_GMAIL=1` in `nim/` too,
-reading the same `~/.waku/gmail-token.json` and refreshing it without a browser,
-with `gmail_send` behind the same second switch. The port's live calls need
+reading the same `~/.waku/gmail-token.json` and refreshing it without a browser.
+`gmail_send` registers with them and delivers only under `WAKU_GMAIL_SEND`,
+drafting into `~/.waku/outbox/` otherwise. The port's live calls need
 `-d:wakuTls` like every other one. See [status.md](status.md).
 
 ## Share one memory with your other agents (Waku Memory)
