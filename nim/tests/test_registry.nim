@@ -90,6 +90,27 @@ suite "buildRegistry":
     assert "github_read" in names
     removeDir(home)
 
+  test "gmail is opt-in and sits between apple and github":
+    let home = freshHome("waku-reg-gmail")
+    let db = connectDb(home)
+    var settings = baseSettings(home)
+    settings.appleTools = true
+    settings.ghTool = true
+    settings.gmail = true
+    let reg = buildRegistry(db, home, settings, stubFetch, stubGh,
+      stubPi(), stubApple(), sqliteFactStore(db), sqliteEpisodeStore(db))
+    db.close()
+    let names = toolNames(reg)
+    var iApple, iGmail, iGh = -1
+    for i, name in names:
+      if name == "read_apple_calendar": iApple = i
+      elif name == "gmail_search": iGmail = i
+      elif name == "gmail_read": iGmail = i
+      elif name == "github_read": iGh = i
+    assert iGmail > iApple
+    assert iGmail < iGh
+    removeDir(home)
+
   test "connected MCP tools append last":
     let home = freshHome("waku-reg-mcp")
     let db = connectDb(home)

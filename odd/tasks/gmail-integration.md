@@ -75,14 +75,14 @@ la aprobación. Nada de código antes de ese sí.
   `gmail_read` sobre `gmail-token.json` (scope readonly), seam HTTP inyectable
   al estilo `SearchFetchFn`, registro en `nim/src/registry.nim` bajo un nuevo
   accessor `WAKU_GMAIL` en `config.nim`, y `nim/tests/test_gmail.nim`. S8.
-  Inline. Commit 6.
+  Inline. Commit 6 = este commit. Absorbe la mitad de T8 que escribe el token
+  (ver L8): `connect.nim` deja también `gmail-token.json`.
 - **T7** — Port del envío: `gmail_send` con borrador en `outbox/` por defecto y
   envío real solo con `WAKU_GMAIL_SEND`. S5, S8. Inline. Commit 7 (unidad propia
   por riesgo alto: mismo efecto externo irreversible que en Python).
-- **T8** — Cerrar los huecos que el mapa dejó ver: `connect.nim` escribe
-  `gmail-token.json` además de `google-token.json` (hoy el writer no tiene
-  lector), `gmail_*` en el catálogo de `toolCatalog` (`dashboard.nim:1090`) y,
-  si aporta, el probe de la fila en Connections. S6, S8. Inline. Commit 8.
+- **T8** — Cerrar los huecos que el mapa dejó ver: `gmail_*` en el catálogo de
+  `toolCatalog` (`dashboard.nim:1090`) y, si aporta, el probe de la fila en
+  Connections. S6, S8. Inline. Commit 8. La parte del token ya entró en T6.
 - **T9** — Docs: `docs/status.md` (quitar la asimetría), `docs/integrations.md`
   (la paridad ya es real), `docs/gmail-integration-design.md` (S8/D3 revocadas)
   y este documento. S8. Inline. Commit 9.
@@ -142,3 +142,20 @@ la aprobación. Nada de código antes de ese sí.
   `nimble test` descubre `tests/test*.nim` solo, no hay que registrar nada; (f)
   `toolCatalog` (`dashboard.nim:1090-1143`) es una lista hardcodeada, y por eso
   T8 la toca o los `gmail_*` no aparecen en el panel.
+
+- **L8** (alcance de T6, sin cambiar specs): T6 absorbe la mitad de T8 que
+  escribe el token. Un lector sin writer es una tool que nunca puede
+  autenticarse: con `WAKU_GMAIL=1` el port anunciaba `gmail_search` y
+  `gmail_read` mientras `connect.nim` dejaba solo `google-token.json`, así que
+  toda llamada contestaba "Gmail is not connected yet". `googleConnect` ahora
+  escribe las dos copias del mismo registro en el único consentimiento que ya
+  corre, que es lo que Python consigue con un segundo consentimiento (D2).
+  De T8 queda `toolCatalog` y, si aporta, el probe de la fila.
+- **L9** (evidencia de T6): RED observado primero (`cannot open file:
+  ../src/gmail`, luego los asserts de forma); GREEN 17 pins en
+  `nim/tests/test_gmail.nim`. `test_connect` 27 (26 + el de la copia de
+  correo), `test_registry` 7 (6 + el del opt-in y el orden), `nim check` limpio
+  en `src/waku.nim` y `src/dashboard.nim`, `nimble build` OK. El refresh
+  entiende las dos formas de `expiry` porque Python escribe un string RFC 3339
+  y el port un epoch entero sobre el mismo `.waku/`. Las llamadas live del port
+  siguen necesitando `-d:wakuTls`, como todo REST live del binario.

@@ -119,8 +119,10 @@ With `WAKU_GMAIL` off the three tools are not registered at all: no prompt
 space and no failure possible. With it on and no usable token, every call
 answers with the command that fixes it instead of reporting an empty mailbox.
 
-The Nim port carries the Connections row and asks for the mail scopes at
-sign-in, but its tools are Python-only on purpose: see [status.md](status.md).
+The Nim port carries the same two read tools: `WAKU_GMAIL=1` in `nim/` too,
+reading the same `~/.waku/gmail-token.json` and refreshing it without a browser.
+`gmail_send` is still Python-only, and the port's live calls need `-d:wakuTls`
+like every other one. See [status.md](status.md).
 
 ## Share one memory with your other agents (Waku Memory)
 

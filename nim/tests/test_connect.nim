@@ -58,6 +58,7 @@ suite "connect google":
     assert "bundled OAuth client is not configured" in msg
     assert "credentials.json" in msg
     assert not fileExists(home / "google-token.json")
+    assert not fileExists(home / "gmail-token.json")
 
   test "a cancelled browser saves nothing":
     let home = freshHome("waku-connect-google-cancel")
@@ -69,6 +70,7 @@ suite "connect google":
     assert "access_denied" in msg
     assert "Nothing was saved" in msg
     assert not fileExists(home / "google-token.json")
+    assert not fileExists(home / "gmail-token.json")
 
   test "a refused exchange saves nothing":
     let home = freshHome("waku-connect-google-refused")
@@ -83,6 +85,7 @@ suite "connect google":
     let msg = googleConnect(home, seams)
     assert "token refused" in msg
     assert not fileExists(home / "google-token.json")
+    assert not fileExists(home / "gmail-token.json")
 
   test "consent caches the token and names the source":
     let home = freshHome("waku-connect-google-ok")
@@ -103,6 +106,21 @@ suite "connect google":
     for scope in cached["scopes"]:
       asked.add(scope.getStr())
     assert asked == googleConsentScopes()
+
+  test "mail gets its own token copy, which the Gmail tools read":
+    let home = freshHome("waku-connect-google-mail")
+    writeFile(home / "credentials.json",
+      """{"installed": {"client_id": "cid", "client_secret": "cs"}}""")
+    let msg = googleConnect(home, googleSeams(%*{"access_token": "ya",
+      "refresh_token": "rt", "expires_in": 3600}))
+    assert "gmail-token.json" in msg
+    let mail = parseJson(readFile(home / "gmail-token.json"))
+    assert mail["token"].getStr() == "ya"
+    assert mail["refresh_token"].getStr() == "rt"
+    assert mail["expiry"].getBiggestInt() == 1700003600
+    # Deleting the mail copy revokes mail alone: the calendar file stays.
+    removeFile(home / "gmail-token.json")
+    assert fileExists(home / "google-token.json")
 
   test "one consent asks for the calendar and Gmail scopes":
     let client = %*{"client_id": "cid", "client_secret": "cs"}

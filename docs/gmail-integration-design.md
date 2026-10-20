@@ -140,21 +140,26 @@ exception.
 
 ## Nim parity
 
-Parity here means what parity already means for Google Calendar in this port:
-**the row plus the sign-in scope**, not a tool. `nim/src/registry.nim` registers
-no Google tool today (`nim/src/calendar.nim:1-8` says the Apple/Google sync
-branches are out of phase 2), so building `nim/src/gmail.nim` with its own
-credential and HTTP seams would make Gmail the only Google capability in the
-port, and would put a second, differently-shaped auth path next to
-`connect.nim`'s.
+The user revoked D3 when asking for `gmail.nim` (Log L7 of
+[odd/tasks/gmail-integration.md](../odd/tasks/gmail-integration.md)), so the port
+carries the read tools themselves, not only the row and the scope.
 
-So this proposal adds to the port: the `gmail` row in
-`nim/src/integrations.nim`, and the Gmail scope in `nim/src/connect.nim`'s
-`googleScope`/token record so `waku connect google` can grant it. The Nim binary
-therefore reports Gmail's status and can authorise it, while the tools stay in
-Python until the port's tool layer grows Google support on purpose. That
-asymmetry is written down in `docs/status.md` rather than left for a reader to
-discover.
+What the port has: `nim/src/gmail.nim` with `gmail_search` and `gmail_read`,
+registered behind a `WAKU_GMAIL` accessor in `nim/src/config.nim` and reached
+through one injected HTTP seam (`GmailHttpFn`), the pattern `SearchFetchFn`
+already uses. It reads `~/.waku/gmail-token.json`, refreshes it without opening
+a browser, and understands both token shapes — the port writes an integer
+`expiry`, Python's `google-auth` writes an RFC 3339 string, and the two
+implementations share one `.waku/`. `nim/src/connect.nim` writes the mail copy
+of the token at the single consent the port already runs, so deleting that one
+file revokes mail alone.
+
+What the port does not have yet: `gmail_send`. It gets its own commit and its
+own review, because an email cannot be unsent. `docs/status.md` states the gap
+so nobody hunts for it.
+
+Live calls need `-d:wakuTls`, exactly like every other live REST call in the
+port; the default build refuses `https://` before any byte goes out.
 
 ## Hosted
 
@@ -187,8 +192,10 @@ a tool touches no route, so `test_route_contract.py` needs no entry.
 - **Shared `google-token.json`.** One consent for calendar and mail means
   revoking one touches the other, and it forces re-consent on every existing
   calendar user.
-- **A full Gmail tool in the Nim port now.** Consistent only with a Google tool
-  layer the port does not have.
+- **A full Gmail tool in the Nim port now.** Rejected as a default, then
+  chosen once the user asked for it (L7): `nim/src/gmail.nim` reuses
+  `connect.nim`'s token record and one HTTP seam, so it adds no second auth
+  path.
 
 ## Rollout
 
@@ -207,7 +214,7 @@ Four reviewable slices, each with its eval and docs:
 - **D2 — credentials**: separate `gmail-token.json` with
   `gmail.readonly` + `gmail.send` (default). Alternative: widen the existing
   Google token.
-- **D3 — Nim parity**: row plus sign-in scope (default). Alternative: a full
-  `nim/src/gmail.nim` tool.
+- **D3 — Nim parity**: revoked. The default was row plus sign-in scope; the
+  user asked for the tool, so the port ships the read side of it.
 - **D4 — hosted**: allowlist untouched, Gmail refused in hosted (default).
   Alternative: add `gmail` to `ALLOWED_CONNECTIONS`.

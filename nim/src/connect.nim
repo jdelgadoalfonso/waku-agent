@@ -221,14 +221,21 @@ proc googleConnect*(home: string, seams: GoogleSeams): string =
     "client_secret": client.jget("client_secret").getStr(),
     "scopes": googleConsentScopes(), "expiry": seams.nowUnix + expiresIn}
   let path = home / "google-token.json"
+  let mailPath = home / "gmail-token.json"
   try:
     createDir(home)
     writeFile(path, $record)
+    # Mail gets its own copy. `gmail.nim` reads `gmail-token.json` and never
+    # the calendar's file, so deleting one file revokes that capability alone.
+    # Python runs a SECOND consent for mail; the port's single consent already
+    # asks for both scopes, so the copy is the whole difference (design D3).
+    writeFile(mailPath, $record)
   except IOError as exc:
     return "Google sign-in failed or was cancelled (" & exc.msg &
       "). Nothing was saved."
   return "Google connected (via " & source & "): calendar read-only, " &
-    "plus the mail scopes the Gmail tools use. Token cached at " & path & "."
+    "plus the mail scopes the Gmail tools use. Token cached at " & path &
+    " (mail in " & mailPath & ")."
 
 proc addMemoryServer*(home: string): tuple[status: string, spec: JsonNode] =
   ## Make sure `mcp.json` names Waku Memory: "added", "present", "moved"

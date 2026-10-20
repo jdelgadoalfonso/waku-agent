@@ -3,7 +3,7 @@
 ## Registration order matches Python, so `to_api` lists tools in the same
 ## order: calendar create/list, notes, messages, web search, the three
 ## memory self-management tools, then the opt-ins (experimental, apple,
-## github) and the already-connected MCP tools.
+## gmail, github) and the already-connected MCP tools.
 ##
 ## Two deliberate divergences: `register` replaces by name (Python's dict
 ## does the same), and memory tools need no `memory is not None` gate —
@@ -21,6 +21,7 @@ import ./episodes
 import ./experimental
 import ./factstore
 import ./github
+import ./gmail
 import ./mcp
 import ./memory_admin
 import ./notes
@@ -63,7 +64,8 @@ proc mcpRegistryTools*(home: string, env: Table[string, string],
 proc buildRegistry*(db: DbConn, home: string, settings: Settings,
     searchFetch: SearchFetchFn, ghRun: GhRunner, pi: PiSeams,
     apple: AppleSeams, facts: FactStore, episodes: EpisodeStore,
-    mcpTools: seq[Tool] = @[], remember: notes.Remember = nil): ToolRegistry =
+    mcpTools: seq[Tool] = @[], remember: notes.Remember = nil,
+    gmailFetch: GmailHttpFn = liveGmailFetch): ToolRegistry =
   ## Port of `build_registry`. Every side effect rides an injected seam
   ## (`searchFetch`, `ghRun`, `pi`, `apple`) plus pre-connected
   ## `mcpTools` — tests record them all, the builders pass the live
@@ -85,6 +87,9 @@ proc buildRegistry*(db: DbConn, home: string, settings: Settings,
       result.register(t)
   if settings.appleTools:
     for t in makeAppleTools(apple):
+      result.register(t)
+  if settings.gmail:
+    for t in makeGmailTools(home, gmailFetch):
       result.register(t)
   if settings.ghTool:
     result.register(makeGithubTool(ghRun, settings.ghRepo))

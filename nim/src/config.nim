@@ -68,6 +68,11 @@ type
     ghRepo*: string
       ## `WAKU_GH_REPO`: owner/name when a call omits it (running
       ## outside a checkout, where `gh` infers no remote).
+    gmail*: bool
+      ## `WAKU_GMAIL`: the Gmail read tools. Off by default on purpose: an
+      ## untouched machine carries no mail tool in any prompt, and the
+      ## token it would read (`.waku/gmail-token.json`) does not exist
+      ## until the user signs in with `waku connect google`.
     graphWorkflows*: bool
       ## `WAKU_GRAPH_WORKFLOWS`: route messages through the triage graph
       ## first (fail-open to the plain loop, so never worse).
@@ -113,7 +118,7 @@ proc defaultSettings*(): Settings =
            maxTokens: defaultMaxTokens, historyTurns: defaultHistoryTurns,
            graphWorkflows: false, consolidateEvery: 6, retrievalTopK: 4,
            experimental: false, appleTools: false, ghTool: false,
-           ghRepo: "", semanticStore: "sqlite", mem0UserId: "waku",
+           ghRepo: "", gmail: false, semanticStore: "sqlite", mem0UserId: "waku",
            zepUserId: "waku", episodicStore: "sqlite", obsidianVault: "",
            otelEndpoint: "")
 
@@ -159,6 +164,7 @@ proc loadFromEnv*(s: var Settings) =
   s.appleTools = getEnv("WAKU_APPLE_TOOLS") in ["1", "true", "yes"]
   s.ghTool = getEnv("WAKU_GH_TOOL") in ["1", "true", "yes"]
   s.ghRepo = getEnv("WAKU_GH_REPO")
+  s.gmail = getEnv("WAKU_GMAIL") in ["1", "true", "yes"]
   s.graphWorkflows = getEnv("WAKU_GRAPH_WORKFLOWS") in ["1", "true", "yes"]
   s.consolidateEvery = envInt("WAKU_CONSOLIDATE_EVERY", 6)
   s.otelEndpoint = getEnv("OTEL_EXPORTER_OTLP_ENDPOINT")
