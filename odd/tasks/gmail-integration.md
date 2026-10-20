@@ -86,9 +86,11 @@ la aprobación. Nada de código antes de ese sí.
   `toolCatalog` (`dashboard.nim:1090`). S6, S8. Inline. Commit 8. La parte del
   token entró en T6 y el probe de la fila no aporta: la fila del port no lo
   tiene (L5).
-- **T9** — Docs: `docs/status.md` (quitar la asimetría), `docs/integrations.md`
-  (la paridad ya es real), `docs/gmail-integration-design.md` (S8/D3 revocadas)
-  y este documento. S8. Inline. Commit 9.
+- **T9** — Docs: `docs/status.md` (la viñeta de la asimetría se vuelve la
+  limitación real: las llamadas live del port necesitan `-d:wakuTls`),
+  `docs/integrations.md` (la paridad de las tres tools ya es real),
+  `docs/gmail-integration-design.md` (D3 revocada, rollout 5, tabla de riesgos),
+  `nim/README.md` y este documento. S8. Inline. Commit 9 = este commit.
 
 ## Log
 
@@ -213,3 +215,21 @@ la aprobación. Nada de código antes de ese sí.
   prefiriendo el registro del agente vivo, que el colector del port no tiene.
   Pin nuevo en `test_dashboard.nim`: apagado no aparece, encendido aparecen las
   tres, y `WAKU_GMAIL_SEND` no agrega una cuarta. Suite 134 OK, exit 0.
+
+- **L14** (cierre de la feature): los nueve commits están en la rama, sin push.
+  Estado final del port: `gmail_search`, `gmail_read` y `gmail_send` con las
+  mismas dos llaves que Python, el mismo archivo de token y el mismo trato del
+  borrador, más el catálogo del dashboard cuando `WAKU_GMAIL` está on. Lo único
+  que sigue siendo distinto es cómo se llega a la red: el binario necesita
+  `-d:wakuTls` para una llamada `https://`, que es la regla de todo el port y
+  queda dicha en `docs/status.md`.
+  Verificación de cierre: `test_gmail` 29, `test_registry` 7, `test_connect` 27,
+  `test_dashboard` 134, todas exit 0; `test_rulebook.py` 17 passed;
+  `nim check` limpio en `src/gmail.nim`, `src/waku.nim` y `src/dashboard.nim`;
+  `nimble build` OK; diferenciales contra `waku/tools/gmail.py` para el borrador,
+  el `raw` y el nombre de archivo no ASCII. El verificador independiente corrió
+  una vez (FAIL con dos defectos altos, corregidos en `c9004ea`) y el runtime no
+  admitió una segunda pasada.
+  Pendiente del usuario: push y PRs en cadena (la rama tiene 64269 líneas
+  cambiadas en 209 commits: cualquier review nativo tiene que ser por rebanada,
+  no por rama), y la decisión sobre `nim/config.nims` en `.gitignore`.

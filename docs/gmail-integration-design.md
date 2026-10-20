@@ -178,7 +178,7 @@ a tool touches no route, so `test_route_contract.py` needs no entry.
 | Mailbox data leaves the machine into a prompt | Subject lines and bodies are personal data | Only what a tool call asks for; truncation; no bulk fetch; no logging of bodies in traces |
 | OAuth scope creep | A token that can send and read is high privilege | Separate token file, two scopes only, no `gmail.modify` |
 | Prompt cost on every turn | Three tool schemas in every call | Opt-in flag, off by default, terse descriptions, tags for task filtering |
-| Port drift | A Python-only Google capability | Stated in `docs/status.md` with the reason |
+| Port drift | A Python-only Google capability | Both implementations carry the three tools, checked against each other by the differential in the feature log |
 
 ## Alternatives rejected
 
@@ -207,6 +207,8 @@ Four reviewable slices, each with its eval and docs:
 3. `gmail_send` with the draft default, the flag, eval.
 4. `connect` support for the Gmail scope in both implementations, `status.md`
    and `architecture.md` updated.
+5. The port's own tools and token writer (T6-T8 of the feature log): the slice
+   the user asked for after the Python half shipped.
 
 ## Open decisions (defaults marked; confirming or flipping them is the approval)
 
@@ -216,6 +218,6 @@ Four reviewable slices, each with its eval and docs:
   `gmail.readonly` + `gmail.send` (default). Alternative: widen the existing
   Google token.
 - **D3 — Nim parity**: revoked. The default was row plus sign-in scope; the
-  user asked for the tool, so the port ships the read side of it.
+  user asked for the tool, so the port ships all three.
 - **D4 — hosted**: allowlist untouched, Gmail refused in hosted (default).
   Alternative: add `gmail` to `ALLOWED_CONNECTIONS`.
