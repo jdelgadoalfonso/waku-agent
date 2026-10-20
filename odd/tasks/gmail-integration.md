@@ -163,7 +163,7 @@ la aprobación. Nada de código antes de ese sí.
   siguen necesitando `-d:wakuTls`, como todo REST live del binario.
 
 - **L10** (evidencia de T7): RED primero (`undeclared identifier: 'gmailSend'`),
-  GREEN 26 pins en `nim/tests/test_gmail.nim` y 8 en `test_registry.nim`.
+  GREEN 26 pins en `nim/tests/test_gmail.nim` y 7 en `test_registry.nim`.
   Diferencial contra Python, en un home temporal fuera del repo: `raw_message`,
   el nombre del borrador (incluido el sufijo `-2` de colisión), las cabeceras
   del borrador y las dos frases que lee el modelo salen byte a byte iguales.
@@ -172,3 +172,25 @@ la aprobación. Nada de código antes de ese sí.
   arrancar ("assistant reported an error") y, por regla, se reporta como no
   disponible en vez de reintentarse: la unidad queda cubierta por el
   diferencial, las suites y la revisión manual del guard de doble switch.
+
+- **L11** (verificación de T7 y corrección): el verificador independiente sobre
+  `36fb764` devolvió FAIL con dos defectos reales y tres menores. El primero es
+  el que importa: `gmail_send` se registraba SOLO con `WAKU_GMAIL_SEND` on, así
+  que la rama de borrador era inalcanzable desde el modelo y S5 ("borrador por
+  defecto") no existía en la configuración que la spec describe. El segundo es
+  su consecuencia: la descripción que recibía el modelo, en el único estado
+  donde la tool existía, prometía un borrador mientras el `fn` enviaba de
+  verdad — el peor error posible en un camino irreversible. Corregido: las tres
+  tools se registran juntas (como Python, que lo pinea en
+  `evals/deterministic/test_gmail.py:250`), `gmailSend` decide el efecto, y se
+  corrigieron las frases de `docs/integrations.md`, `nim/src/config.nim` y el
+  comentario de `makeGmailTools`. Menores corregidos en el mismo commit: (F3)
+  `createDir` puede lanzar `IOError` u `OSError` y ahora se atrapan ambos, así
+  que un outbox que no se puede escribir sigue contestando "nothing was sent";
+  (F4) un token vencido sin `refresh_token` se trata como no conectado en vez de
+  gastar una llamada para recibir un 401; (F5) `safeRecipient` recorre runes,
+  así que `josé@example.com` produce el mismo nombre de archivo que Python
+  (verificado con el diferencial re-ejecutado). Pins nuevos: la tool existe con
+  los dos valores del switch y solo el switch cambia el efecto, outbox bloqueado,
+  home de solo lectura, y token vencido sin refresh. `test_gmail` 29,
+  `test_registry` 7, `test_connect` 27.

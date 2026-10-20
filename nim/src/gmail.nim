@@ -27,6 +27,7 @@ import std/json
 import std/os
 import std/strutils
 import std/times
+import std/unicode
 import std/uri
 
 import ./http
@@ -189,8 +190,12 @@ proc gmailAccessToken*(fetch: GmailHttpFn, home: string,
   if token == nil:
     return ""
   var current = token
-  if tokenStale(token, nowUnix) and token.jget("refresh_token").getStr().
-      len > 0:
+  if tokenStale(token, nowUnix):
+    # Both halves or neither: an expired token we cannot refresh is a token
+    # the user must replace, and spending the call to get its 401 would only
+    # report a failure where `waku connect google` is the real answer.
+    if token.jget("refresh_token").getStr().len == 0:
+      return ""
     let refreshed = refreshGmailToken(fetch, home, token, nowUnix)
     if refreshed == nil:
       return ""
@@ -326,11 +331,16 @@ proc gmailRead*(fetch: GmailHttpFn, home: string, nowUnix: int64,
 proc safeRecipient*(to: string): string =
   ## The outbox filename carries the recipient, so a draft is findable by
   ## opening the folder. Anything that is not a letter or digit becomes a
-  ## dash: an address is user data, never a path.
-  for c in to:
-    if result.len >= 40:
+  ## dash: an address is user data, never a path. Rune-wise, like Python's
+  ## `str.isalnum`, so a name like `josé@example.com` survives as a name —
+  ## `std/unicode` has no digit predicate, so digits are checked by code
+  ## point (ASCII `0`-`9`), which is what an address uses them for anyway.
+  var kept = 0
+  for rune in to.runes:
+    if kept >= 40:
       break
-    result.add(if c.isAlphaNumeric: c else: '-')
+    inc kept
+    result.add(if rune.isAlpha or rune.ord in 0x30 .. 0x39: $rune else: "-")
 
 proc draftStamp*(nowUnix: int64): string =
   ## `%Y%m%dT%H%M%S` in UTC, Python's draft timestamp.
@@ -364,8 +374,13 @@ proc writeDraft*(home: string, nowUnix: int64, to, subject, body, threadId,
   try:
     createDir(home / "outbox")
     writeFile(path, draftText(to, subject, body, threadId, inReplyTo))
-  except IOError as exc:
-    return "Gmail could not write the draft (" & exc.msg & ")."
+  except IOError, OSError:
+    # Both classes, deliberately: `createDir` raises `IOError` when
+    # something (a file) is in the way and the broader `OSError` when the
+    # system refuses (a read-only home). An outbox we cannot write is
+    # exactly the case where the user must still read "nothing was sent".
+    return "Gmail could not write the draft (" & getCurrentExceptionMsg() &
+      ")."
   return "Draft to " & to & " placed in outbox (" & path.extractFilename() &
     "). Nothing was sent — review it there."
 
@@ -430,10 +445,11 @@ proc liveGmailFetch*(url, meth, body, bearer: string): tuple[status: int,
 
 proc makeGmailTools*(home: string, fetch: GmailHttpFn, send = false,
     now: GmailClockFn = liveGmailNow): seq[Tool] =
-  ## Registry wiring for the Gmail tools. `send` is the second switch
-  ## (`WAKU_GMAIL_SEND`): with it off, sending means drafting locally and
-  ## `gmail_send` is not registered at all, so an untouched machine carries
-  ## no tool that could put mail in someone's name.
+  ## Registry wiring for the Gmail tools. All three register together, like
+  ## Python: with `send` off — `WAKU_GMAIL_SEND` unset — `gmail_send` is what
+  ## writes a draft, so a tool the model cannot see would make "draft an
+  ## email" impossible. Only the switch decides whether a call leaves the
+  ## machine.
   result = @[Tool(name: "gmail_search",
       description: "Search the user's Gmail and list the matching " &
         "messages as id | from | subject | date, newest first. Use Gmail's " &
@@ -460,25 +476,24 @@ proc makeGmailTools*(home: string, fetch: GmailHttpFn, send = false,
         "required": ["message_id"]},
       fn: proc(args: JsonNode): string =
         gmailRead(fetch, home, now(), strArg(args, "message_id")))]
-  if send:
-    result.add(Tool(name: "gmail_send",
-      description: "Write an email in the user's name. By default it is " &
-        "placed in the local outbox as a draft and NOTHING IS SENT — say so " &
-        "plainly and let the user review and send it. Only when " &
-        "WAKU_GMAIL_SEND is on does it deliver, and then it returns the sent " &
-        "message id. Pass thread_id and in_reply_to to answer an existing " &
-        "thread instead of starting one.",
-      inputSchema: %*{"type": "object",
-        "properties": {
-          "to": {"type": "string", "description": "Recipient address"},
-          "subject": {"type": "string", "description": "Subject line"},
-          "body": {"type": "string", "description": "Plain-text body"},
-          "thread_id": {"type": "string",
-            "description": "Optional: the thread to answer (from gmail_read)"},
-          "in_reply_to": {"type": "string",
-            "description": "Optional: the Message-ID being answered"}},
-        "required": ["to", "body"]},
-      fn: proc(args: JsonNode): string =
-        gmailSend(fetch, home, now(), send, strArg(args, "to"),
-          strArg(args, "subject"), strArg(args, "body"),
-          strArg(args, "thread_id"), strArg(args, "in_reply_to"))))
+  result.add(Tool(name: "gmail_send",
+    description: "Write an email in the user's name. By default it is " &
+      "placed in the local outbox as a draft and NOTHING IS SENT — say so " &
+      "plainly and let the user review and send it. Only when " &
+      "WAKU_GMAIL_SEND is on does it deliver, and then it returns the sent " &
+      "message id. Pass thread_id and in_reply_to to answer an existing " &
+      "thread instead of starting one.",
+    inputSchema: %*{"type": "object",
+      "properties": {
+        "to": {"type": "string", "description": "Recipient address"},
+        "subject": {"type": "string", "description": "Subject line"},
+        "body": {"type": "string", "description": "Plain-text body"},
+        "thread_id": {"type": "string",
+          "description": "Optional: the thread to answer (from gmail_read)"},
+        "in_reply_to": {"type": "string",
+          "description": "Optional: the Message-ID being answered"}},
+      "required": ["to", "body"]},
+    fn: proc(args: JsonNode): string =
+      gmailSend(fetch, home, now(), send, strArg(args, "to"),
+        strArg(args, "subject"), strArg(args, "body"),
+        strArg(args, "thread_id"), strArg(args, "in_reply_to"))))

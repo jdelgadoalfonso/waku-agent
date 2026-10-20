@@ -264,9 +264,10 @@ suite "the tools":
     let tools = makeGmailTools(home, proc(url, meth, body, bearer: string):
         tuple[status: int, text: string] = (200, ""), now = proc(): int64 =
       1_700_000_000)
-    assert tools.len == 2
+    assert tools.len == 3
     assert tools[0].name == "gmail_search"
     assert tools[1].name == "gmail_read"
+    assert tools[2].name == "gmail_send"
     assert tools[0].inputSchema["required"][0].getStr() == "query"
     assert tools[1].inputSchema["required"][0].getStr() == "message_id"
     assert "Use Gmail's own query syntax" in tools[0].description
@@ -377,7 +378,10 @@ suite "gmail_send: the real switch":
     removeDir(home)
 
 suite "gmail_send: the tool":
-  test "it is registered only when the send switch is on":
+  test "the tool exists either way; only the switch decides what it does":
+    # Python registers it with WAKU_GMAIL_SEND off on purpose: drafting is
+    # what it does then, and a tool the model cannot see would make "draft an
+    # email" impossible.
     let home = freshHome("waku-gmail-send-tool")
     let off = makeGmailTools(home, proc(url, meth, body, bearer: string):
         tuple[status: int, text: string] = (200, ""), false,
@@ -385,11 +389,63 @@ suite "gmail_send: the tool":
     let on = makeGmailTools(home, proc(url, meth, body, bearer: string):
         tuple[status: int, text: string] = (200, ""), true,
       now = proc(): int64 = 1_700_000_000)
-    assert off.len == 2
+    assert off.len == 3
     assert on.len == 3
-    assert on[2].name == "gmail_send"
+    assert off[2].name == "gmail_send"
     assert on[2].inputSchema["required"][0].getStr() == "to"
     assert on[2].inputSchema["required"][1].getStr() == "body"
-    assert "Nothing was sent" notin on[2].description
     assert "NOTHING IS SENT" in on[2].description
+    # The switch off means the model's call can only draft, even with a
+    # usable token sitting in the home.
+    tokenFile(home, 1_700_003_600)
+    let drafted = off[2].fn(%*{"to": "ana@example.com", "subject": "Hola",
+      "body": "cuerpo"})
+    assert "Draft to ana@example.com placed in outbox (" in drafted
+    assert "Nothing was sent" in drafted
+    let sent = on[2].fn(%*{"to": "ana@example.com", "subject": "Hola",
+      "body": "cuerpo"})
+    assert sent == "Gmail could not send to ana@example.com (HTTP 200: )" or
+      sent.startsWith("Sent to ana@example.com (message ")
+    removeDir(home)
+
+suite "gmail: the two shapes a token can be unusable in":
+  test "stale with no refresh_token is not connected, and spends no call":
+    let home = freshHome("waku-gmail-stale-norefresh")
+    writeFile(home / "gmail-token.json",
+      """{"token": "dead-access", "expiry": 1600000000}""")
+    let rec = newRecorder(proc(url: string): tuple[status: int,
+        text: string] = (599, "must not be called"))
+    assert gmailSearch(rec.fetchOf(), home, 1_700_000_000, "x", 10) ==
+      gmailSetupHint
+    assert gmailSend(rec.fetchOf(), home, 1_700_000_000, true,
+      "ana@example.com", "s", "b", "", "") == gmailSetupHint
+    assert rec.calls.len == 0
+    removeDir(home)
+
+  test "an outbox that cannot be written answers instead of raising":
+    let home = freshHome("waku-gmail-outbox-blocked")
+    # `outbox` is a file, so `createDir` raises OSError — the broader class
+    # an `except IOError` would have missed.
+    writeFile(home / "outbox", "not a directory")
+    let rec = newRecorder(proc(url: string): tuple[status: int,
+        text: string] = (599, "must not be called"))
+    let text = gmailSend(rec.fetchOf(), home, 1_700_000_000, false,
+      "ana@example.com", "s", "b", "", "")
+    assert text.startsWith("Gmail could not write the draft (")
+    assert rec.calls.len == 0
+    removeDir(home)
+
+  test "a read-only home answers instead of raising":
+    let home = freshHome("waku-gmail-outbox-readonly")
+    setFilePermissions(home, {fpUserRead, fpUserExec})
+    let rec = newRecorder(proc(url: string): tuple[status: int,
+        text: string] = (599, "must not be called"))
+    let text = gmailSend(rec.fetchOf(), home, 1_700_000_000, false,
+      "ana@example.com", "s", "b", "", "")
+    setFilePermissions(home, {fpUserRead, fpUserWrite, fpUserExec})
+    # Running as root, the write simply works; then there is nothing to pin.
+    if text.startsWith("Draft to"):
+      skip()
+    assert text.startsWith("Gmail could not write the draft (")
+    assert rec.calls.len == 0
     removeDir(home)

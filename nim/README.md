@@ -368,6 +368,12 @@ episode; `settle` waits for the graph to stop growing, not just the episodes.
   tools: `save_note`, `send_message` (outbox drafts), `manage_memory`,
   `update_soul` (+ `SOUL.md` default) and `create_skill` (+ SKILL.md
   validation). Sync branches, web search and gateway tools are later phases.
+- `src/gmail.nim` ports the Gmail tools: `gmail_search`, `gmail_read` and
+  `gmail_send` behind `WAKU_GMAIL` and, for sending, `WAKU_GMAIL_SEND`. It reads
+  `.waku/gmail-token.json` (never the calendar's file), refreshes it without a
+  browser through the same integer-or-RFC-3339 `expiry` Python can leave
+  behind, and reaches Google through one injected `GmailHttpFn` seam. Live
+  calls need `-d:wakuTls`, like every other REST call here.
 - `src/session.nim` ports `runtime/session.py`: SOUL.md create-only-once,
   system-prompt assembly (soul + clock + model line + nil-able retrieval
   seams), `[tools used: ...]` folding, `start_new`/`switch` with the

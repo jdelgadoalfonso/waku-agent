@@ -109,10 +109,12 @@ suite "buildRegistry":
       elif name == "github_read": iGh = i
     assert iGmail > iApple
     assert iGmail < iGh
-    assert "gmail_send" notin names
+    # The sending tool registers with the read tools, like Python: with the
+    # second switch off, drafting is what it does.
+    assert "gmail_send" in names
     removeDir(home)
 
-  test "gmail_send needs the second switch on top of the first":
+  test "WAKU_GMAIL_SEND only reaches Settings.gmailSend":
     let home = freshHome("waku-reg-gmail-send")
     let db = connectDb(home)
     var settings = baseSettings(home)
@@ -121,7 +123,15 @@ suite "buildRegistry":
     let reg = buildRegistry(db, home, settings, stubFetch, stubGh,
       stubPi(), stubApple(), sqliteFactStore(db), sqliteEpisodeStore(db))
     db.close()
-    assert "gmail_send" in toolNames(reg)
+    # And with only the first switch on, the same tool is there but drafts.
+    var readOnly = baseSettings(home)
+    readOnly.gmail = true
+    let reg2 = buildRegistry(db, home, readOnly, stubFetch, stubGh,
+      stubPi(), stubApple(), sqliteFactStore(db), sqliteEpisodeStore(db))
+    assert toolNames(reg) == toolNames(reg2)
+    let drafted = reg2.execute("gmail_send", %*{"to": "ana@example.com",
+      "body": "cuerpo"})
+    assert "Nothing was sent" in drafted
     removeDir(home)
 
   test "connected MCP tools append last":
