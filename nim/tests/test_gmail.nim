@@ -2,7 +2,7 @@
 ## wire shapes and the sentence for every failure. Offline only: the one
 ## HTTP seam is a recorder, so no socket exists.
 
-from std/base64 import encode
+from std/base64 import decode, encode
 import std/json
 import std/os
 import std/strutils
@@ -262,7 +262,7 @@ suite "the tools":
   test "they carry Python's names, descriptions and schemas":
     let home = freshHome("waku-gmail-tools")
     let tools = makeGmailTools(home, proc(url, meth, body, bearer: string):
-        tuple[status: int, text: string] = (200, ""), proc(): int64 =
+        tuple[status: int, text: string] = (200, ""), now = proc(): int64 =
       1_700_000_000)
     assert tools.len == 2
     assert tools[0].name == "gmail_search"
@@ -272,4 +272,124 @@ suite "the tools":
     assert "Use Gmail's own query syntax" in tools[0].description
     assert "Use after gmail_search" in tools[1].description
     assert tools[0].fn(%*{"query": "x"}) == gmailSetupHint
+    removeDir(home)
+
+proc decodeUrlSafe(text: string): string =
+  ## Gmail's `raw` is base64url; decode it to read what would be sent.
+  var s = text.replace('-', '+').replace('_', '/')
+  s.add(repeat('=', (4 - s.len mod 4) mod 4))
+  decode(s)
+
+suite "gmail_send: the draft default":
+  test "no recipient is refused before any file or network call":
+    let home = freshHome("waku-gmail-norecipient")
+    let rec = newRecorder(proc(url: string): tuple[status: int,
+        text: string] = (599, "must not be called"))
+    assert gmailSend(rec.fetchOf(), home, 1_700_000_000, false, "", "s", "b",
+      "", "") ==
+      "gmail_send needs a recipient address — call it again with one."
+    assert rec.calls.len == 0
+    assert not dirExists(home / "outbox")
+    removeDir(home)
+
+  test "the default writes a draft and says nothing was sent":
+    let home = freshHome("waku-gmail-draft")
+    # No token file at all: drafting needs none, because nothing leaves the
+    # machine and a sign-in wall would only lose the user's words.
+    let rec = newRecorder(proc(url: string): tuple[status: int,
+        text: string] = (599, "must not be called"))
+    let text = gmailSend(rec.fetchOf(), home, 1_700_000_000, false,
+      "ana@example.com", "Hola", "cuerpo", "", "")
+    assert text == "Draft to ana@example.com placed in outbox (" &
+      "20231114T221320-ana-example-com.txt). Nothing was sent — review it there."
+    assert rec.calls.len == 0
+    let written = readFile(home / "outbox" / "20231114T221320-ana-example-com.txt")
+    assert written == "To: ana@example.com\nSubject: Hola\n\ncuerpo\n"
+    removeDir(home)
+
+  test "a second draft to the same person never overwrites the first":
+    let home = freshHome("waku-gmail-draft-collide")
+    let rec = newRecorder(proc(url: string): tuple[status: int,
+        text: string] = (599, "must not be called"))
+    discard gmailSend(rec.fetchOf(), home, 1_700_000_000, false,
+      "ana@example.com", "Uno", "primero", "", "")
+    let second = gmailSend(rec.fetchOf(), home, 1_700_000_000, false,
+      "ana@example.com", "Dos", "segundo", "", "")
+    assert "-2.txt)" in second
+    assert "primero" in readFile(
+      home / "outbox" / "20231114T221320-ana-example-com.txt")
+    assert "segundo" in readFile(
+      home / "outbox" / "20231114T221320-ana-example-com-2.txt")
+    removeDir(home)
+
+  test "a draft for a thread carries both reply headers":
+    let home = freshHome("waku-gmail-draft-reply")
+    let rec = newRecorder(proc(url: string): tuple[status: int,
+        text: string] = (599, "must not be called"))
+    discard gmailSend(rec.fetchOf(), home, 1_700_000_000, false,
+      "ana@example.com", "Re: Hola", "gracias", "thread-9", "<m1@x>")
+    let written = readFile(home / "outbox" / "20231114T221320-ana-example-com.txt")
+    assert written.startsWith("To: ana@example.com\nSubject: Re: Hola\n" &
+      "X-Waku-Thread: thread-9\nIn-Reply-To: <m1@x>\n\n")
+    removeDir(home)
+
+suite "gmail_send: the real switch":
+  test "with the switch on it posts the base64url RFC 822 message":
+    let home = freshHome("waku-gmail-send")
+    tokenFile(home, 1_700_003_600)
+    let rec = newRecorder(proc(url: string): tuple[status: int,
+        text: string] = (200, """{"id": "sent-1"}"""))
+    let text = gmailSend(rec.fetchOf(), home, 1_700_000_000, true,
+      "ana@example.com", "Hola", "cuerpo", "thread-9", "<m1@x>")
+    assert text == "Sent to ana@example.com (message sent-1)."
+    assert rec.calls.len == 1
+    assert rec.calls[0].url == gmailApiBase & "/messages/send"
+    assert rec.calls[0].meth == "POST"
+    assert rec.calls[0].bearer == "access-1"
+    let payload = parseJson(rec.calls[0].body)
+    assert payload["threadId"].getStr() == "thread-9"
+    assert decodeUrlSafe(payload["raw"].getStr()) ==
+      "To: ana@example.com\nSubject: Hola\nMIME-Version: 1.0\n" &
+      "Content-Type: text/plain; charset=\"utf-8\"\nIn-Reply-To: <m1@x>\n\n" &
+      "cuerpo"
+    assert not dirExists(home / "outbox")
+    removeDir(home)
+
+  test "sending without a usable token does not fall back to a draft":
+    let home = freshHome("waku-gmail-send-notoken")
+    let rec = newRecorder(proc(url: string): tuple[status: int,
+        text: string] = (599, "must not be called"))
+    assert gmailSend(rec.fetchOf(), home, 1_700_000_000, true,
+      "ana@example.com", "Hola", "cuerpo", "", "") == gmailSetupHint
+    assert rec.calls.len == 0
+    assert not dirExists(home / "outbox")
+    removeDir(home)
+
+  test "a refused send is a sentence, not a raise":
+    let home = freshHome("waku-gmail-send-fail")
+    tokenFile(home, 1_700_003_600)
+    let rec = newRecorder(proc(url: string): tuple[status: int,
+        text: string] = (403, "insufficient scope"))
+    let text = gmailSend(rec.fetchOf(), home, 1_700_000_000, true,
+      "ana@example.com", "Hola", "cuerpo", "", "")
+    assert text.startsWith("Gmail could not send to ana@example.com (")
+    assert "403" in text
+    removeDir(home)
+
+suite "gmail_send: the tool":
+  test "it is registered only when the send switch is on":
+    let home = freshHome("waku-gmail-send-tool")
+    let off = makeGmailTools(home, proc(url, meth, body, bearer: string):
+        tuple[status: int, text: string] = (200, ""), false,
+      now = proc(): int64 = 1_700_000_000)
+    let on = makeGmailTools(home, proc(url, meth, body, bearer: string):
+        tuple[status: int, text: string] = (200, ""), true,
+      now = proc(): int64 = 1_700_000_000)
+    assert off.len == 2
+    assert on.len == 3
+    assert on[2].name == "gmail_send"
+    assert on[2].inputSchema["required"][0].getStr() == "to"
+    assert on[2].inputSchema["required"][1].getStr() == "body"
+    assert "Nothing was sent" notin on[2].description
+    assert "NOTHING IS SENT" in on[2].description
     removeDir(home)

@@ -73,6 +73,11 @@ type
       ## untouched machine carries no mail tool in any prompt, and the
       ## token it would read (`.waku/gmail-token.json`) does not exist
       ## until the user signs in with `waku connect google`.
+    gmailSend*: bool
+      ## `WAKU_GMAIL_SEND`: the second, separate switch that lets
+      ## `gmail_send` deliver a real email. Off, the tool drafts into
+      ## `.waku/outbox/` and says plainly that nothing was sent. Turned on,
+      ## it is the only place this repo can write mail in the user's name.
     graphWorkflows*: bool
       ## `WAKU_GRAPH_WORKFLOWS`: route messages through the triage graph
       ## first (fail-open to the plain loop, so never worse).
@@ -118,7 +123,7 @@ proc defaultSettings*(): Settings =
            maxTokens: defaultMaxTokens, historyTurns: defaultHistoryTurns,
            graphWorkflows: false, consolidateEvery: 6, retrievalTopK: 4,
            experimental: false, appleTools: false, ghTool: false,
-           ghRepo: "", gmail: false, semanticStore: "sqlite", mem0UserId: "waku",
+           ghRepo: "", gmail: false, gmailSend: false, semanticStore: "sqlite", mem0UserId: "waku",
            zepUserId: "waku", episodicStore: "sqlite", obsidianVault: "",
            otelEndpoint: "")
 
@@ -165,6 +170,7 @@ proc loadFromEnv*(s: var Settings) =
   s.ghTool = getEnv("WAKU_GH_TOOL") in ["1", "true", "yes"]
   s.ghRepo = getEnv("WAKU_GH_REPO")
   s.gmail = getEnv("WAKU_GMAIL") in ["1", "true", "yes"]
+  s.gmailSend = getEnv("WAKU_GMAIL_SEND") in ["1", "true", "yes"]
   s.graphWorkflows = getEnv("WAKU_GRAPH_WORKFLOWS") in ["1", "true", "yes"]
   s.consolidateEvery = envInt("WAKU_CONSOLIDATE_EVERY", 6)
   s.otelEndpoint = getEnv("OTEL_EXPORTER_OTLP_ENDPOINT")

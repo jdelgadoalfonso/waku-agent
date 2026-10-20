@@ -144,19 +144,20 @@ The user revoked D3 when asking for `gmail.nim` (Log L7 of
 [odd/tasks/gmail-integration.md](../odd/tasks/gmail-integration.md)), so the port
 carries the read tools themselves, not only the row and the scope.
 
-What the port has: `nim/src/gmail.nim` with `gmail_search` and `gmail_read`,
-registered behind a `WAKU_GMAIL` accessor in `nim/src/config.nim` and reached
-through one injected HTTP seam (`GmailHttpFn`), the pattern `SearchFetchFn`
-already uses. It reads `~/.waku/gmail-token.json`, refreshes it without opening
-a browser, and understands both token shapes — the port writes an integer
-`expiry`, Python's `google-auth` writes an RFC 3339 string, and the two
-implementations share one `.waku/`. `nim/src/connect.nim` writes the mail copy
-of the token at the single consent the port already runs, so deleting that one
-file revokes mail alone.
+What the port has: `nim/src/gmail.nim` with `gmail_search`, `gmail_read` and
+`gmail_send`, registered behind a `WAKU_GMAIL` accessor in `nim/src/config.nim`
+and reached through one injected HTTP seam (`GmailHttpFn`), the pattern
+`SearchFetchFn` already uses. It reads `~/.waku/gmail-token.json`, refreshes it
+without opening a browser, and understands both token shapes — the port writes
+an integer `expiry`, Python's `google-auth` writes an RFC 3339 string, and the
+two implementations share one `.waku/`. `nim/src/connect.nim` writes the mail
+copy of the token at the single consent the port already runs, so deleting that
+one file revokes mail alone.
 
-What the port does not have yet: `gmail_send`. It gets its own commit and its
-own review, because an email cannot be unsent. `docs/status.md` states the gap
-so nobody hunts for it.
+`gmail_send` keeps the same bargain in both: it drafts into `.waku/outbox/` and
+registers no sending tool until `WAKU_GMAIL_SEND` is on. The draft filename, the
+headers and the RFC 822 `raw` payload are byte-identical to Python's, checked
+differentially against `waku/tools/gmail.py`.
 
 Live calls need `-d:wakuTls`, exactly like every other live REST call in the
 port; the default build refuses `https://` before any byte goes out.

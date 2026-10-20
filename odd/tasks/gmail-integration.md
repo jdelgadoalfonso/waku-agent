@@ -78,8 +78,10 @@ la aprobación. Nada de código antes de ese sí.
   Inline. Commit 6 = este commit. Absorbe la mitad de T8 que escribe el token
   (ver L8): `connect.nim` deja también `gmail-token.json`.
 - **T7** — Port del envío: `gmail_send` con borrador en `outbox/` por defecto y
-  envío real solo con `WAKU_GMAIL_SEND`. S5, S8. Inline. Commit 7 (unidad propia
-  por riesgo alto: mismo efecto externo irreversible que en Python).
+  envío real solo con `WAKU_GMAIL_SEND`. S5, S8. Inline. Commit 7 = este commit.
+  Unidad propia por riesgo alto (mismo efecto externo irreversible que en
+  Python); el verificador independiente no arrancó (ver L10), así que la
+  evidencia es el diferencial contra `waku/tools/gmail.py` más las suites.
 - **T8** — Cerrar los huecos que el mapa dejó ver: `gmail_*` en el catálogo de
   `toolCatalog` (`dashboard.nim:1090`) y, si aporta, el probe de la fila en
   Connections. S6, S8. Inline. Commit 8. La parte del token ya entró en T6.
@@ -159,3 +161,14 @@ la aprobación. Nada de código antes de ese sí.
   entiende las dos formas de `expiry` porque Python escribe un string RFC 3339
   y el port un epoch entero sobre el mismo `.waku/`. Las llamadas live del port
   siguen necesitando `-d:wakuTls`, como todo REST live del binario.
+
+- **L10** (evidencia de T7): RED primero (`undeclared identifier: 'gmailSend'`),
+  GREEN 26 pins en `nim/tests/test_gmail.nim` y 8 en `test_registry.nim`.
+  Diferencial contra Python, en un home temporal fuera del repo: `raw_message`,
+  el nombre del borrador (incluido el sufijo `-2` de colisión), las cabeceras
+  del borrador y las dos frases que lee el modelo salen byte a byte iguales.
+  `nim check` limpio en `src/waku.nim` y `src/dashboard.nim`. El
+  `gentle-ai-verify` independiente que corresponde a este riesgo falló al
+  arrancar ("assistant reported an error") y, por regla, se reporta como no
+  disponible en vez de reintentarse: la unidad queda cubierta por el
+  diferencial, las suites y la revisión manual del guard de doble switch.

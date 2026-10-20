@@ -109,6 +109,19 @@ suite "buildRegistry":
       elif name == "github_read": iGh = i
     assert iGmail > iApple
     assert iGmail < iGh
+    assert "gmail_send" notin names
+    removeDir(home)
+
+  test "gmail_send needs the second switch on top of the first":
+    let home = freshHome("waku-reg-gmail-send")
+    let db = connectDb(home)
+    var settings = baseSettings(home)
+    settings.gmail = true
+    settings.gmailSend = true
+    let reg = buildRegistry(db, home, settings, stubFetch, stubGh,
+      stubPi(), stubApple(), sqliteFactStore(db), sqliteEpisodeStore(db))
+    db.close()
+    assert "gmail_send" in toolNames(reg)
     removeDir(home)
 
   test "connected MCP tools append last":

@@ -65,11 +65,6 @@ Additionally, and worth stating because people ask:
   found by contributors, not by us. Every Windows claim in this repo is
   untested.
 
-- **Gmail sending is Python-only in the Nim port.** `nim/src/gmail.nim` carries
-  `gmail_search` and `gmail_read` behind a `WAKU_GMAIL` accessor, with its own
-  `~/.waku/gmail-token.json` reader and refresh; `nim/src/connect.nim` writes
-  that file at sign-in. `gmail_send` still exists only in Python, and it is the
-  next slice of the feature.
 - **The judge evals are not in CI.** `make gate` runs deterministic evals at
   100% plus a judge threshold, and CI runs only the first half. The judge tier
   needs an API key, which CI does not have.

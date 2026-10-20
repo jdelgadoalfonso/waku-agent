@@ -323,6 +323,88 @@ proc gmailRead*(fetch: GmailHttpFn, home: string, nowUnix: int64,
     "Date: " & headerValue(payload, "Date") & "\n" &
     "Subject: " & headerValue(payload, "Subject") & "\n\n" & body
 
+proc safeRecipient*(to: string): string =
+  ## The outbox filename carries the recipient, so a draft is findable by
+  ## opening the folder. Anything that is not a letter or digit becomes a
+  ## dash: an address is user data, never a path.
+  for c in to:
+    if result.len >= 40:
+      break
+    result.add(if c.isAlphaNumeric: c else: '-')
+
+proc draftStamp*(nowUnix: int64): string =
+  ## `%Y%m%dT%H%M%S` in UTC, Python's draft timestamp.
+  format(fromUnix(nowUnix).utc, "yyyyMMdd'T'HHmmss")
+
+proc draftPath*(home: string, to: string, nowUnix: int64): string =
+  ## A second draft to the same person must never overwrite the first: the
+  ## outbox holds the user's own words, not a cache we may drop.
+  result = home / "outbox" / (draftStamp(nowUnix) & "-" & safeRecipient(to) &
+    ".txt")
+  var n = 1
+  while fileExists(result):
+    inc n
+    result = home / "outbox" / (draftStamp(nowUnix) & "-" &
+      safeRecipient(to) & "-" & $n & ".txt")
+
+proc draftText*(to, subject, body, threadId, inReplyTo: string): string =
+  ## Headers a person can read and edit, then send themselves.
+  var headers = @["To: " & to, "Subject: " & subject]
+  if threadId.len > 0:
+    headers.add("X-Waku-Thread: " & threadId)
+  if inReplyTo.len > 0:
+    headers.add("In-Reply-To: " & inReplyTo)
+  headers.join("\n") & "\n\n" & body & "\n"
+
+proc writeDraft*(home: string, nowUnix: int64, to, subject, body, threadId,
+    inReplyTo: string): string =
+  ## Deliberately needs no token: nothing leaves the machine, so asking for
+  ## credentials here would only hide the draft behind a sign-in.
+  let path = draftPath(home, to, nowUnix)
+  try:
+    createDir(home / "outbox")
+    writeFile(path, draftText(to, subject, body, threadId, inReplyTo))
+  except IOError as exc:
+    return "Gmail could not write the draft (" & exc.msg & ")."
+  return "Draft to " & to & " placed in outbox (" & path.extractFilename() &
+    "). Nothing was sent — review it there."
+
+proc rawMessage*(to, subject, body, inReplyTo: string): string =
+  ## RFC 822 as Gmail's API wants it: base64url, no line wrapping of our own.
+  ## Only text/plain — an HTML body this tool never wrote would be a guess.
+  var headers = @["To: " & to, "Subject: " & subject, "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=\"utf-8\""]
+  if inReplyTo.len > 0:
+    headers.add("In-Reply-To: " & inReplyTo)
+  let message = headers.join("\n") & "\n\n" & body
+  message.encode().replace('+', '-').replace('/', '_')
+
+proc gmailSend*(fetch: GmailHttpFn, home: string, nowUnix: int64, send: bool,
+    to, subject, body, threadId, inReplyTo: string): string =
+  ## Port of `gmail_send`. Drafting first is not a fallback, it is the
+  ## default: the switch has to be turned on deliberately before this repo
+  ## can send mail in the user's name.
+  if to.len == 0:
+    return "gmail_send needs a recipient address — call it again with one."
+  if not send:
+    return writeDraft(home, nowUnix, to, subject, body, threadId, inReplyTo)
+  let bearer = gmailAccessToken(fetch, home, nowUnix)
+  if bearer.len == 0:
+    return gmailSetupHint
+  var payload = %*{"raw": rawMessage(to, subject, body, inReplyTo)}
+  if threadId.len > 0:
+    payload["threadId"] = %threadId
+  let (status, text) = fetch(gmailApiBase & "/messages/send", "POST",
+    $payload, bearer)
+  if status < 200 or status >= 300:
+    return "Gmail could not send to " & to & " (" & errorText(status, text) &
+      ")"
+  let doc = parseObject(text)
+  let mid = block:
+    let id = if doc == nil: "" else: doc.jget("id").getStr()
+    if id.len > 0: id else: "?"
+  return "Sent to " & to & " (message " & mid & ")."
+
 proc liveGmailNow*(): int64 =
   ## The real clock, for the binary.
   getTime().toUnix
@@ -346,11 +428,13 @@ proc liveGmailFetch*(url, meth, body, bearer: string): tuple[status: int,
   except CatchableError as exc:
     return (0, exc.msg)
 
-proc makeGmailTools*(home: string, fetch: GmailHttpFn,
+proc makeGmailTools*(home: string, fetch: GmailHttpFn, send = false,
     now: GmailClockFn = liveGmailNow): seq[Tool] =
-  ## Registry wiring for the read side. `send` is a separate switch and a
-  ## separate commit, because an email cannot be unsent.
-  @[Tool(name: "gmail_search",
+  ## Registry wiring for the Gmail tools. `send` is the second switch
+  ## (`WAKU_GMAIL_SEND`): with it off, sending means drafting locally and
+  ## `gmail_send` is not registered at all, so an untouched machine carries
+  ## no tool that could put mail in someone's name.
+  result = @[Tool(name: "gmail_search",
       description: "Search the user's Gmail and list the matching " &
         "messages as id | from | subject | date, newest first. Use Gmail's " &
         "own query syntax (from:, subject:, newer_than:7d). Call gmail_read " &
@@ -376,3 +460,25 @@ proc makeGmailTools*(home: string, fetch: GmailHttpFn,
         "required": ["message_id"]},
       fn: proc(args: JsonNode): string =
         gmailRead(fetch, home, now(), strArg(args, "message_id")))]
+  if send:
+    result.add(Tool(name: "gmail_send",
+      description: "Write an email in the user's name. By default it is " &
+        "placed in the local outbox as a draft and NOTHING IS SENT — say so " &
+        "plainly and let the user review and send it. Only when " &
+        "WAKU_GMAIL_SEND is on does it deliver, and then it returns the sent " &
+        "message id. Pass thread_id and in_reply_to to answer an existing " &
+        "thread instead of starting one.",
+      inputSchema: %*{"type": "object",
+        "properties": {
+          "to": {"type": "string", "description": "Recipient address"},
+          "subject": {"type": "string", "description": "Subject line"},
+          "body": {"type": "string", "description": "Plain-text body"},
+          "thread_id": {"type": "string",
+            "description": "Optional: the thread to answer (from gmail_read)"},
+          "in_reply_to": {"type": "string",
+            "description": "Optional: the Message-ID being answered"}},
+        "required": ["to", "body"]},
+      fn: proc(args: JsonNode): string =
+        gmailSend(fetch, home, now(), send, strArg(args, "to"),
+          strArg(args, "subject"), strArg(args, "body"),
+          strArg(args, "thread_id"), strArg(args, "in_reply_to"))))

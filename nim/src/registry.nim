@@ -89,7 +89,7 @@ proc buildRegistry*(db: DbConn, home: string, settings: Settings,
     for t in makeAppleTools(apple):
       result.register(t)
   if settings.gmail:
-    for t in makeGmailTools(home, gmailFetch):
+    for t in makeGmailTools(home, gmailFetch, settings.gmailSend):
       result.register(t)
   if settings.ghTool:
     result.register(makeGithubTool(ghRun, settings.ghRepo))
