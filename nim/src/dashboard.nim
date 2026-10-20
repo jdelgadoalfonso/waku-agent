@@ -89,6 +89,7 @@ import ./factstore
 import ./gather
 import ./gateway
 import ./github
+import ./gmail
 import ./http
 import ./integrations
 import ./key_locations
@@ -1087,12 +1088,20 @@ proc skillRows*(home: string, bundled: seq[string]): JsonNode =
       "body": body, "path": info.path, "rel": rel,
       "editable": p.startsWith(skillsAbs)})
 
-proc toolCatalog*(db: DbConn, home: string): JsonNode =
+proc toolCatalog*(db: DbConn, home: string,
+    env: Table[string, string] = initTable[string, string]()): JsonNode =
   ## Port of `tools_info`: the display-only capability catalog — the same
   ## local tools minus anything that would spawn a subprocess or need the
   ## network on a 5-second poll (no MCP servers, no web search: the port
   ## has no search tool yet, so the catalog lists what it can actually
   ## run). No Apple tools and nothing planned, honestly empty.
+  ##
+  ## Gmail is the one opt-in that appears, and only when `WAKU_GMAIL` turns
+  ## it on: the same flags the registry trusts, so the panel and the agent
+  ## never disagree about whether mail is a capability of this machine.
+  ## Python's display-only path omits them because its catalog prefers the
+  ## live agent's registry; the port's panel would otherwise show nothing
+  ## after the user flipped the switch.
   const flagship = ["create_event", "list_events", "save_note",
     "send_message"]
   const selfmgmt = ["manage_memory", "update_soul", "create_skill"]
@@ -1116,6 +1125,12 @@ proc toolCatalog*(db: DbConn, home: string): JsonNode =
     makeSendMessageTool(home), makeUpdateSoulTool(home),
     makeManageMemoryTool(db, sqliteFactStore(db), sqliteEpisodeStore(db)),
     makeCreateSkillTool(home)]
+  if env.getOrDefault("WAKU_GMAIL", "") in ["1", "true", "yes"]:
+    let sendMail = env.getOrDefault("WAKU_GMAIL_SEND", "") in
+      ["1", "true", "yes"]
+    # The fetch is never called: the catalog renders descriptors only.
+    for t in makeGmailTools(home, liveGmailFetch, sendMail):
+      tools.add(t)
   var items: seq[JsonNode] = @[]
   for t in tools:
     var source = "other"
@@ -1347,7 +1362,7 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
     every
   let nowMs = toUnix(getTime()) * 1000
   let currentSession = dashboardSession(db, nowMs, idleMin)
-  let tools = toolCatalog(db, d.home)
+  let tools = toolCatalog(db, d.home, d.env)
   db.close()
   let (evalReport, evalHistory) = evalSection(d.home)
   let traces = traceSection(d.home)

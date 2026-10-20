@@ -518,6 +518,30 @@ suite "phase 8a /api/data status":
     assert node["usage"]["total_cost"].getFloat() == 18.0
     removeDir(root)
 
+  test "the catalog shows Gmail only when its switch is on":
+    let root = freshDir("waku-dash-datagmail")
+    createDir(root / "static")
+    var deps = testDeps(root, root / "static")
+    var names: seq[string] = @[]
+    for t in parseJson(handleGet(deps, "/api/data")[2])["tools"]["catalog"]:
+      names.add(t["name"].getStr())
+    assert "gmail_search" notin names
+    deps.env["WAKU_GMAIL"] = "1"
+    names = @[]
+    for t in parseJson(handleGet(deps, "/api/data")[2])["tools"]["catalog"]:
+      names.add(t["name"].getStr())
+    assert "gmail_search" in names
+    assert "gmail_read" in names
+    assert "gmail_send" in names
+    # The sending switch does not add a second capability: the tool is the
+    # same one, and only its effect changes, exactly like the registry.
+    deps.env["WAKU_GMAIL_SEND"] = "1"
+    names = @[]
+    for t in parseJson(handleGet(deps, "/api/data")[2])["tools"]["catalog"]:
+      names.add(t["name"].getStr())
+    assert "gmail_send" in names
+    removeDir(root)
+
   test "state rows read an empty home as empty arrays":
     let root = freshDir("waku-dash-datastateempty")
     createDir(root / "static")

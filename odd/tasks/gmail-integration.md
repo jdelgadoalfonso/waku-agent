@@ -83,8 +83,9 @@ la aprobación. Nada de código antes de ese sí.
   Python); el verificador independiente no arrancó (ver L10), así que la
   evidencia es el diferencial contra `waku/tools/gmail.py` más las suites.
 - **T8** — Cerrar los huecos que el mapa dejó ver: `gmail_*` en el catálogo de
-  `toolCatalog` (`dashboard.nim:1090`) y, si aporta, el probe de la fila en
-  Connections. S6, S8. Inline. Commit 8. La parte del token ya entró en T6.
+  `toolCatalog` (`dashboard.nim:1090`). S6, S8. Inline. Commit 8. La parte del
+  token entró en T6 y el probe de la fila no aporta: la fila del port no lo
+  tiene (L5).
 - **T9** — Docs: `docs/status.md` (quitar la asimetría), `docs/integrations.md`
   (la paridad ya es real), `docs/gmail-integration-design.md` (S8/D3 revocadas)
   y este documento. S8. Inline. Commit 9.
@@ -194,3 +195,21 @@ la aprobación. Nada de código antes de ese sí.
   los dos valores del switch y solo el switch cambia el efecto, outbox bloqueado,
   home de solo lectura, y token vencido sin refresh. `test_gmail` 29,
   `test_registry` 7, `test_connect` 27.
+
+- **L12** (segunda pasada de verificación): el runtime no admitió un segundo
+  verificador independiente para este cambio ("declares none ... run its focused
+  test and suite inline yourself"), así que la evidencia de la corrección es
+  inline: `test_gmail` 29 pins (incluye la tool existiendo con los dos valores
+  del switch, outbox bloqueado, home de solo lectura y token vencido sin
+  refresh), `test_registry` 7, `test_connect` 27, todas exit 0, más el
+  diferencial re-ejecutado contra `waku/tools/gmail.py` para el nombre de
+  archivo no ASCII. No se reintentó el lanzamiento del verificador.
+
+- **L13** (T8): `toolCatalog` ahora recibe el env inyectado (como `graphOn` y
+  `consolidateEvery` en el mismo colector) y añade las tres tools de Gmail solo
+  con `WAKU_GMAIL` on. El catálogo del port es display-only y antes no podía
+  leer settings, así que tras dar vuelta el switch el panel no mostraba nada:
+  el agente tenía la capacidad y la página decía que no. Python resuelve eso
+  prefiriendo el registro del agente vivo, que el colector del port no tiene.
+  Pin nuevo en `test_dashboard.nim`: apagado no aparece, encendido aparecen las
+  tres, y `WAKU_GMAIL_SEND` no agrega una cuarta. Suite 134 OK, exit 0.
