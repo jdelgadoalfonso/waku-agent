@@ -807,7 +807,8 @@ proc settingsInfo*(d: DashboardDeps): JsonNode =
   ## Port of `settings_api.settings_info`, as the subset this port owns:
   ## provider/model resolution, key presence (last-4 never leaves the
   ## machine — only the set flag), the curated pin shortlist with each
-  ## provider's default first, disabled providers, and the two toggles.
+  ## provider's default first, disabled providers, the visible provider
+  ## names the Models page's add row browses, and the two toggles.
   ## Display-only extras (typesafe key, pi presence, provider labels)
   ## stay out: only what the Settings page reads is served.
   let (model, smallModel) = modelsFor(d.provider, d.model, d.smallModel,
@@ -828,6 +829,14 @@ proc settingsInfo*(d: DashboardDeps): JsonNode =
   for part in d.env.getOrDefault("WAKU_DISABLED_PROVIDERS", "").split(','):
     if part.strip().len > 0:
       disabled.add(%part.strip())
+  # Names only, exactly like Python's `settings_api` (`[{"name": name} for
+  # name in PROVIDERS if is_visible()]`). The Models page builds its add-row
+  # provider `<select>` from this list and then fetches THAT provider's
+  # catalog, so without it the one control that reaches another provider's
+  # models renders empty and the page can only show the current one.
+  var providerNames = newJArray()
+  for name in visibleNames(d.providers):
+    providerNames.add(%*{"name": name})
   %*{
     "provider": d.provider,
     "model": model,
@@ -836,6 +845,8 @@ proc settingsInfo*(d: DashboardDeps): JsonNode =
     "custom_key_set": d.apiKey.len > 0,
     "disabled_providers": disabled,
     "pinned": pinned,
+    "providers": providerNames,
+    "typesafe_key_set": d.env.getOrDefault("TYPESAFE_API_KEY", "").strip().len > 0,
     "experimental": d.env.getOrDefault("WAKU_EXPERIMENTAL", "") in
       ["1", "true", "yes"],
     "graph_workflows": d.env.getOrDefault("WAKU_GRAPH_WORKFLOWS", "") in
@@ -2656,7 +2667,7 @@ proc liveSlashConnect*(arg: string, box: WakuBox): string =
     env[k] = v
   let nowUnix = getTime().toUnix()
   let google = GoogleSeams(openBrowser: openBrowserLive,
-    waitLoopback: waitGoogleCallbackLive, exchange: exchangeGoogleLive,
+    listenLoopback: listenGoogleLoopbackLive, exchange: exchangeGoogleLive,
     nowUnix: nowUnix)
   let livePost: HttpPostFn =
     proc(url, body, sessionId, bearer: string): HttpResult {.closure.} =

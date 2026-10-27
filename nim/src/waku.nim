@@ -374,7 +374,7 @@ proc runConnectCmd*(dotenvStart: string, argv: seq[string]): int =
   let nowUnix = getTime().toUnix()
   let google = GoogleSeams(
     openBrowser: openBrowserLive,
-    waitLoopback: waitGoogleCallbackLive,
+    listenLoopback: listenGoogleLoopbackLive,
     exchange: exchangeGoogleLive,
     nowUnix: nowUnix)
   let livePost: HttpPostFn =

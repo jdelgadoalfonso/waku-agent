@@ -1,11 +1,12 @@
 ## `waku connect` tests: dispatcher exit codes plus both connectors with
-## stubbed seams. Offline only: temp homes, no browser, no sockets — the
-## live adapters (`waitGoogleCallbackLive`, `exchangeGoogleLive`) are never
-## called here.
+## stubbed seams. Offline only: temp homes, no browser, no outside socket —
+## the live listeners run on 127.0.0.1 when a test asks for one.
 
+import std/httpclient
 import std/json
 import std/os
 import std/strutils
+import std/typedthreads
 import std/unittest
 import std/uri
 
@@ -21,10 +22,22 @@ proc freshHome(name: string): string =
 proc googleSeams(exchangeDoc: JsonNode, target = "/?code=abc"): GoogleSeams =
   GoogleSeams(
     openBrowser: proc(url: string): bool = true,
-    waitLoopback: proc(port: int): string = target,
+    listenLoopback: proc(): GoogleLoopback = GoogleLoopback(port: 45678,
+      wait: proc(): string = target),
     exchange: proc(tokenUri, body: string): tuple[ok: bool,
       doc: JsonNode] = (true, exchangeDoc),
     nowUnix: 1700000000)
+
+var browserThread: Thread[string]
+
+proc hitLoopback(url: string) {.thread.} =
+  ## Play the browser: one request to the redirect URI, like the real click.
+  var client = newHttpClient(timeout = 5000)
+  try:
+    discard client.getContent(url)
+  except CatchableError:
+    discard
+  client.close()
 
 proc memorySignIn(ok: bool, msg = "", identity = ""): MemorySignInFn =
   result = proc(home, name: string): tuple[ok: bool, msg: string,
@@ -78,7 +91,8 @@ suite "connect google":
       """{"installed": {"client_id": "cid", "client_secret": "cs"}}""")
     let seams = GoogleSeams(
       openBrowser: proc(url: string): bool = true,
-      waitLoopback: proc(port: int): string = "/?code=abc",
+      listenLoopback: proc(): GoogleLoopback = GoogleLoopback(port: 45678,
+        wait: proc(): string = "/?code=abc"),
       exchange: proc(tokenUri, body: string): tuple[ok: bool,
         doc: JsonNode] = (false, newJNull()),
       nowUnix: 1700000000)
@@ -121,6 +135,103 @@ suite "connect google":
     # Deleting the mail copy revokes mail alone: the calendar file stays.
     removeFile(home / "gmail-token.json")
     assert fileExists(home / "google-token.json")
+
+  test "one consent opens exactly one browser window":
+    # The loop this pins: a failed wait used to retry, and every retry asked
+    # Google for the same consent again. A sign-in asks once.
+    let home = freshHome("waku-connect-google-one-window")
+    writeFile(home / "credentials.json",
+      """{"installed": {"client_id": "cid", "client_secret": "cs"}}""")
+    var opened = 0
+    let seams = GoogleSeams(
+      openBrowser: proc(url: string): bool = (inc opened; true),
+      listenLoopback: proc(): GoogleLoopback = GoogleLoopback(port: 45678,
+        wait: proc(): string = ""),
+      exchange: proc(tokenUri, body: string): tuple[ok: bool,
+        doc: JsonNode] = (true, newJNull()),
+      nowUnix: 1700000000)
+    let msg = googleConnect(home, seams)
+    assert opened == 1
+    assert "cancelled" in msg
+    assert "Nothing was saved" in msg
+    assert not fileExists(home / "google-token.json")
+
+  test "the browser is sent to the port the listener already holds":
+    let home = freshHome("waku-connect-google-url-port")
+    writeFile(home / "credentials.json",
+      """{"installed": {"client_id": "cid", "client_secret": "cs"}}""")
+    var seen = ""
+    let seams = GoogleSeams(
+      openBrowser: proc(url: string): bool = (seen = url; true),
+      listenLoopback: proc(): GoogleLoopback = GoogleLoopback(port: 39393,
+        wait: proc(): string = "/?error=access_denied"),
+      exchange: proc(tokenUri, body: string): tuple[ok: bool,
+        doc: JsonNode] = (true, newJNull()),
+      nowUnix: 1700000000)
+    discard googleConnect(home, seams)
+    assert encodeUrl("http://localhost:39393") in seen
+
+  test "a refused listener opens no browser and saves nothing":
+    let home = freshHome("waku-connect-google-no-port")
+    writeFile(home / "credentials.json",
+      """{"installed": {"client_id": "cid", "client_secret": "cs"}}""")
+    var opened = 0
+    let seams = GoogleSeams(
+      openBrowser: proc(url: string): bool = (inc opened; true),
+      listenLoopback: proc(): GoogleLoopback = raise newException(IOError,
+        "no free loopback port for the sign-in redirect"),
+      exchange: proc(tokenUri, body: string): tuple[ok: bool,
+        doc: JsonNode] = (true, newJNull()),
+      nowUnix: 1700000000)
+    let msg = googleConnect(home, seams)
+    assert opened == 0
+    assert "no free loopback port" in msg
+    assert not fileExists(home / "google-token.json")
+    assert not fileExists(home / "gmail-token.json")
+
+  test "the live listener keeps the code a real redirect brings":
+    # The defect this pins: the live waiter closed its server after serving
+    # the redirect, that close came back as an OSError, and the flow reported
+    # "port is in use" AFTER a successful sign-in — saving nothing.
+    let listener = listenGoogleLoopbackLive()
+    assert listener.port > 0
+    let other = listenGoogleLoopbackLive()
+    assert other.port != listener.port
+    createThread(browserThread, hitLoopback,
+      "http://127.0.0.1:" & $listener.port & "/?code=abc")
+    let target = listener.wait()
+    joinThread(browserThread)
+    assert target == "/?code=abc"
+
+  test "a real redirect through the live listener caches both tokens":
+    # The end of the old failure: the browser signed in, the flow said the
+    # port was taken, and NOTHING was written. Now the redirect lands on the
+    # listener that opened the browser, and both token files exist after it.
+    let home = freshHome("waku-connect-google-live")
+    writeFile(home / "credentials.json",
+      """{"installed": {"client_id": "cid", "client_secret": "cs"}}""")
+    let seams = GoogleSeams(
+      openBrowser: proc(url: string): bool =
+        let redirectUri = block:
+          var found = ""
+          for key, value in decodeQuery(parseUri(url).query):
+            if key == "redirect_uri":
+              found = value
+          found
+        createThread(browserThread, hitLoopback, redirectUri & "/?code=abc")
+        true,
+      listenLoopback: listenGoogleLoopbackLive,
+      exchange: proc(tokenUri, body: string): tuple[ok: bool,
+        doc: JsonNode] = (true, %*{"access_token": "live",
+          "refresh_token": "rt", "expires_in": 3600}),
+      nowUnix: 1700000000)
+    let msg = googleConnect(home, seams)
+    joinThread(browserThread)
+    assert "Google connected" in msg
+    assert parseJson(readFile(home / "google-token.json"))["token"].getStr() ==
+      "live"
+    assert parseJson(readFile(home / "gmail-token.json"))["token"].getStr() ==
+      "live"
 
   test "one consent asks for the calendar and Gmail scopes":
     let client = %*{"client_id": "cid", "client_secret": "cs"}

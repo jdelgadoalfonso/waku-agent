@@ -289,6 +289,40 @@ suite "phase 8a /api/data status":
     assert node["trace"]["file"].getStr() == "none"
     removeDir(root)
 
+  test "settings name every provider the add row can browse":
+    # `yourModelsCard` builds the add-row provider <select> out of
+    # `settings.providers` (`models.js`), and `loadAddModels` fills the model
+    # <select> from whichever provider it names. A payload without the key
+    # leaves the ONE control that reaches another catalog with no options,
+    # so the page can only ever show the current provider's models. The key
+    # is the contract the view reads, not a display extra.
+    let root = freshDir("waku-dash-dataprov")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    d.providers = loadProviders(getCurrentDir().parentDir() / "waku" /
+      "providers.toml")
+    let node = parseJson(handleGet(d, "/api/data")[2])
+    let served = node["settings"]["providers"]
+    assert served.kind == JArray
+    var names: seq[string] = @[]
+    for entry in served:
+      names.add(entry["name"].getStr())
+    assert names == visibleNames(d.providers)
+    assert names.len > 0
+  test "settings typesafe_key_set drives the Jev card":
+    # `yourModelsCard` reads `d.settings.typesafe_key_set` (models.js:256/271)
+    # to decide whether the Jev card shows its key field. Python serves it
+    # from the TYPESAFE_API_KEY env var; the port must too, or the card always
+    # says "no key" even when a key is present.
+    let root = freshDir("waku-dash-datasettings")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    d.env = initTable[string, string]()
+    d.env["TYPESAFE_API_KEY"] = "sk-test"
+    let node = parseJson(handleGet(d, "/api/data")[2])
+    assert node["settings"]["typesafe_key_set"].getBool()
+    removeDir(root)
+
   test "connections carry full card views like Python collect()":
     # The Connections tab groups cards by `group` and opens modals from
     # `fields` (views.js). Stubs without those keys collapse every card

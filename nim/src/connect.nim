@@ -79,31 +79,27 @@ proc connectUnknown*(name: string): string =
   "Nothing called '" & name & "' to connect. " & connectUsage()
 
 type
-  WaitLoopbackFn* = proc(port: int): string {.closure.}
-    ## Serve the one OAuth redirect on 127.0.0.1 and return its target
-    ## (`/?code=...`), or "" when the browser never came back. Raises
-    ## `IOError` when the port is already held.
+  GoogleLoopback* = object
+    port*: int
+      ## The port the redirect listener ALREADY holds — never a guess.
+    wait*: proc(): string {.closure.}
+      ## Serve the one redirect on 127.0.0.1 and return its target
+      ## (`/?code=...`), or "" when no browser came back before the deadline.
+  ListenGoogleLoopbackFn* = proc(): GoogleLoopback {.closure.}
+    ## Bind the redirect listener NOW, before any browser opens (port 0 =
+    ## any free one, exactly what Python's `run_local_server(port=0)` does).
+    ## Raises `IOError` only when the system refuses the bind.
   GoogleExchangeFn* = proc(tokenUri, body: string): tuple[ok: bool,
       doc: JsonNode] {.closure.}
     ## POST the code for tokens: `(true, response)` or `(false, {})`.
   GoogleSeams* = object
     openBrowser*: BrowserFn
-    waitLoopback*: WaitLoopbackFn
+    listenLoopback*: ListenGoogleLoopbackFn
     exchange*: GoogleExchangeFn
     nowUnix*: int64
   MemorySignInFn* = proc(home, name: string): tuple[ok: bool, msg: string,
       identity: string] {.closure.}
     ## The `mcp_cli.sign_in` step: `(ok, message, signed-in account)`.
-
-proc freeLoopbackPort*(): int =
-  ## A free 127.0.0.1 port for the OAuth redirect (`run_local_server`
-  ## passes `port=0` for the same reason).
-  var sock = newSocket()
-  sock.setSockOpt(OptReuseAddr, true)
-  sock.bindAddr(Port(0), "127.0.0.1")
-  let (_, port) = sock.getLocalAddr()
-  sock.close()
-  int(port)
 
 proc callbackCode*(target: string): (bool, string) =
   ## The `code=` (or `error=`) out of a loopback redirect target.
@@ -178,22 +174,23 @@ proc googleConnect*(home: string, seams: GoogleSeams): string =
   let tokenUri = block:
     let u = client.jget("token_uri").getStr()
     if u.len > 0: u else: googleTokenUri
-  var port = 0
-  try:
-    port = freeLoopbackPort()
-  except OSError as exc:
-    return "Google sign-in failed or was cancelled (" & exc.msg &
-      "). Nothing was saved."
-  let redirectUri = "http://localhost:" & $port
+  # The listener holds its port BEFORE the browser exists, so the redirect
+  # URI is a fact, not a hope. That is what keeps this to ONE window: a
+  # consent page can never be asked twice, because there is nothing left to
+  # retry — a port that cannot be bound fails here, before any browser.
+  let listener = block:
+    try:
+      seams.listenLoopback()
+    except IOError as exc:
+      return "Google sign-in failed or was cancelled (" & exc.msg &
+        "). Nothing was saved."
+  let redirectUri = "http://localhost:" & $listener.port
   if not seams.openBrowser(googleAuthUrl(client, redirectUri)):
     return "Google sign-in failed or was cancelled (no browser). " &
       "Nothing was saved."
-  var target = ""
-  try:
-    target = seams.waitLoopback(port)
-  except IOError as exc:
-    return "Google sign-in failed or was cancelled (" & exc.msg &
-      "). Nothing was saved."
+  let target = listener.wait()
+  if target.len == 0:
+    return "Google sign-in failed or was cancelled. Nothing was saved."
   let (ok, codeOrError) = callbackCode(target)
   if not ok:
     return "Google sign-in failed or was cancelled" &
@@ -455,12 +452,13 @@ proc cliConnect*(argv: seq[string], home: string, google: GoogleSeams,
   createDir(home)
   return (connectIntegration(name, home, google, signIn), 0)
 
-proc waitGoogleCallbackLive*(port: int): string =
-  ## The live loopback waiter: serve the one redirect on 127.0.0.1, answer
-  ## the browser with a plain page, return the target. Real socket — never
-  ## called in tests (they inject `WaitLoopbackFn` fakes).
-  var target = ""
+proc listenGoogleLoopbackLive*(): GoogleLoopback =
+  ## The live redirect listener: bind NOW, then hand back the port and the
+  ## wait. Binding first is the whole point — Python's `run_local_server`
+  ## does the same, and a port that was only *probed* as free can be taken
+  ## before the redirect lands. Real socket — never a test seam.
   var server = newAsyncHttpServer()
+  var target = ""
   proc onReq(req: Request) {.async.} =
     let got = req.url.path &
       (if req.url.query.len > 0: "?" & req.url.query else: "")
@@ -472,14 +470,25 @@ proc waitGoogleCallbackLive*(port: int): string =
   proc watchdog() {.async.} =
     await sleepAsync(300 * 1000)
     server.close()
-  asyncCheck watchdog()
   try:
-    waitFor server.serve(Port(port), onReq, "127.0.0.1")
-  except OSError:
-    raise newException(IOError, "port " & $port &
-      " is in use — the sign-in redirect has nowhere to land. " &
-      "Close whatever holds it and try again.")
-  return target
+    server.listen(Port(0), "127.0.0.1")
+  except OSError as exc:
+    raise newException(IOError,
+      "no free loopback port for the sign-in redirect (" & exc.msg & ")")
+  let port = int(server.getPort())
+  asyncCheck watchdog()
+  return GoogleLoopback(port: port, wait: proc(): string =
+    # The accept loop ends when the server is closed: the redirect arrived
+    # (answered above) or the 300s deadline passed. Either way the close is
+    # not a failure — `target` is what says whether a code came back. The
+    # old shape used `serve()`, whose own close surfaced as an OSError and
+    # was misreported as "port is in use" AFTER a successful sign-in.
+    try:
+      while true:
+        waitFor server.acceptRequest(onReq)
+    except CatchableError:
+      discard
+    target)
 
 proc exchangeGoogleLive*(tokenUri, body: string): tuple[ok: bool,
     doc: JsonNode] =
