@@ -22,7 +22,6 @@
 ## keeps the tests offline and the real socket in the binary.
 
 import std/base64
-import std/httpclient
 import std/json
 import std/os
 import std/strutils
@@ -30,13 +29,12 @@ import std/times
 import std/unicode
 import std/uri
 
-import ./http
+import ./google_auth
 import ./tools
 import ./wire
 
 const
   gmailApiBase* = "https://gmail.googleapis.com/gmail/v1/users/me"
-  gmailTokenUri* = "https://oauth2.googleapis.com/token"
   gmailDefaultLimit* = 10
   gmailMaxLimit* = 25
     ## Both numbers exist because the model can pass any `limit` it likes:
@@ -51,156 +49,29 @@ const
     "opens your browser to sign in."
 
 type
-  GmailHttpFn* = proc(url, meth, body, bearer: string): tuple[status: int,
-      text: string] {.closure.}
-    ## One HTTP round trip. `meth` is `"GET"` (empty body) or `"POST"`.
-    ## Status 0 means the transport failed, like Python's `urlopen` raising
-    ## before an answer existed. `bearer` is empty when the call carries no
-    ## credential (the token refresh).
-  GmailClockFn* = proc(): int64 {.closure.}
-    ## Injected "now", so the refresh decision is a pin and not a race.
+  GmailHttpFn* = GoogleHttpFn
+    ## The same one round trip Google Calendar uses (`google_auth`). Kept as
+    ## its own name because this module's callers and tests read better with
+    ## it, and the alias keeps every existing signature compiling.
+  GmailClockFn* = GoogleClockFn
+    ## The shared clock, under the name this module's callers already use.
+
+proc liveGmailFetch*(url, meth, body, bearer: string): tuple[status: int,
+    text: string] =
+  ## The live socket, named for Gmail's callers. One implementation lives in
+  ## `google_auth`, because a second TLS helper would be a second place to get
+  ## certificate verification wrong.
+  liveGoogleFetch(url, meth, body, bearer)
 
 proc gmailTokenPath*(home: string): string =
   ## Gmail's own file — never `google-token.json` (the calendar's).
   home / "gmail-token.json"
 
-proc loadGmailToken*(home: string): JsonNode =
-  ## The cached record, or nil when absent or unreadable. A torn or
-  ## hand-edited file reads as "not connected", not as a crash mid-turn.
-  let path = gmailTokenPath(home)
-  if not fileExists(path):
-    return nil
-  try:
-    let doc = parseJson(readFile(path))
-    if doc.kind == JObject:
-      return doc
-  except CatchableError:
-    discard
-  return nil
-
-proc expirySeconds*(node: JsonNode): int64 =
-  ## When the access token dies, in unix seconds; 0 means "unknown", which
-  ## is not an error (Python's `Credentials` treats a missing expiry as
-  ## valid).
-  ##
-  ## Two shapes exist in the wild and both must work, because Python and the
-  ## port share one `.waku/`: this port's `connect.nim` writes an integer
-  ## epoch, and Python's `google-auth` writes `"2026-10-19T22:00:00.123456Z"`.
-  case node.kind
-  of JInt:
-    node.getBiggestInt()
-  of JFloat:
-    int64(node.getFloat())
-  of JString:
-    let raw = node.getStr()
-    if raw.len < 19:
-      return 0
-    try:
-      return parse(raw[0 ..< 19], "yyyy-MM-dd'T'HH:mm:ss", utc()).toTime.
-        toUnix
-    except CatchableError:
-      return 0
-  else:
-    0
-
-proc tokenStale*(token: JsonNode, nowUnix: int64): bool =
-  ## Expired, by our clock. An unknown expiry is never stale.
-  let exp = expirySeconds(token.jget("expiry"))
-  exp > 0 and exp <= nowUnix
-
-proc refreshBody*(token: JsonNode): string =
-  ## The `application/x-www-form-urlencoded` body Google's token endpoint
-  ## wants for a refresh (no redirect, no code).
-  "client_id=" & encodeUrl(token.jget("client_id").getStr()) &
-    "&client_secret=" & encodeUrl(token.jget("client_secret").getStr()) &
-    "&refresh_token=" & encodeUrl(token.jget("refresh_token").getStr()) &
-    "&grant_type=refresh_token"
-
-proc errorText(status: int, text: string): string =
-  ## Python reports `{ExceptionName}: {first 120 chars}`; the port has no
-  ## exception to name, so it reports the status it got instead — the same
-  ## information in the one form both can produce.
-  let detail = text.strip()
-  let shown = if detail.len > 120: detail[0 ..< 120] else: detail
-  "HTTP " & $status & (if shown.len > 0: ": " & shown else: "")
-
-proc parseObject(text: string): JsonNode =
-  ## `parseJson` without the raise: a body we cannot read is a failed call,
-  ## not a crashed turn.
-  try:
-    let doc = parseJson(text)
-    if doc.kind == JObject:
-      return doc
-  except CatchableError:
-    discard
-  return nil
-
-proc refreshGmailToken*(fetch: GmailHttpFn, home: string, token: JsonNode,
-    nowUnix: int64): JsonNode =
-  ## Swap the stored `refresh_token` for a fresh access token and persist the
-  ## answer; nil means "treat as not connected", exactly like Python's reader
-  ## returning None when the refresh fails.
-  if fetch == nil:
-    return nil
-  let refreshToken = token.jget("refresh_token").getStr()
-  if refreshToken.len == 0:
-    return nil
-  let endpoint = block:
-    let u = token.jget("token_uri").getStr()
-    if u.len > 0: u else: gmailTokenUri
-  let (status, text) = fetch(endpoint, "POST", refreshBody(token), "")
-  if status < 200 or status >= 300:
-    return nil
-  let answer = parseObject(text)
-  if answer == nil:
-    return nil
-  let access = answer.jget("access_token").getStr()
-  if access.len == 0:
-    return nil
-  # The cached shape stays the one a later reader understands: where the
-  # token came from and when it dies, so nobody reopens a browser to find
-  # out. A refresh answer that omits `refresh_token` keeps the old one:
-  # Google rotates access tokens far more eagerly than refresh tokens.
-  var record = newJObject()
-  for key in ["token_uri", "client_id", "client_secret", "scopes"]:
-    if token.hasKey(key):
-      record[key] = token[key]
-  record["token"] = %access
-  let rotated = answer.jget("refresh_token").getStr()
-  record["refresh_token"] = %(if rotated.len > 0: rotated else: refreshToken)
-  var expiresIn: int64 = 3600
-  let ei = answer.jget("expires_in")
-  if ei.kind == JInt:
-    expiresIn = ei.getBiggestInt()
-  elif ei.kind == JFloat:
-    expiresIn = int64(ei.getFloat())
-  record["expiry"] = %(nowUnix + expiresIn)
-  try:
-    writeFile(gmailTokenPath(home), $record)
-  except IOError:
-    return nil
-  return record
-
-proc gmailAccessToken*(fetch: GmailHttpFn, home: string,
+proc gmailAccessToken*(fetch: GoogleHttpFn, home: string,
     nowUnix: int64): string =
-  ## The bearer for one call, or "" when the user never signed in (or the
-  ## refresh was refused). Cached token → refresh if stale → nil, the order
-  ## `_load_credentials` uses.
-  let token = loadGmailToken(home)
-  if token == nil:
-    return ""
-  var current = token
-  if tokenStale(token, nowUnix):
-    # Both halves or neither: an expired token we cannot refresh is a token
-    # the user must replace, and spending the call to get its 401 would only
-    # report a failure where `waku connect google` is the real answer.
-    if token.jget("refresh_token").getStr().len == 0:
-      return ""
-    let refreshed = refreshGmailToken(fetch, home, token, nowUnix)
-    if refreshed == nil:
-      return ""
-    current = refreshed
-  return current.jget("token").getStr()
+  ## Gmail's own token file, read through the shared loader: cached → refresh
+  ## if stale → "" (not connected), never a browser and never a raise.
+  accessToken(fetch, gmailTokenPath(home), nowUnix)
 
 proc searchCap*(limit: int): int =
   ## Python's `max(1, min(int(limit or DEFAULT), MAX))`: an explicit 0 means
@@ -423,25 +294,6 @@ proc gmailSend*(fetch: GmailHttpFn, home: string, nowUnix: int64, send: bool,
 proc liveGmailNow*(): int64 =
   ## The real clock, for the binary.
   getTime().toUnix
-
-proc liveGmailFetch*(url, meth, body, bearer: string): tuple[status: int,
-    text: string] =
-  ## The live round trip over `http.nim`'s one TLS helper: `https://` gets
-  ## the TLS context in a `-d:wakuTls` build and is refused before any byte
-  ## goes out in the default one. Real socket — never in tests.
-  var client = newTlsHttpClient(timeout = 20 * 1000)
-  var headers = @[("Content-Type", "application/json")]
-  if bearer.len > 0:
-    headers.add(("Authorization", "Bearer " & bearer))
-  client.headers = newHttpHeaders(headers)
-  try:
-    let resp = if meth == "POST":
-      client.request(url, HttpPost, body)
-    else:
-      client.request(url, HttpGet)
-    return (resp.code.int, resp.body)
-  except CatchableError as exc:
-    return (0, exc.msg)
 
 proc makeGmailTools*(home: string, fetch: GmailHttpFn, send = false,
     now: GmailClockFn = liveGmailNow): seq[Tool] =

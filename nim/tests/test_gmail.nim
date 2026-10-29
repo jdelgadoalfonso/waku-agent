@@ -147,6 +147,21 @@ suite "gmail_search":
     assert "Invalid Credentials" in text
     removeDir(home)
 
+  test "a disabled API keeps Google's own instruction and its console URL":
+    ## The most common Gmail failure is an API that is off in the user's OWN
+    ## project, and Google's sentence is the only thing that fixes it. Cutting
+    ## the body at 120 characters threw the console URL away, so the model
+    ## could say only "not enabled in this environment" and offer no next step.
+    let home = freshHome("waku-gmail-apioff")
+    tokenFile(home, 1_700_003_600)
+    const body = """{"error": {"code": 403, "message": "Gmail API has not been used in project 771409951767 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/gmail.googleapis.com/overview?project=771409951767 then retry.", "status": "PERMISSION_DENIED"}}"""
+    let rec = newRecorder(proc(url: string): tuple[status: int,
+        text: string] = (403, body))
+    let text = gmailSearch(rec.fetchOf(), home, 1_700_000_000, "x", 10)
+    assert "https://console.developers.google.com/apis/api/gmail.googleapis.com/overview?project=771409951767" in text
+    assert "{" notin text  # the JSON around the message is not the message
+    removeDir(home)
+
 suite "gmail_read":
   test "without an id it asks for one before touching the network":
     let home = freshHome("waku-gmail-noid")
