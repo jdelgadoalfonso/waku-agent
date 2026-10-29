@@ -98,7 +98,8 @@ guarda la única decisión que sigue en su cancha.
   (refresh 400 -> 200). Que la mitad compartida exista es lo que hizo que un
   solo arreglo cubriera las dos capacidades.
 
-- **L4** (decisión pendiente del usuario): la fila `google_calendar` de
+- **L4** (decisión del usuario, resuelta en L7: opción 1 -- dejarlo como
+  está): la fila `google_calendar` de
   Connections dice, en **ambos** ports, *"Lets Waku create and update Google
   Calendar events"*. En Python es cierto; en el port no existe crear ni
   sincronizar. Corregir solo el texto del port rompe
@@ -130,3 +131,16 @@ guarda la única decisión que sigue en su cancha.
   `nim/config.nims` en `.gitignore` (bloquea la admisión del review nativo).
   Entrega: la rama acumula ~65k líneas sobre `origin/main`; cualquier review
   nativo tiene que ser por rebanada, nunca por rama.
+
+- **L7** (decisiones del usuario, 2026-10-29):
+  1. La fila `google_calendar` **se queda como está** (opción 1 de L4): paridad
+     byte a byte entre ports y el hueco de la escritura documentado en prosa.
+     No hay cambio de código por esta decisión; el costo aceptado es que un
+     usuario del port lee una capacidad que solo Python tiene.
+  2. `nim/config.nims` **se commitea** (commit `a48ab2d`), que además
+     desbloquea la admisión del review nativo (era el archivo sin declarar que
+     hacía responder `unassessable`). No es parte de esta feature: es una
+     decisión de build del repo, y su consecuencia es que lto y
+     `-march=native` ahora aplican a todo el que compile el port, CI incluido.
+  3. Con el árbol ya sin archivos sin declarar, la unidad completa de ayer
+     queda revisable: `assess` sobre el rango de los seis commits.
