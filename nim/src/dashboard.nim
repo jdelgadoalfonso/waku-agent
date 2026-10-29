@@ -90,6 +90,7 @@ import ./gather
 import ./gateway
 import ./github
 import ./gmail
+import ./google_auth
 import ./http
 import ./integrations
 import ./key_locations
@@ -1132,7 +1133,7 @@ proc toolCatalog*(db: DbConn, home: string,
   # once, in the agent's own registry. Threading a live store through the
   # whole collector would buy nothing and touch every route.
   var tools: seq[Tool] = @[makeCreateEventTool(db, home),
-    makeListEventsTool(db), makeSaveNoteTool(db),
+    makeListEventsTool(db, home, liveGoogleFetch), makeSaveNoteTool(db),
     makeSendMessageTool(home), makeUpdateSoulTool(home),
     makeManageMemoryTool(db, sqliteFactStore(db), sqliteEpisodeStore(db)),
     makeCreateSkillTool(home)]

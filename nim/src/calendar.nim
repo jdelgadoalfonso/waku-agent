@@ -1,11 +1,15 @@
-## Calendar tools — port of the LOCAL paths of `waku/tools/calendar.py`.
+## Calendar tools — port of `waku/tools/calendar.py`'s local paths plus the
+## Google READ side.
 ##
 ## `createEvent` writes SQLite + `calendar.ics` and returns the exact local-only
-## strings. The Apple/Google sync branches (opt-in subprocess/HTTP) are OUT of
-## phase 2 and land with the gateway phases; the local-only output below IS the
-## exact Python output when both sync flags are off, so parity holds for the
-## ported scope. `localEvents`/`listEventsLocal` port the read side minus the
-## Google section (same reason).
+## strings. The Apple sync branch and the Google WRITE branch
+## (`sync_to_google_calendar`) are OUT of scope and land with the gateway
+## phases: the local-only create output IS the exact Python output when both
+## sync flags are off, so parity holds for the ported scope.
+##
+## `list_events` is whole: `google_calendar.nim` reads the signed-in primary
+## calendar and this module composes the sections, so the reply names every
+## source it actually consulted instead of calling an unread calendar empty.
 ##
 ## Known subset: the default `end` (start + 1h) is computed on the wall clock
 ## as naive local time. Python computes it tz-aware and then truncates to
@@ -20,6 +24,8 @@ import std/times
 
 import db_connector/db_sqlite
 
+import ./google_auth
+import ./google_calendar
 import ./tools
 
 proc compactDt*(s: string): string =
@@ -104,17 +110,40 @@ proc localEvents*(db: DbConn, start = "", finish = "", limit = 20): string =
       (if r[3].len > 0: " with " & r[3] else: ""))
   return lines.join("\n")
 
-proc listEventsLocal*(db: DbConn, start = "", finish = "",
-                      limit = 20): string =
-  ## Port of `list_events` with no Google source signed in: the local
-  ## section, or the honest no-events sentence naming the checked source.
+proc listEventsComposed*(db: DbConn, home: string, googleFetch: GoogleHttpFn,
+    nowUnix: int64, start = "", finish = "", limit = 20): string =
+  ## Port of `list_events`: every connected source, labelled, plus the sentence
+  ## naming which ones were consulted. The Google section contributes only real
+  ## rows, so "No events found. Checked: ..." stays a true statement about
+  ## calendars that were actually read.
+  var sections: seq[string] = @[]
+  var checked: seq[string] = @[]
+
+  if home.len > 0 and isGoogleConnected(home):
+    checked.add("Google Calendar")
+    let google = googleCalendarSection(googleFetch, home, nowUnix, start,
+      finish, limit)
+    if google.len > 0:
+      sections.add("From Google Calendar:\n" & google)
+
+  checked.add("waku's local calendar")
   let local = localEvents(db, start, finish, limit)
   if local.len > 0:
-    return "From waku's local calendar (events waku created):\n" & local
+    sections.add("From waku's local calendar (events waku created):\n" & local)
+
+  if sections.len > 0:
+    return sections.join("\n\n")
   let window = if start.len > 0 or finish.len > 0:
     " between " & start & " and " & finish
   else: ""
-  return "No events found" & window & ". Checked: waku's local calendar."
+  return "No events found" & window & ". Checked: " & checked.join(", ") & "."
+
+proc listEventsLocal*(db: DbConn, start = "", finish = "",
+                      limit = 20): string =
+  ## The local-only half: the exact string `list_events` answers when nobody
+  ## signed in for Google. One implementation, so a change to the framing
+  ## cannot drift between the two callers.
+  listEventsComposed(db, "", nil, 0, start, finish, limit)
 
 proc makeCreateEventTool*(db: DbConn, home: string): Tool =
   ## Registry wiring for `create_event` (local-only scope).
@@ -133,13 +162,21 @@ proc makeCreateEventTool*(db: DbConn, home: string): Tool =
       createEvent(db, home, strArg(args, "title"), strArg(args, "start"),
                   strArg(args, "end"), strArg(args, "attendees"), strArg(args, "notes")))
 
-proc makeListEventsTool*(db: DbConn): Tool =
-  ## Registry wiring for `list_events` (local source only).
+proc makeListEventsTool*(db: DbConn, home = "",
+    googleFetch: GoogleHttpFn = liveGoogleFetch,
+    clock: GoogleClockFn = nil): Tool =
+  ## Registry wiring for `list_events` across every connected source. `home`
+  ## decides whether Google is even a candidate (its token file); `googleFetch`
+  ## is the injected socket, nil in the default build tests, and `clock` pins
+  ## "today" so a test never races midnight.
   Tool(name: "list_events",
-    description: "Read the user's local calendar (events waku created). " &
+    description: "Read the user's calendar across every connected source " &
+      "(Google Calendar when signed in, plus waku's own local calendar). " &
       "Use whenever the user asks what's on their calendar / schedule for a day, " &
       "week, yesterday, etc. Dates are ISO (e.g. 2026-07-10); omit both to list " &
-      "everything upcoming.",
+      "everything upcoming. For 'yesterday'/'today' resolve the date from the " &
+      "current time given in your system prompt. The result labels which " &
+      "calendar each event came from — repeat that when it matters.",
     inputSchema: %*{"type": "object",
       "properties": {
         "start": {"type": "string", "description": "earliest date to include, ISO (e.g. 2026-07-10)"},
@@ -147,4 +184,6 @@ proc makeListEventsTool*(db: DbConn): Tool =
         "limit": {"type": "integer", "description": "max events to return (default 20)"}},
       "required": []},
     fn: proc(args: JsonNode): string =
-      listEventsLocal(db, strArg(args, "start"), strArg(args, "end"), intArg(args, "limit", 20)))
+      let nowUnix = if clock == nil: getTime().toUnix else: clock()
+      listEventsComposed(db, home, googleFetch, nowUnix, strArg(args, "start"),
+        strArg(args, "end"), intArg(args, "limit", 20)))

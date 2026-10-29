@@ -22,6 +22,7 @@ import ./experimental
 import ./factstore
 import ./github
 import ./gmail
+import ./google_auth
 import ./mcp
 import ./memory_admin
 import ./notes
@@ -65,7 +66,9 @@ proc buildRegistry*(db: DbConn, home: string, settings: Settings,
     searchFetch: SearchFetchFn, ghRun: GhRunner, pi: PiSeams,
     apple: AppleSeams, facts: FactStore, episodes: EpisodeStore,
     mcpTools: seq[Tool] = @[], remember: notes.Remember = nil,
-    gmailFetch: GmailHttpFn = liveGmailFetch): ToolRegistry =
+    gmailFetch: GmailHttpFn = liveGmailFetch,
+    googleCalendarFetch: GoogleHttpFn = liveGoogleFetch,
+    clock: GoogleClockFn = nil): ToolRegistry =
   ## Port of `build_registry`. Every side effect rides an injected seam
   ## (`searchFetch`, `ghRun`, `pi`, `apple`) plus pre-connected
   ## `mcpTools` — tests record them all, the builders pass the live
@@ -74,7 +77,7 @@ proc buildRegistry*(db: DbConn, home: string, settings: Settings,
   ## the Waku Memory send (spec 018); nil, as in every Nim build
   ## today, means save_note answers "not connected" honestly.
   result.register(makeCreateEventTool(db, home))
-  result.register(makeListEventsTool(db))
+  result.register(makeListEventsTool(db, home, googleCalendarFetch, clock))
   result.register(makeSaveNoteTool(db, remember))
   result.register(makeSendMessageTool(home))
   result.register(makeSearchTool(searchFetch))
