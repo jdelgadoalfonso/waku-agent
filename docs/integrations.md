@@ -86,9 +86,12 @@ Nothing secret ever needs to live in the repo: the client file is read once by
 also blocks `credentials.json` and `*token*.json` as a second line of defence.)
 
 The target defaults to the signed-in user's `primary` calendar; set
-`WAKU_GOOGLE_CALENDAR_ID` for another calendar. `list_events` still reads the
-local database. Google failures never roll back the local event, and attendee
-notifications are suppressed (`sendUpdates=none`).
+`WAKU_GOOGLE_CALENDAR_ID` for another calendar. `list_events` reads every
+connected source and says which is which: the signed-in `primary` calendar
+when `~/.waku/google-token.json` exists, plus waku's own local database, so
+"no events found" is never an answer about a calendar nobody opened. Google
+failures never roll back the local event, and attendee notifications are
+suppressed (`sendUpdates=none`).
 
 ## Read and answer mail (Gmail)
 
@@ -122,8 +125,16 @@ answers with the command that fixes it instead of reporting an empty mailbox.
 The Nim port carries the same three tools: `WAKU_GMAIL=1` in `nim/` too,
 reading the same `~/.waku/gmail-token.json` and refreshing it without a browser.
 `gmail_send` registers with them and delivers only under `WAKU_GMAIL_SEND`,
-drafting into `~/.waku/outbox/` otherwise. The port's live calls need
-`-d:wakuTls` like every other one. See [status.md](status.md).
+drafting into `~/.waku/outbox/` otherwise. The port reads the calendar the same
+way: `list_events` asks the signed-in `primary` Google calendar (its own
+`~/.waku/google-token.json`) and labels each source. Creating and syncing
+events is not ported, so the port keeps them in its local database only. The
+port's live calls need a TLS build — `nimble buildTls` writes `./waku_tls`, and
+the default `waku` binary cannot dial `https://` at all. Both capabilities share
+one refresh path (`nim/src/google_auth.nim`): the token endpoint is the one
+Google call that takes a form body, and sending it as JSON made every refresh
+fail, so an expired token read as "not connected" while a valid refresh token
+sat on disk. See [status.md](status.md).
 
 ## Share one memory with your other agents (Waku Memory)
 

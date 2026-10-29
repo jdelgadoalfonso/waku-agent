@@ -65,12 +65,15 @@ Additionally, and worth stating because people ask:
   found by contributors, not by us. Every Windows claim in this repo is
   untested.
 
-- **The Nim port's live Gmail calls need `-d:wakuTls`.** `nim/src/gmail.nim`
+- **The Nim port's live Google calls need a TLS build.** `nim/src/gmail.nim`
   carries `gmail_search`, `gmail_read` and `gmail_send` behind `WAKU_GMAIL` and
-  `WAKU_GMAIL_SEND`, reading the same `~/.waku/gmail-token.json` and refreshing
-  it without a browser. In a default build there is no TLS context, so an
-  `https://` call is refused before any byte goes out — the rule every other
-  live REST call in the port already follows.
+  `WAKU_GMAIL_SEND`, and `nim/src/google_calendar.nim` answers `list_events`
+  from the signed-in primary calendar. Both read their own `~/.waku/` token
+  file and refresh it without a browser, through `nim/src/google_auth.nim`.
+  That build is `nimble buildTls` (`-d:ssl -d:wakuTls` -> `./waku_tls`): in a
+  default build there is no TLS context, so an `https://` call is refused
+  before any byte goes out — the rule every other live REST call in the port
+  already follows.
 
 - **The judge evals are not in CI.** `make gate` runs deterministic evals at
   100% plus a judge threshold, and CI runs only the first half. The judge tier

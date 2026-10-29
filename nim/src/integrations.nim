@@ -39,6 +39,15 @@
 ##   plus the `waku_memory.status` seam, both outside this unit's surfaces.
 ## - The apply-path tracer event (`config` provider switch) has no seam
 ##   and is skipped.
+## - The `google_calendar` row's text promises create/update, which the port
+##   does NOT do: `create_event` writes the local SQLite + ICS only, and
+##   Python's `sync_to_google_calendar` is unported. The row text stays byte-
+##   identical anyway, because `renderEnvExampleBlock` must reproduce
+##   `.env.example` (generated from the Python registry) and a per-port string
+##   would break that. The READ half IS ported: `google_calendar.nim` answers
+##   `list_events` from the signed-in primary calendar, so the sentence a
+##   Nim user reads on screen overstates the WRITE path only. See
+##   `nim/README.md` and `docs/integrations.md`.
 ##
 ## Name mapping for the underscored Python helpers: `_configured` is
 ## `fieldConfigured`, `_status` is `integrationStatus` and `_positive_int`

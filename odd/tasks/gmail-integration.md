@@ -91,6 +91,12 @@ la aprobación. Nada de código antes de ese sí.
   `docs/integrations.md` (la paridad de las tres tools ya es real),
   `docs/gmail-integration-design.md` (D3 revocada, rollout 5, tabla de riesgos),
   `nim/README.md` y este documento. S8. Inline. Commit 9 = este commit.
+- **T10** — Bug fix del reporte de L15: `reason()` + `MAX_ERROR_CHARS = 420` +
+  `token_info()` en `waku/tools/google_calendar.py` (de donde `gmail.py` los
+  importa), el fallback a `from_authorized_user_info` en los dos lectores, y
+  `errorText`/`gmailMaxErrorChars` del port movidos a `nim/src/google_auth.nim`.
+  S6, S7. Inline. Commit 10 = `a4be26d` (Python) y `ecd88a8` (port). El
+  desarrollo del lado Nim vive en `odd/tasks/google-calendar-nim-read.md`.
 
 ## Log
 
@@ -235,3 +241,34 @@ la aprobación. Nada de código antes de ese sí.
   Pendiente del usuario: push y PRs en cadena (la rama tiene 64269 líneas
   cambiadas en 209 commits: cualquier review nativo tiene que ser por rebanada,
   no por rama), y la decisión sobre `nim/config.nims` en `.gitignore`.
+
+- **L15** (reporte del usuario al día siguiente, verbatim, con su segunda
+  indicación):
+  > estoy intentando conectar con gmail, he hecho todos los pasos de connect y
+  > me genera los archivos de token, pero cuando escribo en el chat me aparece
+  > este mensaje:
+  >
+  > Lo siento, no puedo acceder a tu Gmail en este momento: la API de Gmail no
+  > está habilitada ni autorizada en este entorno local de Waku, así que no
+  > puedo buscar ni leer tus correos de hoy.
+  >
+  > [...] Por otro lado centrate en la versión hecha en Nim
+
+  Dos bloqueadores independientes, cada uno escondiendo al otro: la frase
+  accionable de Google (la URL de la consola) se cortaba a 120 caracteres, y
+  Python no podía leer un `expiry` entero que el `connect` del port escribe
+  sobre el mismo `.waku/`, así que un token válido leía como "not connected".
+  Corregidos en `a4be26d` (Python) y `ecd88a8` (el `errorText` del port, que al
+  portarse quedó compartido en `google_auth.nim`). Cambia la spec S6 en su
+  alcance: la tolerancia de `expiry` ahora es explícitamente de las dos partes
+  y en las dos direcciones. Sigue pendiente la acción del usuario que no es
+  código: la API de Gmail y la de Google Calendar estaban deshabilitadas en su
+  propio proyecto de Google Cloud (`waku-agent-512912`).
+- **L16** (el defecto que L15 destapó en el port y no en Python): el refresh
+  del token del port mandaba cuerpo JSON al endpoint de token, que toma
+  formulario. Todo refresh fallaba con un 400, así que al vencer el access
+  token (una hora) Gmail y el calendario habrían contestado "not connected" con
+  el `refresh_token` intacto en disco. Arreglado en `ecd88a8`
+  (`wantsFormBody`), verificado en vivo (400 -> 200), y es el motivo por el que
+  la diversión compartida `nim/src/google_auth.nim` existe. Detalle completo en
+  `odd/tasks/google-calendar-nim-read.md` (L3).

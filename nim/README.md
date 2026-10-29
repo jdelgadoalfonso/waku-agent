@@ -362,8 +362,16 @@ episode; `settle` waits for the graph to stop growing, not just the episodes.
   scripted-or-`clientFor` brains, sequential by design). The dashboard
   wires them plus the provider/integration probes and the graph stream;
   races need API keys, everything else is offline-testable.
-- `src/calendar.nim` ports the local calendar paths: `create_event` (guard,
-  +1h default, idempotence, SQLite + ICS) and the windowed local list.
+- `src/calendar.nim` ports `create_event` (guard, +1h default, idempotence,
+  SQLite + ICS) and `list_events`' composition: every connected source,
+  labelled, plus the sentence naming which ones were consulted.
+- `src/google_auth.nim` is the Google half both tools share: the cached-token
+  read, the refresh over one injected seam, the integer-or-RFC-3339 `expiry`
+  both ports leave behind, and Google's own `error.message` carried back as a
+  sentence. `src/google_calendar.nim` is the calendar READ side on top of it
+  (`calendar.events.readonly`, its own `google-token.json`, `singleEvents=true`
+  so a recurring meeting is the instance that falls in the window). Creating
+  and syncing events (`sync_to_google_calendar`) is still unported.
 - `src/notes.nim`, `src/messages.nim`, `src/memory_admin.nim` port the local
   tools: `save_note`, `send_message` (outbox drafts), `manage_memory`,
   `update_soul` (+ `SOUL.md` default) and `create_skill` (+ SKILL.md
