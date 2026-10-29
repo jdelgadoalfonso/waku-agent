@@ -26,6 +26,7 @@ import base64
 from datetime import UTC, datetime
 from pathlib import Path
 
+from waku.tools.google_calendar import reason, token_info
 from waku.tools.registry import Tool
 
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
@@ -116,7 +117,16 @@ def _load_credentials(home: Path, scopes: list[str]):
     try:
         creds = Credentials.from_authorized_user_file(str(path), scopes=scopes)
     except Exception:
-        return None
+        # The Nim port shares this `.waku/` and writes `expiry` as an integer
+        # epoch, which google-auth refuses to parse while the file is still a
+        # valid token. Same tolerance as the calendar, same helper.
+        info = token_info(path)
+        if info is None:
+            return None
+        try:
+            creds = Credentials.from_authorized_user_info(info, scopes=scopes)
+        except Exception:
+            return None
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
@@ -262,7 +272,7 @@ def make_tools(home: Path, send: bool = False) -> list[Tool]:
         try:
             return _search(service, query, limit)
         except Exception as exc:
-            return f"Gmail search unavailable ({type(exc).__name__}: {str(exc)[:120]})"
+            return f"Gmail search unavailable ({reason(exc)})"
 
     def gmail_read(message_id: str = "") -> str:
         if not message_id:
@@ -273,7 +283,7 @@ def make_tools(home: Path, send: bool = False) -> list[Tool]:
         try:
             return _read(service, message_id)
         except Exception as exc:
-            return f"Gmail could not open {message_id} ({type(exc).__name__}: {str(exc)[:120]})"
+            return f"Gmail could not open {message_id} ({reason(exc)})"
 
     def gmail_send(
         to: str = "",
@@ -297,7 +307,7 @@ def make_tools(home: Path, send: bool = False) -> list[Tool]:
                 payload["threadId"] = thread_id
             sent = service.users().messages().send(userId="me", body=payload).execute()
         except Exception as exc:
-            return f"Gmail could not send to {to} ({type(exc).__name__}: {str(exc)[:120]})"
+            return f"Gmail could not send to {to} ({reason(exc)})"
         return f"Sent to {to} (message {sent.get('id', '?')})."
 
     return [

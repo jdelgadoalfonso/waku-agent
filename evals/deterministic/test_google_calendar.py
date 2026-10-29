@@ -1,14 +1,15 @@
-"""DETERMINISTIC EVAL — Google Calendar is an opt-in write target only."""
+"""DETERMINISTIC EVAL — Google Calendar: the opt-in write target and the read."""
 
 from __future__ import annotations
 
+import json
 import sys
 from types import ModuleType
 
 from evals.helpers import ScriptedClient, make_waku
 from waku.config import Settings
 from waku.db import connect
-from waku.tools import calendar
+from waku.tools import calendar, google_calendar
 
 
 def _install_fake_google_modules(monkeypatch, *, execute_error: Exception | None = None):
@@ -209,3 +210,115 @@ def test_eval_factory_disables_google_even_when_environment_enables_it(tmp_path,
         assert app.settings.google_calendar is False
     finally:
         app.close()
+
+
+# Everything below runs offline: the google.* surface is faked through
+# sys.modules, like the helper above does for the write path.
+
+
+class _FakeHttpError(Exception):
+    """Google's HttpError carries the actionable sentence in a JSON body; the
+    class name alone says nothing the model can act on."""
+
+    def __init__(self, payload):
+        super().__init__('HttpError 403 when requesting ... returned "forbidden"')
+        self.content = json.dumps(payload).encode()
+
+
+def _install_fake_read_modules(monkeypatch, *, list_error=None):
+    """Just enough google.* for `list_google_events` to reach a failing read."""
+    credentials = ModuleType("google.oauth2.credentials")
+
+    class Credentials:
+        expired = False
+        valid = True
+        refresh_token = "ref"
+
+        @classmethod
+        def from_authorized_user_file(cls, path, scopes=None):
+            return cls()
+
+    credentials.Credentials = Credentials
+
+    # `_load_credentials` imports these two first: without them it answers
+    # None for a MISSING DEPENDENCY and the test would pass for the wrong
+    # reason.
+    requests_mod = ModuleType("google.auth.transport.requests")
+    requests_mod.Request = object
+    transport = ModuleType("google.auth.transport")
+    transport.requests = requests_mod
+    auth = ModuleType("google.auth")
+    auth.transport = transport
+
+    google = ModuleType("google")
+    oauth2 = ModuleType("google.oauth2")
+    oauth2.credentials = credentials
+    google.oauth2 = oauth2
+    google.auth = auth
+
+    class Request:
+        def execute(self):
+            raise list_error
+
+    class Events:
+        def list(self, **kwargs):
+            return Request()
+
+    class Service:
+        def events(self):
+            return Events()
+
+    discovery = ModuleType("googleapiclient.discovery")
+    discovery.build = lambda name, version, **kwargs: Service()
+    googleapiclient = ModuleType("googleapiclient")
+    googleapiclient.discovery = discovery
+
+    for name, module in {
+        "google": google,
+        "google.auth": auth,
+        "google.auth.transport": transport,
+        "google.auth.transport.requests": requests_mod,
+        "google.oauth2": oauth2,
+        "google.oauth2.credentials": credentials,
+        "googleapiclient": googleapiclient,
+        "googleapiclient.discovery": discovery,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+
+def test_a_disabled_calendar_api_keeps_googles_own_instruction(tmp_path, monkeypatch):
+    """The other half of the same rule Gmail follows: the failure that matters
+    most is an API switched off in the user's OWN project, and Google's
+    sentence is the only thing that fixes it. A 120-character cut threw the
+    console URL away, so the model could say only that it failed.
+    nim/src/google_calendar.nim answers identically."""
+    message = (
+        "Google Calendar API has not been used in project 771409951767 before "
+        "or it is disabled. Enable it by visiting https://console.developers."
+        "google.com/apis/api/calendar-json.googleapis.com/overview?project="
+        "771409951767 then retry."
+    )
+    _install_fake_read_modules(
+        monkeypatch, list_error=_FakeHttpError({"error": {"message": message}})
+    )
+    (tmp_path / "google-token.json").write_text('{"token": "x"}', encoding="utf-8")
+
+    out = google_calendar.list_google_events(tmp_path, "2026-10-28", "2026-10-28")
+
+    assert out.startswith("Google Calendar unavailable (")
+    assert (
+        "https://console.developers.google.com/apis/api/calendar-json.googleapis."
+        "com/overview?project=771409951767" in out
+    )
+    assert "{" not in out
+
+
+def test_a_missing_calendar_token_names_the_sign_in(tmp_path, monkeypatch):
+    """No token is not an empty calendar: the tool answers with the one command
+    that fixes it. The read path never opens a browser itself."""
+    monkeypatch.setattr(google_calendar, "_load_credentials", lambda home, scopes: None)
+
+    out = google_calendar.list_google_events(tmp_path, "2026-10-28", "2026-10-28")
+
+    assert "/connect google" in out
+    assert "No Google Calendar events" not in out

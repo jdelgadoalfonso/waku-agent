@@ -24,6 +24,7 @@ exception, because a calendar hiccup must not take down a chat turn.
 from __future__ import annotations
 
 import datetime as _dt
+import json
 from pathlib import Path
 
 READONLY_SCOPE = "https://www.googleapis.com/auth/calendar.events.readonly"
@@ -54,8 +55,67 @@ _SETUP_HINT = (
 )
 
 
+MAX_ERROR_CHARS = 420
+# How much of a failed Google call may reach the prompt. Generous on purpose:
+# the sentence that FIXES the call is Google's own `error.message` ("Gmail API
+# has not been used in project N before or it is disabled. Enable it by
+# visiting <console url> then retry"), and a 120-character cut throws the
+# console URL away, leaving the model able to report only that it failed.
+# nim/src/google_auth.nim keeps the same number for the same reason.
+
+
+def reason(exc: Exception) -> str:
+    """What to tell the model about a failed Google call.
+
+    Google's `error.message` when the failure was a live API call, the
+    exception's own text otherwise. Never the class name alone: "HttpError"
+    tells the model nothing, while the sentence inside names the project and
+    the console page that turns the API on. Whitespace is collapsed so a
+    pretty-printed body stays one line in the reply.
+
+    Both this module and gmail.py narrate their failures through here, so the
+    two capabilities read alike; nim/src/google_auth.nim's `errorText` is the
+    port's half of the same contract."""
+    try:
+        found = json.loads(getattr(exc, "content", b""))["error"]["message"]
+    except Exception:
+        found = str(exc)
+    return " ".join(str(found).split())[:MAX_ERROR_CHARS]
+
+
 def _token_path(home: Path) -> Path:
     return home / "google-token.json"
+
+
+def token_info(path: Path) -> dict | None:
+    """The cached token as a dict google-auth's `from_authorized_user_info`
+    accepts, or None when the file is not a token at all.
+
+    `expiry` is normalized because two shapes exist in one `.waku/`: Python
+    writes the RFC3339 string `google-auth` parses, and the Nim port's connect
+    writes an integer unix epoch (`nim/src/connect.nim`). Handed the integer,
+    `from_authorized_user_file` raises `AttributeError: 'int' object has no
+    attribute 'rstrip'`, so the port's own token would read as "not connected".
+    This is the same tolerance `nim/src/gmail.nim`'s `expirySeconds` keeps for
+    our string, in the other direction. gmail.py shares this helper for its own
+    token file."""
+    try:
+        info = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(info, dict):
+        return None
+    expiry = info.get("expiry")
+    if isinstance(expiry, (int, float)) and not isinstance(expiry, bool):
+        try:
+            info["expiry"] = _dt.datetime.fromtimestamp(expiry, _dt.UTC).strftime(
+                "%Y-%m-%dT%H:%M:%S.%fZ"
+            )
+        except (OverflowError, OSError, ValueError):
+            # An absurd number means "expiry unknown", which google-auth treats
+            # as valid — the answer the port gives for an unparseable string.
+            info.pop("expiry")
+    return info
 
 
 def _load_credentials(home: Path, scopes: list[str]):
@@ -74,7 +134,15 @@ def _load_credentials(home: Path, scopes: list[str]):
     try:
         creds = Credentials.from_authorized_user_file(str(path), scopes=scopes)
     except Exception:
-        return None
+        # A token the Nim port minted carries an integer epoch, which
+        # google-auth refuses to parse while the file is still a valid token.
+        info = token_info(path)
+        if info is None:
+            return None
+        try:
+            creds = Credentials.from_authorized_user_info(info, scopes=scopes)
+        except Exception:
+            return None
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
@@ -166,7 +234,7 @@ def list_google_events(home: Path, start: str = "", end: str = "", limit: int = 
             maxResults=max(1, min(int(limit or 20), 100)),
         ).execute()
     except Exception as exc:
-        return f"Google Calendar unavailable ({type(exc).__name__}: {str(exc)[:120]})"
+        return f"Google Calendar unavailable ({reason(exc)})"
 
     items = resp.get("items", [])
     if not items:

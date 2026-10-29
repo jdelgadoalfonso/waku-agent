@@ -9,6 +9,7 @@ be unsent).
 from __future__ import annotations
 
 import base64
+import json
 import sys
 from datetime import UTC, datetime
 from types import ModuleType
@@ -138,12 +139,16 @@ class _FakeService:
         return self._entries
 
 
-def _install_fake_gmail(monkeypatch, service, *, build_raises=False):
+def _install_fake_gmail(monkeypatch, service, *, build_raises=False,
+                        file_load_error=None):
     """Install just enough google.* for gmail.py to reach a fake service.
 
     `build_raises` makes the service builder itself explode, which proves a
     test that passes with it never reached the Gmail API — the same stronger
-    claim test_gh_tool.py makes with its exploding subprocess.
+    claim test_gh_tool.py makes with its exploding subprocess. `file_load_error`
+    reproduces what real google-auth raises when it meets a token shape it
+    cannot parse, so a test can drive the fallback that reads the same file as
+    a dict.
     """
     captured = {"build_calls": []}
 
@@ -166,7 +171,15 @@ def _install_fake_gmail(monkeypatch, service, *, build_raises=False):
 
         @classmethod
         def from_authorized_user_file(cls, path, scopes=None):
+            if file_load_error is not None:
+                raise file_load_error
             captured["loaded_token_path"] = path
+            captured["loaded_scopes"] = scopes
+            return FakeCredentials()
+
+        @classmethod
+        def from_authorized_user_info(cls, info, scopes=None):
+            captured["loaded_info"] = info
             captured["loaded_scopes"] = scopes
             return FakeCredentials()
 
@@ -267,6 +280,34 @@ def test_a_missing_token_is_an_honest_sign_in_hint(tmp_path, monkeypatch):
     assert "connect google" in out
 
 
+def test_a_token_written_by_the_nim_port_loads_too(tmp_path, monkeypatch):
+    """Python and the Nim port share one `.waku/`, and the port's connect writes
+    `expiry` as an integer epoch (nim/src/connect.nim:219) where google-auth
+    wants an RFC3339 string; it answers `AttributeError: 'int' object has no
+    attribute 'rstrip'`. The loader used to swallow that and return "not
+    connected yet" while a perfectly good token sat on disk, so the same file
+    is read as a normalized dict instead — the tolerance nim/src/gmail.nim:81
+    already keeps in the other direction. The epoch keeps its instant."""
+    captured = {}
+    service = _FakeService({"m1": _message("m1")}, captured)
+    mods = _install_fake_gmail(
+        monkeypatch,
+        service,
+        file_load_error=AttributeError("'int' object has no attribute 'rstrip'"),
+    )
+    (tmp_path / "gmail-token.json").write_text(
+        '{"token": "x", "refresh_token": "r", "expiry": 1793183892}',
+        encoding="utf-8",
+    )
+
+    out = gmail.make_tools(tmp_path)[0].fn(query="from:ana")
+
+    assert "not connected" not in out
+    assert mods["loaded_info"]["expiry"] == "2026-10-28T10:38:12.000000Z"
+    assert mods["loaded_scopes"] == [gmail.GMAIL_READONLY_SCOPE]
+    assert "m1" in out
+
+
 def test_search_uses_the_readonly_scope_and_its_own_token(tmp_path, monkeypatch):
     """S6: the token is ~/.waku/gmail-token.json, never google-token.json, and
     the scope asked for is gmail.readonly. Revoking mail must not touch the
@@ -351,6 +392,43 @@ def test_a_mailbox_error_degrades_to_a_sentence(tmp_path, monkeypatch):
 
     assert "quota exceeded" in out
     assert not out.startswith("Error running")
+
+
+class _FakeHttpError(Exception):
+    """Google's HttpError carries the actionable sentence in a JSON body; the
+    class name alone tells the model nothing useful."""
+
+    def __init__(self, payload):
+        super().__init__('HttpError 403 when requesting ... returned "forbidden"')
+        self.content = json.dumps(payload).encode()
+
+
+def test_a_disabled_api_keeps_googles_own_instruction(tmp_path, monkeypatch):
+    """The most common Gmail failure is an API that is off in the user's own
+    project, and Google's sentence is the only thing that fixes it. Cutting
+    every detail at 120 characters threw the console URL away, so the model
+    could say only "not enabled in this environment" and offer no next step.
+    The Nim port reads the same field, so both ports answer alike."""
+    message = (
+        "Gmail API has not been used in project 771409951767 before or it is "
+        "disabled. Enable it by visiting https://console.developers.google.com"
+        "/apis/api/gmail.googleapis.com/overview?project=771409951767 then retry."
+    )
+    error = _FakeHttpError({"error": {"code": 403, "message": message}})
+    captured = {}
+    registry, conn = _registry_with(
+        tmp_path, monkeypatch, _FakeService({}, captured, error=error)
+    )
+    try:
+        out = registry.execute("gmail_search", {"query": "newer_than:1d"})
+    finally:
+        conn.close()
+
+    assert (
+        "https://console.developers.google.com/apis/api/gmail.googleapis.com"
+        "/overview?project=771409951767" in out
+    )
+    assert "{" not in out
 
 
 def test_missing_gcal_extra_names_the_install_and_the_sign_in(tmp_path, monkeypatch):

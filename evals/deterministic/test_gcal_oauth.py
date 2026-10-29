@@ -47,6 +47,12 @@ def _install_fake_oauth_modules(monkeypatch, *, execute_error: Exception | None 
             captured["loaded_scopes"] = scopes
             return FakeCredentials(valid=captured.get("creds_valid", True), expired=captured.get("creds_expired", False))
 
+        @classmethod
+        def from_authorized_user_info(cls, info, scopes=None):
+            captured["loaded_info"] = info
+            captured["loaded_scopes"] = scopes
+            return FakeCredentials(valid=captured.get("creds_valid", True), expired=captured.get("creds_expired", False))
+
         def refresh(self, request):
             if refresh_error := captured.get("refresh_error"):
                 raise refresh_error
@@ -417,4 +423,27 @@ def test_google_calendar_token_loading_uses_default_readonly_scopes(
     assert creds is not None
     assert captured["loaded_token_path"] == str(token_file)
     assert captured["loaded_scopes"] == google_calendar.DEFAULT_SCOPES
+    assert captured["loaded_scopes"] == [google_calendar.READONLY_SCOPE]
+
+
+def test_a_token_written_by_the_nim_port_loads_too(tmp_path, monkeypatch):
+    """The port's connect writes `expiry` as an integer epoch
+    (nim/src/connect.nim:219) where google-auth wants an RFC3339 string, and
+    it refuses that shape. One `.waku/` is shared, so the calendar must not
+    answer "not connected" while the token sits right there; the epoch is
+    normalized and keeps its instant."""
+    captured = _install_fake_oauth_modules(monkeypatch)
+    captured["load_error"] = AttributeError("'int' object has no attribute 'rstrip'")
+    token_file = tmp_path / "google-token.json"
+    token_file.write_text(
+        '{"token": "x", "refresh_token": "r", "expiry": 1793183892}',
+        encoding="utf-8",
+    )
+
+    creds = google_calendar._load_credentials(
+        tmp_path, google_calendar.DEFAULT_SCOPES
+    )
+
+    assert creds is not None
+    assert captured["loaded_info"]["expiry"] == "2026-10-28T10:38:12.000000Z"
     assert captured["loaded_scopes"] == [google_calendar.READONLY_SCOPE]
