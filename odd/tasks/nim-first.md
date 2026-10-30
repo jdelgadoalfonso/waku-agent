@@ -188,3 +188,17 @@ Commits landed (rama `nim-first`):
   se detuvo en `test_repo_gates.nim`, así que `test_tls.nim` **nunca corrió** en
   esa corrida y se negó a reclamar la roja de TLS a partir de ella. La evidencia
   de L10 se mantiene desde la corrida del job-2, donde sí corrió y sí falló.
+- **L18** (T3 landed en `ba92282`): 14 pines, 617 líneas, cada uno con su sonda de
+  violación. Verificado por el parent de primera mano: las dos suites en 14 `[OK]`
+  / 0 `[FAILED]` / exit 0, superficie exacta, sin archivos de sonda sobrantes. La
+  excepción angosta se probó en tres direcciones: un literal en otro módulo sigue
+  fallando (disparan los dos pines), un import de un árbol denegado sigue
+  fallando, y `test_repo_docs.nim` conserva cobertura de imports completa porque
+  el único skip del pin de imports es `isThisSuite`, que es falso para él.
+- **L19** (interrupción externa, sin daño): T3b y T6 murieron con `assistant
+  reported an error (quota)`: el proveedor de subagentes está agotado. Verificado
+  que **no dejaron daño**: `git status --porcelain -uall` vacío tras el fallo de
+  T3b, y la suite commiteada sigue en 14 `[OK]` / 0 `[FAILED]` / exit 0. Las dos
+  unidades quedan sin relanzar: un recurso externo agotado no se reintenta solo,
+  y cambiar de agente para esquivar el límite sería un rodeo, no una solución.
+  Ambas siguen pendientes y sin empezar.
