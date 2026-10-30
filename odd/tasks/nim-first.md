@@ -30,6 +30,20 @@ bajo el presupuesto, y advierte que reintentar ese candidato exacto no puede
 funcionar. O sea: el troceo no es higiene de revisión, es la única forma de que
 el review nativo corra.
 
+**Confirmado una segunda vez, y con la prueba de que el alcance no cambió.** El
+mismo día, un commit de docs movió la generación de mutación y el controlador
+ofreció un target nuevo (`sha256:d6eb097b…`) con un linaje nuevo
+(`review-afedbde466bd45fe`). El `inspect` de ese target devuelve el **mismo
+`paths_digest`** (`sha256:a71bdfb87…`) que el candidato rechazado: es el mismo
+alcance, no uno más chico, y solo cambiaron `initial_review_tree` y
+`current_candidate_tree`. Su `repair.counts.lineages` es 0, que corrobora que el
+START fallido no creó autoridad. Por eso no se reintentó el START: la
+continuación terminal de `lens_context_budget_exceeded` es reducir el alcance o
+desactivar el switch, y reintentar un alcance sin reducir es exactamente el
+reintento que el controlador dice que no puede funcionar. **Consecuencia
+práctica: mientras la rama siga sin trocear, cada commit nuevo va a regenerar un
+candidato que falla igual.** El troceo es la compuerta, no un paso posterior.
+
 ## Specs
 
 - **S1 — Python congelado.** `waku/` no gana capacidad nueva ni evals de
