@@ -10,6 +10,23 @@ known-broken is below, and half of it already has a fix in flight.
 
 ---
 
+## Where the work happens now
+
+Waku ships as one Nim binary, built from `nim/` with `nimble build` or
+`make nim-build`. It carries the loop, memory, the gateways, MCP and the
+dashboard, and it embeds the dashboard's files at compile time.
+
+**`waku/`, the Python half, is frozen.** No new capability and no new behaviour
+eval lands there, and new work goes to `nim/`. The folder stays for three
+reasons. It is the parity oracle every phase of the Nim port was verified
+against. `evals/deterministic/` still runs and guards this repository. And the
+Nim port reads files inside it: `nim/tests/test_cli.nim` reads
+`waku/providers.toml`, `nim/src/dashboard.nim` embeds `waku/ops/static`, and
+`nim/src/waku.nim` reads `../waku.nimble`. `hosted/` stays Python, unchanged,
+with its own Elastic License 2.0.
+
+---
+
 ## What works
 
 The four pillars run: the loop, memory (semantic + episodic + procedural with

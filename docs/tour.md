@@ -1,10 +1,12 @@
 # The tour
 
-What Waku does, pillar by pillar, and where to watch each one run. Start the
+What Waku does, pillar by pillar, and where to watch each one run. Everything
+here runs in the Nim binary, `nim/waku`, built with `nimble build` or
+`make nim-build`; [getting-started](getting-started.md) builds it. Start the
 dashboard first:
 
 ```bash
-waku dashboard          # starts a local server → http://localhost:7777
+./nim/waku dashboard    # starts a local server → http://localhost:7777
 ```
 
 ## The dashboard
@@ -14,7 +16,8 @@ the same process runs every turn. This is the fastest way to *get* the system.
 
 A chat dock sits on every tab. Type or **speak**, and watch it flow through the
 harness on the Overview diagram: gate lights up → loop calls a tool → reply comes
-back → memory updates. The frontend is plain static files. No build step.
+back → memory updates. The frontend is plain static files, and the build embeds
+them in the binary, so the server has nothing to read from disk.
 
 Each tab is one pillar, linked to the real files:
 
@@ -53,10 +56,11 @@ iterations**, live. It needs a free `TAVILY_API_KEY` (paste it in
 
 ## The loop
 
-Yes, there's a real agent loop, and it's [~95 lines of plain Python](../waku/loop/agent.py) —
-no LangGraph, no hidden control flow. When a task needs structure *around* the
-loop, that structure is another ~200 readable lines (see
-[graph workflows](#graph-workflows) below).
+Yes, there's a real agent loop, and it's one readable file
+([`nim/src/loop.nim`](../nim/src/loop.nim), with its Python twin in
+[`waku/loop/agent.py`](../waku/loop/agent.py)) — no LangGraph, no hidden control
+flow. When a task needs structure *around* the loop, that structure is another
+readable file (see [graph workflows](#graph-workflows) below).
 
 ```
 while not done:
@@ -102,9 +106,11 @@ covers chat. But some work has **shape** — steps that could run *at the same
 time*, and explicit "if this, go here" routing. A **graph workflow** makes that
 shape first-class: nodes (each does one job — a function, one LLM call, or a
 whole loop turn) connected by edges (what happens next). It extends the Loop
-pillar rather than replacing it: [`loop/agent.py`](../waku/loop/agent.py) did
-not change one line, because a graph arranges calls *around* it and *to* it.
-The whole engine is [one readable file](../waku/graph/engine.py).
+pillar rather than replacing it: a graph arranges calls *around* the loop and
+*to* it, and `nim/src/graph/nodes.nim` runs a whole loop turn as one node
+without touching `runLoop`. The whole engine is
+[one readable file](../nim/src/graph/engine.nim), ported from
+[`waku/graph/engine.py`](../waku/graph/engine.py).
 
 ```mermaid
 flowchart LR

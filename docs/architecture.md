@@ -4,6 +4,23 @@ The same system as the two whiteboard diagrams from the previous videos
 (the generic Harness/Loop/Memory/LLM-Ops one and the Hermes-specific one),
 now with a file path on every box.
 
+## Which half ships, and which half is the answer key
+
+Waku ships as one Nim binary, built from `nim/`. The boxes below name the files
+in `waku/`, because the Python half is the answer key: every phase of the Nim
+port was verified against what those files do, so a reader who wants the
+authoritative behaviour reads them. `nim/src/` mirrors the same pillars —
+`loop.nim`, `memory.nim`, `graph/engine.nim`, `dashboard.nim`, `mcp.nim` and
+`integrations.nim` — and [../nim/README.md](../nim/README.md) maps the rest.
+
+**`waku/` is frozen.** No new capability and no new behaviour eval lands there,
+and new work goes to `nim/`. It stays in the tree for three reasons. It is the
+parity oracle. `evals/deterministic/` still runs and guards this repository.
+And the Nim port reads files inside it: `nim/tests/test_cli.nim` reads
+`waku/providers.toml`, `nim/src/dashboard.nim` embeds `waku/ops/static`, and
+`nim/src/waku.nim` reads `../waku.nimble`. `hosted/` stays Python and stays
+unchanged, with its own Elastic License 2.0.
+
 ```mermaid
 flowchart TB
     subgraph GW["Gateway Interface — waku/gateway/"]
@@ -288,6 +305,12 @@ shows those instead. A proxy that does not know the turn leaves the estimate.
   The two never mix. `evals/hosted_docker/` is a third tier for `hosted/`:
   0/1 and offline, but it needs a Docker daemon and its own CI job.
 - `examples/` — teaching material, not product; one folder per topic.
+- `nim/src/` — the port that ships, one file per box above: `loop.nim`,
+  `memory.nim`, `graph/engine.nim`, `gateway.nim`, `mcp.nim`, `integrations.nim`,
+  `dashboard.nim` (which embeds `waku/ops/static` at compile time) and
+  `waku.nim` (the CLI, reading its version from `../waku.nimble`). `waku/` is
+  frozen at parity: it is the answer key, not a second place to add behaviour.
+  [../nim/README.md](../nim/README.md) says what is ported and what is not.
 - `~/.waku/` — runtime state: `state.db`, `calendar.ics`, `outbox/`, `traces/`.
   `WAKU_HOME` moves it; `make` sets it to the repo's own `.waku/`, which is
   gitignored. `waku/config.py` `resolve_home()` has the rules.

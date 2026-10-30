@@ -2,32 +2,34 @@
 
 Five steps take you from nothing to a Waku that remembers you. Each step ends
 with a check, so you know it worked before you move on. Everything runs on your
-own machine.
+own machine, from one Nim binary.
 
-## 1. Install
+## 1. Build the binary
 
-```bash
-pip install waku-agent
-```
-
-To read or change the code, clone it instead:
+Waku ships as one Nim binary. The build needs Nim 2.0 or newer, and it reads
+this checkout because the dashboard's files embed at compile time:
 
 ```bash
 git clone https://github.com/ShenSeanChen/waku-agent && cd waku-agent
-uv venv && uv pip install -e .
+cd nim && nimble install --depsOnly   # the only step that touches the network
+nimble build                          # builds nim/waku, dashboard assets inside
+cd ..
 ```
+
+From the repo root, `make nim-build` runs the same build and `make nim-test`
+runs the port's offline suite. The binary lands at `nim/waku`, and every command
+below runs it from the repo root. [../nim/README.md](../nim/README.md) covers
+the build switches: live TLS, optional ANSI styling and the memory allocator.
 
 ### Other ways to run it
 
-In a checkout, `uv run waku …` needs no venv activation. Three ways to run it:
-
 | Command | When |
 |---|---|
-| `uv run waku dashboard` | quick start, zero activation (recommended) |
-| `source .venv/bin/activate` → `waku dashboard` | activate once, bare `waku` all session |
-| `uv tool install .` → `waku dashboard` | install `waku` **globally**, forever |
+| `./nim/waku dashboard` | from the repo root, no PATH change (recommended) |
+| `cd nim && ./waku dashboard` | after the build, from inside `nim/` |
+| `alias waku="$PWD/nim/waku"` | a bare `waku` all session |
 
-**Check:** `waku connections` prints a list of integrations.
+**Check:** `./nim/waku connections` prints a list of integrations.
 
 ## 2. Add one key
 
@@ -47,22 +49,23 @@ Waku from (or the nearest folder above it), and `~/.waku/.env`. A key you paste
 in the dashboard goes to the folder's `.env` when there is one, and to
 `~/.waku/.env` when there is not, so Waku finds it from any folder. When Waku
 finds no key, the dashboard's "Set up Waku" page lists the paths it checked,
-and `waku connections` prints the same list under "Model key". A git worktree
-does not see the main checkout's `.env`: start Waku in the main checkout, or
-copy the key's line into `~/.waku/.env`.
+and `./nim/waku connections` prints the same list under "Model key". A git
+worktree does not see the main checkout's `.env`: start Waku in the main
+checkout, or copy the key's line into `~/.waku/.env`.
 
-**Check:** run `waku` and say hi. It answers in the terminal.
+**Check:** `./nim/waku` answers you, and saying hi gets a reply in the terminal.
 
 ## 3. Open the dashboard
 
 ```bash
-waku dashboard          # → http://localhost:7777
+./nim/waku dashboard          # → http://localhost:7777
 ```
 
-`waku` and `waku dashboard` are two doors into the **same** Waku. The dashboard
-is a small web server on your machine (`127.0.0.1`): the browser is the UI, and
-the same process runs every turn. Set `TELEGRAM_BOT_TOKEN` and it starts your
-Telegram bot too.
+`./nim/waku` and `./nim/waku dashboard` are two doors into the **same** Waku.
+The dashboard is a small web server on your machine (`127.0.0.1`): the browser is
+the UI, and the same process runs every turn. The server reads the page's files
+from inside the binary, so there is nothing to serve from disk. Set
+`TELEGRAM_BOT_TOKEN` and it starts your Telegram bot too.
 
 **Check:** send a message from the chat dock and watch the Overview diagram
 light up as it flows through the harness.
@@ -85,16 +88,15 @@ share, so a fact saved in Claude Code can be recalled here, and the other way
 round.
 
 ```bash
-pip install 'waku-agent[mcp]'           # in a checkout: uv pip install -e '.[mcp]'
-waku connect waku-memory                # or /connect waku-memory in the dashboard chat
-waku skill export --to claude,codex     # optional: carry Waku's skills too
+./nim/waku connect waku-memory          # or /connect waku-memory in the dashboard chat
+./nim/waku skill export --to claude,codex   # optional: carry Waku's skills too
 ```
 
 Your browser opens once to sign in. Restart Waku to load the `waku_memory_*`
 tools.
 
-**Check:** `waku mcp` names the account you signed in as, and
-`waku connections` lists Waku Memory as connected.
+**Check:** `./nim/waku mcp` names the account you signed in as, and
+`./nim/waku connections` lists Waku Memory as connected.
 
 To connect Claude Code, Codex, Hermes or Grok Bot to the same memory, see
 [integrations](integrations.md#share-one-memory-with-your-other-agents-waku-memory).
@@ -103,10 +105,10 @@ Beside it, [treg](https://treg.to) gives Waku live data when it researches,
 on your own treg account:
 
 ```bash
-waku connect treg                       # or /connect treg in the dashboard chat
+./nim/waku connect treg                 # or /connect treg in the dashboard chat
 ```
 
-**Check:** `waku connections` lists treg as connected, and so does the
+**Check:** `./nim/waku connections` lists treg as connected, and so does the
 **Connections** page. More in
 [integrations](integrations.md#live-data-for-research-treg).
 
@@ -114,4 +116,4 @@ waku connect treg                       # or /connect treg in the dashboard chat
 
 - [The tour](tour.md): the dashboard's tabs, things to try, and the loop up close.
 - [Integrations](integrations.md): voice, Telegram, calendars and MCP servers.
-- [Commands](commands.md): every `waku` and `make` command.
+- [Commands](commands.md): every command of the binary and every `make` target.

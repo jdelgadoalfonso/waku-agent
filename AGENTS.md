@@ -1,10 +1,18 @@
 # AGENTS.md — read this first
 
-Waku is a local-first personal assistant that shows the four pillars behind
-every serious agent: Harness, Loop, Memory, and Eval/LLM-Ops. It began as a
-repo you could read in an afternoon and is growing into a full open-source
-assistant. Every change must keep it **clear, honest code a newcomer can
+Waku ships as one Nim binary, built from `nim/`. It is a local-first personal
+assistant that shows the four pillars behind every serious agent: Harness,
+Loop, Memory, and Eval/LLM-Ops. It began as a repo you could read in an
+afternoon. Every change must keep it **clear, honest code a newcomer can
 follow**: the project will get bigger, and it must never get muddier.
+
+**The Python half, `waku/`, is frozen**: no new capability and no new
+behaviour eval lands there, and new work goes to `nim/`. It stays in the tree
+for three reasons. It is the parity oracle every phase of the Nim port was
+verified against. `evals/deterministic/` still runs and guards this
+repository. And the Nim port reads files inside it: `nim/tests/test_cli.nim`
+reads `waku/providers.toml`, `nim/src/dashboard.nim` embeds
+`waku/ops/static`, and `nim/src/waku.nim` reads `../waku.nimble`.
 
 This file is for everyone who changes the repo, human or coding agent. A test
 caps it at 100 lines, so the detail lives in the files it points to.
@@ -14,19 +22,21 @@ caps it at 100 lines, so the detail lives in the files it points to.
 | Before you | Read |
 |---|---|
 | run Waku for the first time | [docs/getting-started.md](docs/getting-started.md) |
+| build the binary, or see what is ported | [nim/README.md](nim/README.md) |
 | start anything non-trivial | [docs/status.md](docs/status.md): what works and what is known-broken |
 | decide how much process a change needs | [conventions §2](docs/context/conventions.md#2-how-much-process-a-change-needs) |
-| add capability (tool, gateway, provider, store) | [conventions §3](docs/context/conventions.md#3-where-new-capability-goes-the-footprint-ladder), the footprint ladder |
+| add capability (tool, gateway, provider, store) to `nim/` | [conventions §3](docs/context/conventions.md#3-where-new-capability-goes-the-footprint-ladder), the footprint ladder |
 | add a skill | [CONTRIBUTING.md](CONTRIBUTING.md): no Python needed |
 | connect Waku Memory, or carry skills to another agent | [docs/integrations.md](docs/integrations.md#share-one-memory-with-your-other-agents-waku-memory) |
 | add a tool | the `new-tool` skill in `.claude/skills/new-tool/` |
 | run waku for other people on a server | [hosted/README.md](hosted/README.md) |
 | touch the loop, memory, graph engine or a tool contract | [docs/architecture.md](docs/architecture.md), then conventions §2: it may need a proposal |
 | change how the dashboard looks | [docs/context/design-system.md](docs/context/design-system.md) |
-| change dashboard JavaScript or CSS | [waku/ops/static/README.md](waku/ops/static/README.md) |
+| change dashboard JavaScript or CSS | [waku/ops/static/README.md](waku/ops/static/README.md): the binary embeds these files at build time |
 | write a doc, UI copy, a commit message or a SKILL.md | [docs/context/writing-rules.md](docs/context/writing-rules.md) |
 | add a lesson to `examples/` or a topic to `lab/` | [lab/README.md](lab/README.md), then [conventions §6](docs/context/conventions.md#6-examples-and-video-material) |
 | hit something surprising | [docs/context/gotchas.md](docs/context/gotchas.md), and add it if it is missing |
+| review, merge or release a change (maintainers; contributors skip) | [docs/context/maintainers.md](docs/context/maintainers.md) |
 
 ## Hard rules
 
@@ -34,14 +44,15 @@ caps it at 100 lines, so the detail lives in the files it points to.
    (memory, calendar, chat log, traces, the `usage.jsonl` spend ledger),
    `scripts/demo_seed.py` included, needs the user's explicit yes right before
    each run. A yes never carries over to the next run.
-2. **Never touch secrets in `waku/`,** the code that runs on a person's own
-   machine: no hidden network calls, nothing reads or sends `.env` or keys, and
-   nothing runs at install time. `hosted/` is the platform's own deployment and
-   reads the platform's own configuration by design; it ships to nobody.
+2. **Never touch secrets in `waku/` or `nim/`,** the code that runs on a
+   person's own machine: no hidden network calls, nothing reads or sends
+   `.env` or keys, nothing runs at install time. `hosted/` is the platform's
+   own deployment and reads its own configuration by design; it ships nowhere.
 3. **No new default dependency.** The core is stdlib plus the Anthropic and
    OpenAI clients. Anything else goes behind an extra (`[voice]`, `[telegram]`).
-4. **Every behaviour change gets a deterministic eval** in `evals/deterministic/`
-   (0/1, offline). A bug fix adds the case that would have caught it.
+4. **Every behaviour change gets a deterministic eval** (0/1, offline), in
+   `nim/tests/test_*.nim` for the port and in `evals/deterministic/` for the
+   frozen half. A bug fix adds the case that would have caught it.
 5. **Nothing under `waku/` or `evals/` imports from `examples/` or `lab/`,** and
    `lab/` never ships to PyPI.
 6. **No emojis** in the dashboard, CLI output or docs prose.
@@ -57,9 +68,8 @@ caps it at 100 lines, so the detail lives in the files it points to.
 
 ## What CI blocks
 
-The `validate` workflow runs on every PR, and `hosted-docker` and `nim`
-run beside it.
-Each of these fails one of them:
+The `validate` workflow runs on every PR, with `hosted-docker` and `nim` beside
+it. Each row fails one of them:
 
 | Blocked | Checked by |
 |---|---|
@@ -77,21 +87,13 @@ Each of these fails one of them:
 | this file over 100 lines, a broken rulebook link, an unindexed doc, an import from `examples/` or `lab/`, a lab topic without its playbook, a retired Waku Memory address, an emoji in the rulebook or README, a module-level name defined twice | `evals/deterministic/test_rulebook.py` |
 | any other failing deterministic eval | `pytest evals/deterministic` |
 
-Everything else in the rulebook is checked in review. The judge evals in
-`evals/judge/` need an API key, so `make gate` runs them locally and CI does not.
-
 `hosted-docker` needs a Docker daemon and an XFS filesystem, so it is a job of
-its own, and its row above says "advisory" because it is: a red run there does
-not block a merge until `hosted-docker` is added to `main`'s required checks.
-It now checks the two bridges `networks.sh` creates, but nothing yet about the
-rules that make them safe: `firewall.sh` is still spec 001's group C.
+its own, and its row says "advisory" because a red run there does not block a
+merge yet. `firewall.sh` is still spec 001's group C.
 
 ## Commands
 
+`make nim-build` (the one binary) · `make nim-test` (its offline suite) ·
+`make nim-build-tls` and `make nim-test-tls` (the live-TLS build)
 `make run` · `make dashboard` (localhost:7777) · `make voice` · `make trace` (Phoenix, 6006)
 `make eval` · `make gate` (deterministic + judge) · `make lint` · tests live in `evals/`, not `tests/`
-
-## Maintainers
-
-How maintainers review, merge and release is in
-[docs/context/maintainers.md](docs/context/maintainers.md). Contributors can skip it.

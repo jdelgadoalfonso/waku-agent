@@ -2,7 +2,12 @@
 #
 # Make is not a framework — it's a 45-year-old command shortcut tool that
 # ships with every Mac/Linux. Each target below is just the shell command
-# you'd otherwise type. `make run` = "run the python below", nothing more.
+# you'd otherwise type.
+#
+# Waku ships as one Nim binary. `make nim-build` builds it and `make nim-test`
+# runs its offline suite; those two are the front door. The targets below them
+# drive the frozen Python half in `waku/`, which still runs and still guards
+# the repo (see AGENTS.md for why it stays in the tree).
 #
 # PY picks the project venv automatically so you never need to remember
 # `source .venv/bin/activate` — both work, this is just fewer steps.
@@ -16,7 +21,7 @@ export WAKU_HOME ?= $(CURDIR)/.waku
 .PHONY: run voice telegram whatsapp brief dashboard trace eval eval-judge gate lint nim-test nim-build
 .PHONY: nim-build-tls nim-test-tls
 
-run:            ## chat with Waku in the terminal
+run:            ## chat with Waku in the terminal (the frozen Python half)
 	$(PY) -m waku
 
 voice:          ## talk to it — push-to-talk, or always-on with WAKU_WAKE_WORD
@@ -45,7 +50,7 @@ dashboard:      ## everything on one page — http://localhost:7777 (restart aft
 trace:          ## deep trace waterfalls (Phoenix) at http://localhost:6006
 	$(PY) -m phoenix.server.main serve
 
-eval:           ## deterministic evals (0/1, no judge involved)
+eval:           ## deterministic evals of the frozen Python half (0/1, no judge involved)
 	$(PY) -m pytest -q evals/deterministic
 
 eval-judge:     ## LLM-as-judge evals (scored %, needs an API key)
@@ -67,7 +72,8 @@ lint:
 # from pyproject.toml. Both targets `cd nim` first because the suite's pins
 # read the checkout relative to the working directory (tests/test_cli.nim
 # walks up to waku/providers.toml), so what runs here is the command a person
-# would type from nim/ themselves.
+# would type from nim/ themselves. These are the front door: the binary is how
+# a person uses Waku.
 nim-test:       ## the Nim port's offline suite (every tests/test_*.nim, no API key)
 	cd nim && nimble test
 

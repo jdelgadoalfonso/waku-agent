@@ -1,7 +1,12 @@
 # Commands
 
-The `waku` command is installed with the package. In a checkout, the `make`
-targets are aliases for the same things, plus the eval and tracing tools.
+Waku ships as one Nim binary, `nim/waku`, built with `nimble build` or
+`make nim-build`. The commands in the first table are that binary's. The `make`
+targets in the second table either build and test that binary (the `nim-*`
+targets) or run the frozen Python half in `waku/`.
+
+From the repo root, write `./nim/waku <command>`; from inside `nim/`, write
+`./waku <command>`.
 
 ## waku
 
@@ -9,7 +14,7 @@ targets are aliases for the same things, plus the eval and tracing tools.
 |---|---|
 | `waku` | chat in the terminal |
 | `waku dashboard` | the live cockpit at localhost:7777 (+ Telegram if `TELEGRAM_BOT_TOKEN` is set) |
-| `waku voice` | talk to it — the "waku waku" wake word, or push-to-talk (needs the `[voice]` extra) |
+| `waku voice` | talk to it — the "waku waku" wake word, or push-to-talk |
 | `waku telegram` | message it from your phone (needs `TELEGRAM_BOT_TOKEN`) |
 | `waku discord` | answer in a Discord server (needs `DISCORD_BOT_TOKEN`) |
 | `waku whatsapp` | answer WhatsApp messages (needs `WHATSAPP_TOKEN` and a public URL) |
@@ -32,6 +37,9 @@ as their `waku connect` commands, and `/help` lists the graph workflows.
 
 | Command | Does |
 |---|---|
+| `make nim-build` | the one Nim binary, `nim/waku`; the dashboard's files embed at compile time |
+| `make nim-test` | the port's offline suite (every `nim/tests/test_*.nim`, no API key) |
+| `make nim-build-tls` · `make nim-test-tls` | the same two with live TLS (needs the OpenSSL headers) |
 | `make run` | chat with Waku in the terminal |
 | `make dashboard` | the dashboard at localhost:7777 (restart it after pulling backend changes) |
 | `make voice` | push-to-talk, or always-on with `WAKU_WAKE_WORD` |
@@ -41,10 +49,10 @@ as their `waku connect` commands, and `/help` lists the graph workflows.
 | `make eval-judge` | LLM-as-judge evals (scored %, needs an API key) |
 | `make gate` | the release gate: deterministic must pass, judge must clear its threshold |
 | `make lint` | ruff over the code and the evals |
-| `make nim-test` · `make nim-build` | the Nim port suite and binary (from `nim/`) |
 | `make trace` | trace waterfalls in Phoenix at localhost:6006 |
 | `make shootout RUNS="…"` | the same tasks on different models, e.g. `RUNS="kimi:kimi-k3 anthropic:claude-opus-4-8"` |
 | `make shootout-coding RUNS="…"` | a coding round through pi, scored by tests |
 
-Tests live in `evals/`, not `tests/`. [evals.md](evals.md) explains the two
+`make` with no argument runs `make run`. Tests live in `evals/`, not `tests/`,
+and the port's suites live in `nim/tests/`. [evals.md](evals.md) explains the two
 kinds.
