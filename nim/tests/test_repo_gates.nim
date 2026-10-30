@@ -52,6 +52,24 @@ const
     ## a sync that stopped copying a file must fail as a MISMATCH, not pass
     ## by agreeing with a list this suite had quietly shrunk to match.
 
+  LiteralExempt = ["test_repo_docs.nim"]
+    ## The modules whose STRING LITERALS the reach scan does not read, and
+    ## the only such list. `test_repo_docs.nim` names `examples/README.md`
+    ## and `lab/README.md` because the rulebook it ports names them: a guard
+    ## that READS a README to check an invariant about it does not depend
+    ## on the lessons, while a real `import lab` written there would be
+    ## exactly as wrong as one anywhere else — which is why only the literal
+    ## scan is exempted and both import scans still cover the file.
+    ## `test_rulebook.py:148-156` grants the same exemption, to
+    ## `test_hosted_boundary.py`, in the same shape and for the same reason:
+    ## that file names `lab` as a string to check a BUILT ARTIFACT's member
+    ## list, and its imports stay covered.
+    ##
+    ## A FILE NAME, not a path, because the scan below compares
+    ## `extractFilename`: an exemption cannot quietly spread to a second
+    ## module in another directory. A second entry is a decision, and it
+    ## should be argued for the way this one was.
+
 const
   DeclKeywords = ["proc", "func", "template", "macro", "converter", "type",
     "const", "let", "var"]
@@ -363,7 +381,9 @@ suite "phase 9b-1 the trees nim/ may not reach":
   test "no module names examples/ or lab/ in a string literal":
     var offenders: seq[string] = @[]
     for module in nimModules():
-      if isThisSuite(module):
+      # `LiteralExempt` is applied HERE and nowhere else: the two scans
+      # above and below keep every module, this one included.
+      if isThisSuite(module) or module.extractFilename in LiteralExempt:
         continue
       for hit in literalReachers(readFile(module), DeniedComponents):
         offenders.add(module.extractFilename & ":" & $hit.at & " " & hit.text)
