@@ -63,3 +63,6 @@ nim/tests/test_*
 # `git add -A` stages two files called deploy.pem and deploy.key into a public
 # repository, and nobody reads that diff twice.
 waku/_c1_context_probe/
+
+# the compiled fixture binary lives beside its source
+nim/tests/factstore_fakes
