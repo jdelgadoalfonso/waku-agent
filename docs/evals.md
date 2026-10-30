@@ -21,6 +21,14 @@ Deterministic tests are plain pytest in
 [`evals/judge/`](../evals/judge). CI runs the deterministic tier on every PR.
 The judge tier needs an API key, so `make gate` runs it locally.
 
+`make eval`, `make eval-judge` and `make gate` grade the frozen Python half in
+`waku/`, and the same deterministic tier also carries this repository's own
+guards: the rulebook, the design system, the licence and the hosted boundary.
+The Nim binary has a deterministic tier of its own, and `make nim-test` runs it:
+every `nim/tests/test_*.nim` suite, 0/1, offline, with no model and no API key.
+A change in `nim/` runs `make nim-test`, and a change in `waku/` or in a guard
+runs `make eval`.
+
 There is a third directory, [`evals/hosted_docker/`](../evals/hosted_docker):
 0/1 and offline like the deterministic tier, but it needs a Docker daemon, so
 it runs in its own `hosted-docker` CI job and not in `make gate`. It is only
@@ -38,8 +46,9 @@ per `make gate`. On agent.waku.one the page says that evals run in CI and in
 
 The suites above grade the Waku Agent code. Five turn checks grade the turns
 you run, from the trace each turn already wrote (spec 015,
-[`waku/ops/turn_evals.py`](../waku/ops/turn_evals.py)). Each one answers pass,
-fail or n/a with a one-line note:
+[`waku/ops/turn_evals.py`](../waku/ops/turn_evals.py)). The Nim binary carries
+the same five checks in `nim/src/turn_evals.nim`, so either half grades a turn
+the same way. Each check answers pass, fail or n/a with a one-line note:
 
 | Check | Passes when |
 |---|---|
@@ -55,8 +64,8 @@ turn. Nothing is written for a code check. A turn's row on Observability →
 Turns carries one chip, "5 of 5 checks" or the first failure ("spend claim:
 fail"), and its waterfall shows every check with its note. Evals → Your
 turns counts passed, failed and n/a per check for today, 7 days or all, with
-the newest failing turn. In a terminal, `waku evals turns --window 7d` prints
-the same table and every failing turn. A check grades a finished turn: it
+the newest failing turn. In a terminal, `./nim/waku evals turns --window 7d`
+prints the same table and every failing turn. A check grades a finished turn: it
 never stops or rewrites a reply, and a failed check is not shown in the chat.
 A check fails only when a reader of the trace would agree; when the trace
 cannot settle it, the check says n/a and its note says why.
@@ -85,7 +94,9 @@ deterministic case so it can never come back. A real example from this repo:
 the agent didn't know the current *time* and asked for it before scheduling
 "in 30 minutes". The fix is in [`session.py`](../waku/runtime/session.py), and
 [`test_working_memory.py`](../evals/deterministic/test_working_memory.py) locks
-it in. Run `make gate` → green → the eval history records the run.
+it in. Run `make gate` → green → the eval history records the run. A fix in the
+port adds its case under `nim/tests/`, because a pin in `evals/deterministic/`
+cannot see code that lives in `nim/`.
 
 ## Spend is permanent
 
@@ -112,9 +123,10 @@ mapped in one table, `GENAI` in `waku/ops/observability.py`.
 For span-waterfall views in Phoenix:
 
 ```bash
-pip install -e '.[tracing]'
+pip install -e '.[tracing]'                           # Phoenix, plus the frozen half's OTel exporter
 make trace                                            # Phoenix at localhost:6006
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 make run
+OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317 make run   # the frozen Python half
 ```
 
-Langfuse cloud speaks the same OTel toggle.
+Langfuse cloud speaks the same OTel toggle. The Nim binary exports the same
+spans through the same variable, in `nim/src/otel.nim`.

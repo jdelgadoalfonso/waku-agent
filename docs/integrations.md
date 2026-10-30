@@ -1,8 +1,15 @@
 # Connect it to your life
 
-Everything here is opt-in and behind its own extra. None of it changes the
-loop — a gateway moves text in and out, an integration is a tool the agent
-may call. The four pillars work with none of this installed.
+Everything here is opt-in. None of it changes the loop — a gateway moves text
+in and out, an integration is a tool the agent may call. The four pillars work
+with none of this installed.
+
+Waku's Nim binary carries these integrations as commands of its own (`connect`,
+`mcp`, `voice`, `telegram`, `skill`), so it needs no Python extra to use them. A
+`pip install -e '.[extra]'` line below installs the same capability for the
+frozen Python half in `waku/`, which is what `make run`, `make voice`,
+`make telegram` and `make dashboard` drive. Each section names the half its
+command belongs to.
 
 Moved out of the README, which had grown to 569 lines for a project whose
 promise is that you can read it in an afternoon. Nothing was rewritten.
@@ -10,40 +17,49 @@ promise is that you can read it in an afternoon. Nothing was rewritten.
 ## Talk to it
 
 ```bash
-uv pip install -e '.[voice]'
-waku voice        # hands-free: always-listening for "waku waku"
+./nim/waku voice        # the binary: hands-free, always listening for "waku waku"
 ```
 
-**Hands-free by default.** `waku voice` listens for the wake word **"waku waku"** — a tiny
-Whisper model scans the mic; when it hears the phrase, the big model takes over for your
-command and speaks the reply. Change or disable it:
+**Hands-free by default.** Both halves listen for the wake word **"waku waku"**, and a
+Whisper model scans the mic — `faster-whisper` inside the frozen half, an external
+transcriber named by `WAKU_STT_COMMAND` in the binary. When it hears the phrase, the big model
+takes over for your command and speaks the reply. Change or disable it:
 
 ```bash
-WAKU_WAKE_WORD="hey waku"  waku voice     # any phrase, no training
-WAKU_WAKE_WORD=""          waku voice     # push-to-talk instead (Enter, speak, Enter)
+WAKU_WAKE_WORD="hey waku"  ./nim/waku voice     # any phrase, no training
+WAKU_WAKE_WORD=""          ./nim/waku voice     # push-to-talk instead (Enter, speak, Enter)
 ```
 
 The matcher is ~15 transparent lines with a deterministic eval; it accepts cross-script
 variants (`"waku waku,わくわく"`). A trained openWakeWord model is the efficient v2 upgrade.
 
-**A beautiful voice.** Out of the box it uses macOS `say` — and Waku auto-picks the nicest
-voice you have, preferring a downloaded Premium/Enhanced one (System Settings ▸ Accessibility
-▸ Spoken Content ▸ System Voice) over the robotic built-ins. For the real neural upgrade,
-install [Kokoro](https://github.com/hexgrad/kokoro) — a fully local, offline British-butler
-voice that's picked up automatically, no env var needed:
+The binary ships no mic, no ears and no mouth of its own. It records, transcribes and speaks
+through three external commands, `WAKU_MIC_COMMAND`, `WAKU_STT_COMMAND` and
+`WAKU_TTS_COMMAND`, and it names the one that is missing. [../nim/README.md](../nim/README.md)
+documents the three.
+
+**The frozen half gives you a beautiful voice.** It needs
+`uv pip install -e '.[voice]'` for the mic and the ears, and it uses macOS `say` out of the
+box — Waku auto-picks the nicest voice you have, preferring a downloaded Premium/Enhanced one
+(System Settings ▸ Accessibility ▸ Spoken Content ▸ System Voice) over the robotic built-ins.
+For the real neural upgrade, install [Kokoro](https://github.com/hexgrad/kokoro) — a fully
+local, offline British-butler voice that the frozen half picks up automatically, with no env
+var needed:
 
 ```bash
 uv pip install '.[voice-neural]'          # neural Kokoro (bm_george); pulls torch (~2GB)
+make voice                                # the frozen half talks
 ```
 
-Override either engine with `WAKU_VOICE` (a `say` voice name, or a Kokoro voice like `bf_emma`).
+The frozen half overrides either engine with `WAKU_VOICE` (a `say` voice name, or a Kokoro
+voice like `bf_emma`).
 
 ## Phone to laptop
 
 ```bash
-pip install -e '.[telegram]'
 # message @BotFather, /newbot, put the token in .env, then:
-make telegram
+./nim/waku telegram      # the binary: no extra to install
+make telegram            # the frozen half: needs pip install -e '.[telegram]'
 ```
 
 Text your bot from anywhere and your laptop runs the turn — long-polling, so no
@@ -52,7 +68,8 @@ public URL or webhook. Set `TELEGRAM_ALLOWED_USER` to lock it to just you.
 ## Brief me on my week (Apple Calendar + Mail)
 
 ```bash
-WAKU_APPLE_TOOLS=1 make brief      # macOS; grant the permission prompts once
+WAKU_APPLE_TOOLS=1 ./nim/waku brief   # macOS; grant the permission prompts once
+make brief                            # the frozen half does the same
 ```
 
 Waku reads your **real** Calendar.app (including events invited by email) and
@@ -60,15 +77,18 @@ recent Apple Mail, cross-references your memory, and writes a focus-first briefi
 with clickable `message://` links. Cron it for a morning greeting:
 
 ```
-30 7 * * *  cd ~/waku-agent && make brief
+30 7 * * *  cd ~/waku-agent && WAKU_APPLE_TOOLS=1 ./nim/waku brief
 ```
 
 It runs through the normal harness, so it animates on the dashboard like any turn.
 
 ## Mirror created events to Google Calendar
 
-The local SQLite database and `calendar.ics` stay authoritative. To also write
-`create_event` results to Google Calendar, install the opt-in extra and configure
+**This is the frozen half's section.** The Nim binary reads the signed-in
+primary calendar and keeps every new event in its own local database; it does
+not write to Google Calendar. The local SQLite database and `calendar.ics` stay
+authoritative. To also write `create_event` results to Google Calendar, install
+the opt-in extra and configure
 [Application Default Credentials](https://cloud.google.com/docs/authentication/provide-credentials-adc):
 
 ```bash
@@ -95,16 +115,18 @@ suppressed (`sendUpdates=none`).
 
 ## Read and answer mail (Gmail)
 
-Mail is its own capability behind its own switch, and the client libraries are
-the ones the calendar already uses — nothing new is installed:
+Mail is its own capability behind its own switch, and the Nim binary needs no
+client library for it:
 
 ```bash
-pip install -e '.[gcal]'
-waku connect google          # grants mail too, in its own token file
-WAKU_GMAIL=1 waku            # gmail_search and gmail_read join the prompt
+./nim/waku connect google    # grants mail too, in its own token file
+WAKU_GMAIL=1 ./nim/waku      # gmail_search and gmail_read join the prompt
 ```
 
-`waku connect google` asks for mail access in a second, separate approval and
+The frozen half reuses the libraries the calendar already pulled in, after
+`pip install -e '.[gcal]'`, and runs the same two commands.
+
+`./nim/waku connect google` asks for mail access in a second, separate approval and
 caches `~/.waku/gmail-token.json` with the `gmail.readonly` and `gmail.send`
 scopes. Revoking mail therefore leaves the calendar working, and vice versa.
 Like the calendar's sign-in it needs your own Desktop OAuth client at
@@ -115,7 +137,7 @@ sent — review it there", exactly like `send_message`. Real delivery is a
 second, separate switch, because an email cannot be unsent:
 
 ```bash
-WAKU_GMAIL=1 WAKU_GMAIL_SEND=1 waku
+WAKU_GMAIL=1 WAKU_GMAIL_SEND=1 ./nim/waku
 ```
 
 With `WAKU_GMAIL` off the three tools are not registered at all: no prompt
@@ -145,13 +167,15 @@ Claude Code; episodes, `MEMORY.md` and `state.db` are never written there.
 over MCP: save something in one agent, and recall it in another.
 
 ```bash
-pip install -e '.[mcp]'
-waku connect waku-memory     # or /connect waku-memory in the dashboard chat
+./nim/waku connect waku-memory     # or /connect waku-memory in the dashboard chat
 ```
+
+The frozen half needs `pip install -e '.[mcp]'` first, and then runs the same
+command.
 
 That adds Waku Memory to `~/.waku/mcp.json`, next to any servers already there,
 and opens your browser once to sign in. Restart Waku and its tools appear as
-`waku_memory_*`; `waku mcp` shows which account you are signed in as. A config
+`waku_memory_*`; `./nim/waku mcp` shows which account you are signed in as. A config
 still pointing at Waku Memory's old address is moved to the current one.
 From then on, each fact consolidation keeps is also sent to Waku Memory
 (spec 006). Facts kept before you connected stay in `~/.waku/memory/` for the
@@ -173,8 +197,8 @@ file in this repo.
 ### Carry your skills too
 
 ```bash
-waku skill export --to claude,codex    # ~/.claude/skills/ and ~/.codex/skills/
-waku skill export --project            # ./.claude/skills/, which Muse Code also reads
+./nim/waku skill export --to claude,codex    # ~/.claude/skills/ and ~/.codex/skills/
+./nim/waku skill export --project            # ./.claude/skills/, which Muse Code also reads
 ```
 
 Each skill folder is copied as it is. A copy you changed in the other agent is
@@ -192,9 +216,11 @@ competitors of mem0" is answered from live sources rather than the model's
 memory.
 
 ```bash
-pip install -e '.[mcp]'
-waku connect treg            # or /connect treg in the dashboard chat
+./nim/waku connect treg            # or /connect treg in the dashboard chat
 ```
+
+The frozen half needs `pip install -e '.[mcp]'` first, and then runs the same
+command.
 
 That adds `{"name": "treg", "url": "https://treg.to/mcp/", "oauth": true}` to
 `~/.waku/mcp.json`, next to any servers already there, and opens treg's own
@@ -212,7 +238,7 @@ instead, click Configure on the treg card and paste an org-scoped treg key:
 calls then go straight to `https://treg.to/mcp/` and treg bills your account,
 not your credits. Clear the key to go back to the relay.
 
-`TREG_API_KEY` works the same on your own machine: when it is set in `.env`,
+`TREG_API_KEY` works the same way in the frozen half: when it is set in `.env`,
 Waku reaches the `treg` server in `mcp.json` at treg.to with that key instead
 of the sign-in, and the key is sent only to treg.
 
@@ -223,21 +249,19 @@ TYPESAFE_API_KEY=...      # typesafe.ai
 WAKU_SLOT_GATE=jev
 ```
 
-With both set, Jev scores every retrieved memory against your message and only
-the ones that change the answer go into the prompt; it also scores facts before
-consolidation stores them. One call per turn, about a quarter of a second. Leave
-either unset, or let TypeSafe be unreachable, and Waku behaves as before. The
-TypeSafe card on Connections sets both.
+In the frozen half, with both set, Jev scores every retrieved memory against
+your message and only the ones that change the answer go into the prompt; it
+also scores facts before consolidation stores them. One call per turn, about a
+quarter of a second. Leave either unset, or let TypeSafe be unreachable, and
+Waku behaves as before. The TypeSafe card on Connections sets both.
 
 ## Connect MCP servers
 
-```bash
-pip install -e '.[mcp]'
-```
-
 Create `~/.waku/mcp.json` and any Model Context Protocol server's tools appear to
-the agent, namespaced `<server>_<tool>` (and in the dashboard's Tools ▸ MCP tab). A
-server can declare `tasks` and `when` so its tools reach the model only on matching
+the agent, namespaced `<server>_<tool>` (and in the dashboard's Tools ▸ MCP tab).
+The Nim binary reads the file itself and needs no client library; the frozen half
+reads it once `pip install -e '.[mcp]'` has installed one. A server can declare
+`tasks` and `when` so its tools reach the model only on matching
 turns; a server without `tasks` appears on every turn as before:
 
 ```json
@@ -248,8 +272,8 @@ turns; a server without `tasks` appears on every turn as before:
 **Node-free demo** — a tiny self-contained Python MCP server ships in the repo:
 
 ```bash
-cp examples/mcp.demo.json .waku/mcp.json   # points at evals/fixtures/mcp_demo_server.py
-make dashboard                               # demo_word_count / demo_reverse_text appear in Tools
+mkdir -p .waku && cp examples/mcp.demo.json .waku/mcp.json   # points at evals/fixtures/mcp_demo_server.py
+WAKU_HOME=.waku ./nim/waku dashboard                         # demo_word_count / demo_reverse_text appear in Tools
 ```
 
 Same pattern scales to any server, yours or a vendor's — no changes to Waku's code.
@@ -300,14 +324,14 @@ refused rather than resolved by precedence.
 ### Which account am I signed in as?
 
 ```bash
-waku mcp                      # every server, and the account each knows you as
-waku mcp login waku_memory    # sign in again — as someone else, or after expiry
-waku mcp logout waku_memory   # forget the token
+./nim/waku mcp                      # every server, and the account each knows you as
+./nim/waku mcp login waku_memory    # sign in again — as someone else, or after expiry
+./nim/waku mcp logout waku_memory   # forget the token
 ```
 
 Two agents pointed at the same server as two different people look exactly
 like a broken server: you write something in one and the other cannot find it.
-`waku mcp` prints the email, so the mismatch is visible in one line instead of
+`./nim/waku mcp` prints the email, so the mismatch is visible in one line instead of
 inferred from missing memories.
 
 `login` signs out first on purpose. Without that the stored token is still
@@ -324,6 +348,7 @@ python evals/fixtures/mcp_demo_server.py --http --port 8931
 # .waku/mcp.json → {"servers": [{"name": "demo", "url": "http://127.0.0.1:8931/mcp"}]}
 ```
 
-Requires `mcp>=2.1` (`pip install -e '.[mcp]'`). The 1.x SDK spelled this
-transport differently and the remote branch does not work on it.
+The frozen half requires `mcp>=2.1` (`pip install -e '.[mcp]'`): its 1.x SDK
+spelled this transport differently, and the remote branch does not work on it.
+The Nim binary speaks this transport itself.
 

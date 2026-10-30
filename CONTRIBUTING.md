@@ -25,24 +25,33 @@ agent, it reads AGENTS.md on its own.
    every message anyone sends.
 4. Open a PR. CI runs the same validator.
 
-Anyone can then try your skill instantly:
-`waku skill install <link to your SKILL.md>`
+Anyone can then try your skill instantly, from the repo root after a build:
+`./nim/waku skill install <link to your SKILL.md>`
 
 ## Code contributions
 
+**New capability goes to `nim/`.** Waku ships as one Nim binary built there, and
+`waku/`, the Python half, is frozen: it gains no new capability and no new
+behaviour eval. It stays in the tree because it is the parity oracle the port is
+checked against, and because `evals/deterministic/` still guards this repository
+through it. A change to `waku/` is a bug fix, and it brings its deterministic case
+in `evals/deterministic/` like any other behaviour change.
+
 Good places to add real value:
 
-- **Providers** (`waku/loop/models.py`): most models expose an OpenAI- or Anthropic-compatible
-  endpoint, so a new provider is one table in `waku/providers.toml` — no new wire code, no
+- **Providers** (`nim/src/providers.nim`): most models expose an OpenAI- or Anthropic-compatible
+  endpoint, so a new provider is one row in `waku/providers.toml` — no new wire code, no
   pricing row, no test to edit. Add `waku/ops/static/logos/<name>.svg`, run
   `python scripts/generate_env_example.py`, and the evals pick it up.
   [docs/providers-registry.md](docs/providers-registry.md) has the fields.
-- **Gateways** (`waku/gateway/`): receive/send for a new channel (WhatsApp, Discord, Slack,
-  email). Keep it to one file; the CLI gateway is the reference.
-- **Memory stores** (`waku/memory/semantic/`): match the `add`/`search` interface of
-  `SqliteFactStore`. The Supabase adapter is the reference.
-- **Tools** (`waku/tools/`): a new capability the agent can call. Follow `calendar.py` and the
-  `new-tool` skill — schema, safe execution, honest output, and a deterministic eval.
+- **Gateways** (`nim/src/`): receive/send for another channel (Slack, email). Keep it to one
+  file; `nim/src/telegram.nim` is the reference, and `nim/src/gateway.nim` holds the policy the
+  gateways share.
+- **Memory stores** (`nim/src/`): match the `add`/`search` fields of `FactStore` in
+  `nim/src/factstore.nim`. `nim/src/mem0.nim` is the adapter to read beside it.
+- **Tools** (`nim/src/tools.nim`): a new capability the agent can call. Follow
+  `nim/src/calendar.nim` and the `new-tool` skill — schema, safe execution, honest output, and a
+  deterministic eval in `nim/tests/`.
 
 Before you write code, find two things:
 
@@ -55,9 +64,11 @@ Before you write code, find two things:
 
 ## Sending a PR
 
-- Run `make gate` and `make lint` before you push.
-- CI runs ruff, the skills validator, the `.env.example` check and every deterministic eval.
-  The judge evals need an API key, so CI does not run them; `make gate` does, if you have a key.
+- Run `make nim-test` for the port, and `make gate` and `make lint` for the frozen half and the
+  repository's guards, before you push.
+- CI runs the Nim suite, ruff, the skills validator, the `.env.example` check and every
+  deterministic eval. The judge evals need an API key, so CI does not run them; `make gate` does,
+  if you have a key.
 - The PR template asks how you tested your change. The review will ask too.
 
 ## Scope — what we'll say no to, kindly
