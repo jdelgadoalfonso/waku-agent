@@ -14,8 +14,21 @@ para después. `hosted/` queda en Python, sin tocar.
 por delante de `origin/main` (sin contar lock files). Un PR de `nim-first` hacia
 `main` arrastraría todo eso, así que la entrega de esta feature necesita una
 decisión que no es mía: mergear `add-cline-provider` primero, o rebasar
-`nim-first` sobre `main`. Los 6 commits de trabajo de esta sesión son revisables
+`nim-first` sobre `main`. Los commits de trabajo de esta sesión son revisables
 por separado sin depender de esa decisión.
+
+**El controlador de review ya se negó a revisar la rama entera, y eso deja de
+ser una preferencia de estilo.** El 2026-10-30, `review.start` sobre el candidato
+`sha256:329ea680…` (proyección `base-diff` del workspace, `committed-only`,
+base-ref `4b69b321`, 250+ paths) falló en `preflight` con
+`lens_context_budget_exceeded`: la evidencia completa del revisor excede el
+presupuesto de contexto nativo. `mutation_performed: false` y
+`mutation_outcome: not_started`, así que **no se creó autoridad** y no hay linaje
+que abandonar ni reparar. La continuación que el propio controlador indica es
+partir el cambio en una secuencia encadenada de commits más chicos, cada uno
+bajo el presupuesto, y advierte que reintentar ese candidato exacto no puede
+funcionar. O sea: el troceo no es higiene de revisión, es la única forma de que
+el review nativo corra.
 
 ## Specs
 
