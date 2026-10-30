@@ -19,8 +19,9 @@
 ## Binders (the `buildBoundGraph` half): calendar reuses triage's `.ics`
 ## reader, memory opens its OWN short-lived connection per scan (Python's
 ## thread-ownership discipline, kept verbatim), the draft resolves inside
-## the outbox. GitHub and web stay stubbed as "unavailable" until their
-## tools land (phase 5) — a gather without sources goes `quiet`, honestly.
+## the outbox. GitHub stays stubbed as "unavailable" until its tool lands
+## (phase 5); web is wired to a real search (Tavily when keyed, DuckDuckGo
+## otherwise). A gather without live sources goes `quiet`, honestly.
 
 import std/json
 import std/os
@@ -35,6 +36,7 @@ import ./graph/engine
 import ./graph/nodes
 import ./loop
 import ./memory
+import ./search
 import ./trace
 import ./triage
 import ./wire
@@ -175,6 +177,12 @@ proc unavailableWeb*(): WebFn =
   ## Until web search lands (phase 5): honest text.
   result = proc(): string = "unavailable (web search not yet ported)"
 
+proc webBinder*(): WebFn =
+  ## Real web search for the morning briefing: one query about the project,
+  ## honest failure if the network or the search backend is down.
+  result = proc(): string =
+    searchWeb(liveSearchFetch, searchApiKey(), "waku-agent", 5)
+
 proc calendarBinder*(home: string): CalFn =
   ## Reuses triage's `.ics` reader — one parser means the two workflows
   ## can never disagree. `(no calendar)` / `(nothing today)` start with
@@ -239,7 +247,7 @@ proc buildBoundGraph*(w: Waku): Graph =
   let model = w.settings.model
   buildGatherGraph(
     githubFn = unavailableGithub(),
-    webFn = unavailableWeb(),
+    webFn = webBinder(),
     calendarFn = calendarBinder(home),
     memoryFn = memoryBinder(home),
     synthFn = synthBinder(client, model),
