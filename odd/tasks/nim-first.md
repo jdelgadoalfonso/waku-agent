@@ -6,7 +6,16 @@ del repo que hoy son pytest. **Retirar `evals/deterministic/` no es parte de
 esta feature**: el port es lo que lo habilita, y la decisión de retirarlo queda
 para después. `hosted/` queda en Python, sin tocar.
 
-**Estado:** T0, T1 y T2 landed en la rama `nim-first`. T3 en adelante pendiente.
+**Estado al 2026-10-30 (fin de sesión).** En la rama `nim-first`: T0, T1, T2, T2b
+Y T3 landed (11 commits). T3b y T6 arrancaron y murieron por cuota del proveedor,
+sin escribir un byte y sin dañar el árbol. T4, T5, T7, T8 y T9 sin empezar. El
+review nativo de la rama **no puede arrancar**: el controlador lo rechazó con
+`lens_context_budget_exceeded` para el alcance completo y su única continuación es
+trocear.
+
+**Reanudar en este orden:** (1) el troceo de la entrega, que es compuerta del
+review nativo; (2) T4, que desbloquea T5 y T8; (3) T7; (4) la decisión sobre la
+roja de `test_tls`; (5) T3b y T6 en cuanto vuelva la cuota del proveedor.
 
 ## Estrategia de entrega
 
