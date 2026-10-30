@@ -86,7 +86,8 @@ Una por commit. `R` = route: `P` parent inline, `W` worker, `V` verify independi
 | T0 | Sanear el árbol antes de ramificar: commitear el wiring de web search de `gather.nim` como su unidad; commitear aparte el rename de modelo de `providers.toml`; destrackear `nim/tests/factstore_fakes` (ELF de 85 KB, artefacto de build) y agregarlo a `.gitignore` | S1, S3 | P |
 | T1 | Rama nueva desde `add-cline-provider` + este documento | — | P |
 | T2 | Front door Nim-first: `README.md`, `AGENTS.md`, `docs/status.md`, `architecture.md`, `roadmap.md`, `getting-started.md`, `commands.md`, `tour.md`, `Makefile`. Declara `waku/` congelado y dice por qué sigue en el árbol | S1, S2 | W |
-| T3 | Portar a Nim los pines del rulebook que faltan: índice de `docs/`, emojis, links del rulebook, topes de `gotchas`/`status`, playbook de `lab/`, ELv2 | S3, S5 | W |
+| T3 | Portar a Nim los pines estructurales del rulebook: índice de `docs/`, links del rulebook, topes de AGENTS/README/status, emojis, `CLAUDE.md` | S3, S5 | W |
+| T3b | Segunda pasada de T3, que su handoff dejó fuera por ser un brief más angosto que esta fila: `gotchas` con fecha y tope, playbook de `lab/`, y el par ELv2 de `hosted/LICENSE` | S3, S5 | W |
 | T4 | Datos compartidos: decidir y registrar el hogar neutral de `providers.toml`, `ops/static` y el registry que renderiza `.env.example`. Test-first sobre la ruta nueva | S1, S3 | W+V |
 | T5 | Reapuntar el guardarraíl de diseño y brand mark al hogar de T4, y portarlo a Nim | S3, S5 | W |
 | T6 | Portar validación de skills y trigger test (hoy importan el loader Python) | S3, S5 | W |
@@ -157,3 +158,33 @@ Commits landed (rama `nim-first`):
 - **L14** (evidencia, árbol): `nim/tests/factstore_fakes` no coincidía con el
   patrón de `.gitignore` (`nim/tests/test_*`, `!nim/tests/*.nim`), por eso un ELF
   compilado quedó trackeado. Ya no está trackeado y el patrón está en `.gitignore`.
+- **L15** (evidencia, T3): nueva suite `nim/tests/test_repo_docs.nim` con 14 pines
+  que portan el índice de `docs/`, la resolución de links del rulebook set, los
+  topes de AGENTS.md/README/status y el sello de fecha, los emojis, y `CLAUDE.md`
+  == `@AGENTS.md`. El descubrimiento por `waku.nimble:47-57` quedó **verificado**,
+  no asumido: el suite se compiló y corrió dentro de un `nimble test`. Dos
+  semánticas no salen gratis en Nim y el worker las reprodujo en vez de
+  aproximarlas: el conteo de líneas de Python, porque `splitLines` de Nim agrega
+  un elemento vacío final para `"a\n"` y eso habría corrido **todos** los topes
+  en uno; y el conjunto de caracteres emoji, leído del propio regex de Python.
+  Cada pin trae su sonda de violación: 5 `[FAILED]` con entradas deliberadamente
+  rotas y 14 `[OK]` contra el árbol real.
+- **L16** (conflicto entre suites, resuelto): el `RULEBOOK` de Python nombra
+  `examples/README.md` y `lab/README.md` como literales, y el ban de
+  `nim/tests/test_repo_gates.nim:363-372` prohíbe a todo módulo de `nim/`
+  nombrar esos árboles. El worker **se detuvo** en vez de elegir, y ofreció tres
+  salidas. Se resolvió con la opción A, que es la forma que Python ya usa en
+  `test_rulebook.py:148-156`: exceptuar solo los **literales** de ese archivo del
+  escaneo de literales, dejándole el escaneo de imports completo (los dos tests
+  son separados, cada uno con su `isThisSuite`). Justificación: un guardarraíl
+  que **lee** un README para chequear un invariante no depende de las lecciones,
+  mientras que un `import lab` ahí sería igual de incorrecto que en cualquier
+  lado. Se rechazó explícitamente la alternativa de armar las rutas con
+  fragmentos para esquivar el escáner: evadir un guardarraíl no es exceptuarlo.
+  La evidencia exigida es que la excepción sea **angosta**: un literal en otro
+  módulo sigue fallando, y un import de un árbol denegado desde el suite nuevo
+  sigue fallando.
+- **L17** (nota de honestidad del worker): en su corrida de `nimble test` el loop
+  se detuvo en `test_repo_gates.nim`, así que `test_tls.nim` **nunca corrió** en
+  esa corrida y se negó a reclamar la roja de TLS a partir de ella. La evidencia
+  de L10 se mantiene desde la corrida del job-2, donde sí corrió y sí falló.
