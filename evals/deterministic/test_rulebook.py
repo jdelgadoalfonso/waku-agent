@@ -29,7 +29,7 @@ RULEBOOK = [
     *(DOCS / name for name in ("getting-started.md", "tour.md", "evals.md", "commands.md", "roadmap.md")),
     *sorted(CONTEXT.glob("*.md")),
     ROOT / "examples" / "README.md",
-    # The operator guide. It is what waku/providers.toml's waku-platform row
+    # The operator guide. It is what data/providers.toml's waku-platform row
     # points a hosted user at, and group F filled it with commands, so its
     # links have to resolve and it has to stay emoji-free like every other
     # guide.

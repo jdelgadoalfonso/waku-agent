@@ -117,8 +117,8 @@ suite "phase 5b provider price parsing":
 
   test "loads the real registry prices when reachable":
     var found = ""
-    for candidate in ["waku/providers.toml", "../waku/providers.toml",
-                      "../../waku/providers.toml"]:
+    for candidate in ["data/providers.toml", "../data/providers.toml",
+                      "../../data/providers.toml"]:
       if fileExists(candidate):
         found = candidate
         break

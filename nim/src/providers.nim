@@ -1,4 +1,4 @@
-## Provider registry — port of `waku/providers.toml` plus the resolution
+## Provider registry — port of `data/providers.toml` plus the resolution
 ## rules in `waku/loop/models.py` (`models_for`, `_belongs_elsewhere`,
 ## the scoped-credentials key fallback and the no-key message).
 ##
@@ -14,7 +14,7 @@ import std/tables
 
 type
   Provider* = object
-    ## One row of `waku/providers.toml`. Empty string means the row sets
+    ## One row of `data/providers.toml`. Empty string means the row sets
     ## nothing and the reader falls back, like the Python dataclass.
     name*: string
     kind*: string            ## wire format: "anthropic" or "openai"

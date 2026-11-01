@@ -10,9 +10,9 @@ follow**: the project will get bigger, and it must never get muddier.
 behaviour eval lands there, and new work goes to `nim/`. It stays in the tree
 for three reasons. It is the parity oracle every phase of the Nim port was
 verified against. `evals/deterministic/` still runs and guards this
-repository. And the Nim port reads files inside it: `nim/tests/test_cli.nim`
-reads `waku/providers.toml`, `nim/src/dashboard.nim` embeds
-`waku/ops/static`, and `nim/src/waku.nim` reads `../waku.nimble`.
+repository. And the Nim port reads files inside it: `nim/src/dashboard.nim`
+embeds `waku/ops/static`, and `nim/src/waku.nim` reads `../waku.nimble`. The
+provider registry both halves read lives in `data/providers.toml`.
 
 This file is for everyone who changes the repo, human or coding agent. A test
 caps it at 100 lines, so the detail lives in the files it points to.

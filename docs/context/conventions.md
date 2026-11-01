@@ -32,7 +32,7 @@ is deliberately high. Start at the top of this ladder and move down only when
 the rung above cannot do the job:
 
 1. **Extend something that already exists.** A new provider is one table in
-   `waku/providers.toml` plus a logo — see
+   `data/providers.toml` plus a logo — see
    [providers-registry.md](../providers-registry.md). A new memory backend
    matches an existing interface.
 2. **A skill**: `skills/community/<name>/SKILL.md`. It is Markdown with no

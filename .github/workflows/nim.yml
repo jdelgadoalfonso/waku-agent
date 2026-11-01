@@ -26,7 +26,7 @@ jobs:
       run:
         # Every command runs where a developer runs it. The suite's pins read
         # the checkout relative to the working directory (test_cli.nim walks
-        # up to waku/providers.toml), so `nimble test` from the repo root
+        # up to data/providers.toml), so `nimble test` from the repo root
         # would compile the suites and then fail on itself.
         working-directory: nim
     steps:

@@ -26,8 +26,9 @@ tedious review is what gets postponed.
 
 ## The change
 
-Providers move out of Python and into `waku/providers.toml`. One table per
-provider carrying everything: wire format, key variable, default models,
+Providers move out of Python and into `data/providers.toml`, the neutral home
+both halves read: the Python loop and the Nim binary. One table per provider
+carrying everything: wire format, key variable, default models,
 flagship/fast pair, catalog URL, regional endpoints, where a human gets a key,
 and rough pricing.
 
@@ -52,7 +53,7 @@ does.
 
 Adding a provider is now:
 
-1. a table in `waku/providers.toml`
+1. a table in `data/providers.toml`
 2. `waku/ops/static/logos/<name>.svg`
 3. `python scripts/generate_env_example.py` — mechanical, and CI checks it
 
@@ -64,7 +65,7 @@ regional endpoint that carries its own env var rather than leaking through
 the global one.
 
 A row that turns on one of the seven opt-in fields (see the header of
-`waku/providers.toml`) is the exception. Adding the hosted `waku-platform`
+`data/providers.toml`) is the exception. Adding the hosted `waku-platform`
 row edited `test_providers.py` and `test_integrations.py`, and added
 `test_platform_provider.py` to exercise the fields those two files don't
 cover.

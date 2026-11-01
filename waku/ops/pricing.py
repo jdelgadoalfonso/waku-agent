@@ -33,7 +33,7 @@ from waku.loop.models import REGISTRY
 # Rough $/million tokens (in, out) for a dollar ESTIMATE — the number humans
 # actually feel. Keyed by provider; deliberately approximate and labelled "est".
 # Rough $/million tokens (in, out) for a dollar ESTIMATE — the number humans
-# actually feel. Read from waku/providers.toml so a provider is one table
+# actually feel. Read from data/providers.toml so a provider is one table
 # there and not a row to remember here; deliberately approximate and labelled
 # "est" in the UI. A live catalog (OpenRouter reports one) overrides it per
 # model, and ":free" ids never reach it at all — see price_for().

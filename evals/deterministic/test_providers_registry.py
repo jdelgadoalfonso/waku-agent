@@ -1,4 +1,4 @@
-"""waku/providers.toml — the provider list, as data.
+"""data/providers.toml — the provider list, as data.
 
 A provider is one table in that file plus a logo. These are the checks that
 used to be spread across four hand-edited eval files: that a row is complete,
@@ -18,7 +18,7 @@ import pytest
 
 from waku.loop.models import PROVIDERS, REGISTRY, Provider
 
-REGISTRY_PATH = Path(__file__).resolve().parents[2] / "waku" / "providers.toml"
+REGISTRY_PATH = Path(__file__).resolve().parents[2] / "data" / "providers.toml"
 LOGOS = Path(__file__).resolve().parents[2] / "waku" / "ops" / "static" / "logos"
 NAMES = sorted(REGISTRY)
 REQUIRED = ("kind", "key_env", "model", "small_model", "key_url", "price")

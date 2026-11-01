@@ -299,7 +299,7 @@ suite "phase 8a /api/data status":
     let root = freshDir("waku-dash-dataprov")
     createDir(root / "static")
     var d = testDeps(root, root / "static")
-    d.providers = loadProviders(getCurrentDir().parentDir() / "waku" /
+    d.providers = loadProviders(getCurrentDir().parentDir() / "data" /
       "providers.toml")
     let node = parseJson(handleGet(d, "/api/data")[2])
     let served = node["settings"]["providers"]

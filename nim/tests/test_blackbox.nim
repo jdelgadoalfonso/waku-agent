@@ -30,7 +30,7 @@
 ## 3. ONE WORKING-DIRECTORY ASSUMPTION, and it is `nim/`. The child runs
 ##    there because that is where `nimble build` leaves the binary (the
 ##    path `.gitignore:50` ignores) and where `findProvidersToml`'s second
-##    candidate, `../waku/providers.toml`, reaches the checkout — so the
+##    candidate, `../data/providers.toml`, reaches the checkout — so the
 ##    `connections` pins read the real registry instead of an honest
 ##    rejection. Every other path in this file is anchored to
 ##    `currentSourcePath()`, so the suite reads the same tree whether it
@@ -362,7 +362,7 @@ suite "phase 9c black-box process pins":
     else:
       # This is the pin that needs the working directory: `nim/` is one
       # level under the checkout, so `findProvidersToml`'s
-      # `../waku/providers.toml` candidate finds the real registry. A
+      # `../data/providers.toml` candidate finds the real registry. A
       # missing registry is an honest exit 1, which the next pin's
       # registry-not-found guard also rules out.
       let run = runBinary(@["connections"], tmpHome("connections-fresh"))

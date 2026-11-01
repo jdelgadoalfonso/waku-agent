@@ -194,6 +194,10 @@ packages = ["waku"]
 # in both places and explains why.
 [tool.hatch.build.targets.wheel.force-include]
 "skills" = "waku/skills"
+# The provider registry is data, so it lives in data/ at the repo root where the
+# Nim binary reads it too. packages = ["waku"] ships only the package, so this
+# copies it back beside the code for an installed Waku — same fix as the skills.
+"data/providers.toml" = "waku/providers.toml"
 
 [tool.ruff]
 line-length = 100

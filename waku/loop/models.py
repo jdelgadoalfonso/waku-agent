@@ -119,8 +119,29 @@ class Provider:
         return self.catalog_url
 
 
+def registry_path() -> Path:
+    """Where the provider registry lives — and why there are two answers.
+
+    The registry is data, not code: the Nim binary reads the same file, and
+    `data/providers.toml` at the repo root is the master a maintainer edits. But
+    the wheel only packages the `waku/` directory, so a `pip install waku-agent`
+    would have found nothing there and started with no providers at all.
+    pyproject force-includes the same file into the wheel at
+    `waku/providers.toml`, so an installed Waku finds it next to the code.
+
+    Exactly one of these exists at a time — the package copy only in a built
+    wheel, the repo copy only in a checkout — so preferring whichever is there
+    is not a double-read, it is "wherever you installed from, the registry came
+    too". Same shape as `waku.memory.bundled_skill_dirs`, same reason.
+    """
+    here = Path(__file__).resolve()
+    repo = here.parents[2] / "data" / "providers.toml"
+    installed = here.parents[1] / "providers.toml"
+    return repo if repo.is_file() else installed
+
+
 def _registry() -> dict:
-    """Read waku/providers.toml -- the whole provider list, as data.
+    """Read the provider registry -- the whole provider list, as data.
 
     A provider used to be a row here plus a pricing row, a key-url row, an
     .env.example block and two to four separate eval files: seven to nine files
@@ -128,8 +149,7 @@ def _registry() -> dict:
     file and a logo, and everything below is built from it, so a provider pull
     request is a diff a maintainer can read at a glance.
     """
-    path = Path(__file__).resolve().parents[1] / "providers.toml"
-    with path.open("rb") as fh:
+    with registry_path().open("rb") as fh:
         return tomllib.load(fh)
 
 

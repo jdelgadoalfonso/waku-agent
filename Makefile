@@ -71,7 +71,7 @@ lint:
 # The Nim port builds on its own: stdlib plus db_connector plus mandatory mimalloc_nim,
 # from pyproject.toml. Both targets `cd nim` first because the suite's pins
 # read the checkout relative to the working directory (tests/test_cli.nim
-# walks up to waku/providers.toml), so what runs here is the command a person
+# walks up to data/providers.toml), so what runs here is the command a person
 # would type from nim/ themselves. These are the front door: the binary is how
 # a person uses Waku.
 nim-test:       ## the Nim port's offline suite (every tests/test_*.nim, no API key)

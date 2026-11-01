@@ -27,7 +27,7 @@ type
   Settings* = object
     ## Where the LLM, the keys and the state directory live.
     provider*: string
-      ## LLM provider id (a row in `waku/providers.toml`, see `waku/loop/models.py`).
+      ## LLM provider id (a row in `data/providers.toml`, see `waku/loop/models.py`).
     apiKey*: string
       ## Explicit `WAKU_API_KEY` override. Empty means the provider's own
       ## key env var and default models are used.

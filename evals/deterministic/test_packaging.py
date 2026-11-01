@@ -75,6 +75,31 @@ def test_lookup_covers_both_install_shapes():
     assert 'parents[2] / "skills"' in src, "lost the repo-checkout location"
 
 
+def test_the_wheel_carries_the_provider_registry():
+    """Same bug as the skills, same fix, one file later. The provider registry
+    is the data every provider row is built from, and it moved to `data/` at the
+    repo root, which `packages = ["waku"]` does not ship. force-include copies
+    it to waku/providers.toml so an installed Waku still has providers."""
+    wheel = _pyproject()["tool"]["hatch"]["build"]["targets"]["wheel"]
+    assert wheel.get("force-include", {}).get("data/providers.toml") == "waku/providers.toml", (
+        "pyproject no longer force-includes data/providers.toml into the wheel — "
+        "a `pip install waku-agent` would ship with no provider registry"
+    )
+
+
+def test_the_registry_lookup_covers_both_install_shapes():
+    """The lookup half, for the registry. A checkout has data/providers.toml at
+    the repo root; a wheel has it beside the code at waku/providers.toml.
+    Exactly one exists at a time, so registry_path() must look in both."""
+    import inspect
+
+    from waku.loop import models
+
+    src = inspect.getsource(models.registry_path)
+    assert 'parents[1] / "providers.toml"' in src, "lost the installed-wheel location"
+    assert 'parents[2] / "data" / "providers.toml"' in src, "lost the repo-checkout location"
+
+
 @pytest.mark.parametrize("field", ["urls", "keywords", "classifiers"])
 def test_pypi_metadata_is_present(field):
     """A bare PyPI page is a bad first impression for a teaching repo, and the

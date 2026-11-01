@@ -57,8 +57,8 @@ proc freshHome(name: string): string =
   createDir(result)
 
 proc registryPath(): string =
-  ## The real `waku/providers.toml` from the repo checkout layout.
-  result = parentDir(getCurrentDir()) / "waku" / "providers.toml"
+  ## The real `data/providers.toml` from the repo checkout layout.
+  result = parentDir(getCurrentDir()) / "data" / "providers.toml"
 
 proc anthropicKeyEnv(): string =
   for p in loadProviders(registryPath()):

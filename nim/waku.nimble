@@ -40,7 +40,7 @@ requires "https://github.com/jdelgadoalfonso/mimalloc_nim.git#main"
 #
 # Each suite compiles and runs with `nim/` as the working directory, because
 # pins read the checkout relative to it (`tests/test_cli.nim` walks up to
-# `waku/providers.toml`). `nim c -r` inherits this task's directory, so the
+# `data/providers.toml`). `nim c -r` inherits this task's directory, so the
 # pins see the same tree they see when a human types the command.
 import std/algorithm # `sort` below. Top level: a task body cannot import.
 

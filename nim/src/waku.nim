@@ -121,8 +121,13 @@ proc findProvidersToml*(): string =
   ## Locate the provider registry, trying the caller's working directory
   ## first (repo checkout layout) and the binary directory last.
   ## Returns `""` when no candidate exists.
-  for candidate in ["waku/providers.toml", "../waku/providers.toml",
-                    "../../waku/providers.toml"]:
+  ##
+  ## The master lives in `data/` at the repo root because both halves read it:
+  ## `data/providers.toml` in a checkout, and a copy beside the binary for a
+  ## packaged install. There is no `waku/providers.toml` in the tree any more,
+  ## so no candidate names that path.
+  for candidate in ["data/providers.toml", "../data/providers.toml",
+                    "../../data/providers.toml"]:
     if fileExists(candidate):
       return candidate
   let besideBin = getAppDir() / "providers.toml"

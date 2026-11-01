@@ -60,7 +60,7 @@ file: `~/.waku/state.db`, the same from every folder.
 **Use the model you already pay for.** Anthropic (default), OpenAI, Gemini, DeepSeek, MiniMax,
 Kimi, GLM, OpenRouter (one key, hundreds of hosted models), OpenCode Zen, or OpenCode Go —
 set `WAKU_PROVIDER=`, paste the key, done. One registry names every provider
-(`waku/providers.toml`, read by `nim/src/providers.nim`), and one adapter in the
+(`data/providers.toml`, read by `nim/src/providers.nim`), and one adapter in the
 loop handles the rest.
 
 New to it? **[Getting started](docs/getting-started.md)** walks the whole setup, with a check
@@ -78,9 +78,9 @@ no new capability and no new behaviour eval, and every new change lands in
    against what the Python code does, so the Python code is the answer key.
 2. **`evals/deterministic/` still runs.** 950 offline evals guard this
    repository on every pull request.
-3. **The Nim port reads files inside `waku/`.** `nim/tests/test_cli.nim` reads
-   `waku/providers.toml`, `nim/src/dashboard.nim` embeds `waku/ops/static`, and
-   `nim/src/waku.nim` reads `../waku.nimble`.
+3. **The Nim port reads files inside `waku/`.** `nim/src/dashboard.nim` embeds
+   `waku/ops/static`, and `nim/src/waku.nim` reads `../waku.nimble`. The
+   provider registry both halves read lives in `data/providers.toml`.
 
 `hosted/` stays Python and stays unchanged, with its own Elastic License 2.0.
 [docs/status.md](docs/status.md) records what works today, and

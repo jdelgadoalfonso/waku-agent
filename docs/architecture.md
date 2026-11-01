@@ -16,10 +16,10 @@ authoritative behaviour reads them. `nim/src/` mirrors the same pillars —
 **`waku/` is frozen.** No new capability and no new behaviour eval lands there,
 and new work goes to `nim/`. It stays in the tree for three reasons. It is the
 parity oracle. `evals/deterministic/` still runs and guards this repository.
-And the Nim port reads files inside it: `nim/tests/test_cli.nim` reads
-`waku/providers.toml`, `nim/src/dashboard.nim` embeds `waku/ops/static`, and
-`nim/src/waku.nim` reads `../waku.nimble`. `hosted/` stays Python and stays
-unchanged, with its own Elastic License 2.0.
+And the Nim port reads files inside it: `nim/src/dashboard.nim` embeds
+`waku/ops/static`, and `nim/src/waku.nim` reads `../waku.nimble`. The provider
+registry both halves read lives in `data/providers.toml`. `hosted/` stays
+Python and stays unchanged, with its own Elastic License 2.0.
 
 ```mermaid
 flowchart TB
