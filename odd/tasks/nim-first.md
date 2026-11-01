@@ -81,6 +81,12 @@ rojo, así que el PR del port no podría mergear hasta arreglarlas. Decisión de
 usuario el 2026-10-31: **no publicar por ahora**, y abrir el review con el
 `baseRef` explícito.
 
+**Frontera de rebanada.** El corte de esta entrega es el punto de rama `a81c3d5`:
+todo lo anterior es el port (`add-cline-provider`, 222 commits y 67.403 líneas
+autoradas sobre `origin/main`, lock files aparte) y todo lo posterior es esta
+feature (16 archivos, 1.203 líneas). El port se aterriza como su propia entrega;
+esta feature se revisa y se entrega aparte, encima.
+
 ## Specs
 
 - **S1 — Python congelado.** `waku/` no gana capacidad nueva ni evals de
