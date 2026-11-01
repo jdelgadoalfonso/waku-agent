@@ -14,15 +14,17 @@ proveedor. T4, T5, T7, T8 y T9 sin empezar.
 El review nativo sigue rechazando el alcance por defecto
 (`lens_context_budget_exceeded`), y el 2026-10-31 se estableció por qué el troceo
 no lo arregla solo: la base que el controlador usa es `origin/main`, que sólo se
-mueve publicando, y `main` está protegido. La salida elegida ese día fue **no
-publicar**: el review se abre con un `baseRef` explícito en el punto de rama,
-`a81c3d5986acb0a7fcc59e77ddf0892abf1eba5e`, y el candidato pasa a ser los 16
-archivos de esta rama en vez de los 288 de `origin/main`.
+mueve publicando, y `main` está protegido. El usuario eligió **no publicar** y
+abrir el review con un `baseRef` explícito en el punto de rama; el mismo día se
+comprobó que **esa vía no reduce el alcance** (L26): el `assess` honra el `baseRef`
+pero el `inspect` deriva la base del default del repo. La compuerta del review se
+abre cuando `origin/main` se mueva, y eso pasa por el aterrizaje del port.
 
-**Reanudar en este orden:** (1) abrir la compuerta del review con ese `baseRef`;
-(2) T4 en tres rebanadas, que desbloquea T5 y T8; (3) T7; (4) la decisión sobre la
-roja de `test_tls`; (5) las 7 rojas deterministas de `a81c3d5`, sin las cuales la
-rama del port no puede aterrizar; (6) T3b y T6 en cuanto vuelva la cuota del
+**Reanudar en este orden:** (1) las 7 rojas deterministas de `a81c3d5` (L23), que
+son lo que impide aterrizar el port; (2) el aterrizaje del port (hoy: decisión del
+usuario de no publicar), que es lo único que mueve `origin/main` y con él la base
+del review; (3) T4 en tres rebanadas, que desbloquea T5 y T8; (4) T7; (5) la
+decisión sobre la roja de `test_tls`; (6) T3b y T6 en cuanto vuelva la cuota del
 proveedor.
 
 ## Estrategia de entrega
@@ -309,3 +311,21 @@ Commits landed (rama `nim-first`):
   pruebas que vigilan su frontera: la regla 9 de AGENTS.md ("arregla el doc que
   tu cambio vuelve falso") manda sobre el puntero. Las copias byte a byte de
   `hosted/` no se mueven ni se editan; sólo se reapunta el maestro que nombran.
+- **L26** (evidencia, 2026-10-31: la ruta de L22 no es implementable como se
+  describió). El `assess` con `baseRef=a81c3d5…` **sí** honró la base: devolvió
+  `changedPaths: 16`, `changedLines: 1465`, `nativeRisk: medium`,
+  `reviewDue: false`, `reviewDueReason: "under_budget"`. El `inspect` **no**: su
+  `next_transition` ofrece `review.start` con `--base-ref=4b69b321` (origin/main),
+  250+ paths y `paths_digest: sha256:a71bdfb87…`, el mismo digest del candidato ya
+  rechazado. O sea que el `inspect` proyecta contra el default del repo y el
+  alcance no se reduce por pedirlo. Intentar el `START` con un `baseRef` explícito
+  en el input (que la propia fachada documenta) no fue posible desde acá: el
+  argumento `input` no sobrevivió a las llamadas directas —el controlador respondió
+  `start requires input` y, con un fragmento, `START input must be a JSON string`—
+  y `gentle_review` rechaza ejecutarse desde `codemode` ("runs only as a direct
+  tool call"). **No se creó autoridad en ningún intento**: el propio controlador
+  dijo "No lineage was created; do not call STATUS or ADVANCE for this attempted
+  lineage", y `repair.counts.lineages` sigue en 0 con
+  `mutation_performed: false`. Consecuencia registrada: la compuerta no se abre por
+  `baseRef`; se abre cuando `origin/main` se mueva, o sea cuando el port aterrice, y
+  para eso hacen falta las 7 rojas de L23.
