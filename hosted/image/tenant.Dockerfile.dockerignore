@@ -1,5 +1,12 @@
-# ALLOWLIST. Exclude everything, then re-admit exactly the six entries the spec
+# ALLOWLIST. Exclude everything, then re-admit exactly the entries the spec
 # names, plus the two license files pyproject.toml's license-files requires.
+#
+# data/ is one of them, and it is not documentation: pyproject.toml
+# force-includes data/providers.toml and data/static into the wheel, and this
+# is the image that builds it. Leave it out and the build fails with
+# `Forced include not found` -- loudly, but only in the Docker tier, which is
+# why evals/deterministic/hosted/test_image_context.py asserts the invariant
+# (every force-include source is admitted here) offline and on every PR.
 #
 # This is an allowlist because a denylist loses. A denylist would have to name
 # .env -- and then .env.local, .env.production, the *.pem somebody drops in
@@ -16,6 +23,7 @@
 
 !waku/
 !skills/
+!data/
 !pyproject.toml
 !uv.lock
 !README.md

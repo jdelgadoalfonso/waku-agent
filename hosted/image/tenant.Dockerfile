@@ -5,11 +5,19 @@
 # tenant is never running a different waku from the one the contract tests ran
 # against (spec, "Images").
 #
-# It knows nothing about hosted/: its build context admits waku/, skills/ and
-# the packaging files and NOTHING else (tenant.Dockerfile.dockerignore). That
-# is not a style choice. It is the half of the waku/ <-> hosted/ import
-# boundary that evals/deterministic/test_hosted_boundary.py cannot see, because
-# that test reads *.py only and says so in its own docstring.
+# It knows nothing about hosted/: its build context admits waku/, skills/,
+# data/ and the packaging files and NOTHING else
+# (tenant.Dockerfile.dockerignore). That is not a style choice. It is the half
+# of the waku/ <-> hosted/ import boundary that
+# evals/deterministic/test_hosted_boundary.py cannot see, because that test
+# reads *.py only and says so in its own docstring.
+#
+# data/ is here because this image is the one that BUILDS waku-agent, and
+# pyproject.toml force-includes three things into the wheel from it: skills/,
+# data/providers.toml and data/static. A force-include whose source is not in
+# the context fails the build with `Forced include not found`, and
+# evals/deterministic/hosted/test_image_context.py builds the wheel in exactly
+# this context so that cannot go unnoticed again.
 #
 # uv 0.6.13 is pinned, not floated: uv.lock is revision 3, and the version that
 # installs it has to be one verified to read it. `uv lock --check` against this
@@ -33,12 +41,17 @@ RUN groupadd --gid 10001 waku \
 WORKDIR /app
 # README.md and the two license files are not documentation here: pyproject.toml
 # declares readme = "README.md" and license-files = ["LICENSE", "LICENSE-BRAND",
-# "waku/ops/static/fonts/OFL-*.txt"], so hatchling cannot build the project
+# "data/static/fonts/OFL-*.txt"], so hatchling cannot build the project
 # without them and `uv sync` below would fail. The font licenses live under
-# waku/ and arrive with it.
+# data/, and arrive with it.
 COPY pyproject.toml uv.lock README.md LICENSE LICENSE-BRAND ./
 COPY waku ./waku
 COPY skills ./skills
+# The masters of what the wheel force-includes: the bundled skills are copied
+# in from skills/ above, and data/ carries the provider registry and the whole
+# dashboard frontend. This COPY is what makes them buildable here; without it
+# the force-include fails the build rather than shipping an empty dashboard.
+COPY data ./data
 
 # --frozen installs exactly uv.lock and resolves nothing, so an image build can
 # never become a dependency change nobody reviewed. --extra notion is the one

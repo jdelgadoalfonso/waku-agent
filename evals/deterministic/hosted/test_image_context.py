@@ -36,9 +36,17 @@ IMAGE = ROOT / "hosted" / "image"
 # uv.lock, README.md and the license files" -- the two license files being the
 # ones pyproject.toml's license-files names at the repo root. "The services
 # image admits hosted/, pyproject.toml, uv.lock and the license files".
+#
+# data/ joined the tenant list on 2026-11-01, and it is not documentation:
+# pyproject.toml force-includes data/providers.toml and data/static into the
+# wheel, and the tenant image is the one that builds it. THIS TABLE PINS
+# TODAY'S ANSWER AND THAT IS ALL IT DOES -- it asserted the stale list while
+# the build could not have succeeded, so
+# test_every_force_include_is_admitted_by_the_image_that_builds_it below
+# derives the requirement from pyproject.toml instead.
 ADMITTED = {
     "tenant.Dockerfile.dockerignore": {
-        "waku/", "skills/", "pyproject.toml", "uv.lock", "README.md",
+        "waku/", "skills/", "data/", "pyproject.toml", "uv.lock", "README.md",
         "LICENSE", "LICENSE-BRAND",
     },
     "services.Dockerfile.dockerignore": {
@@ -233,3 +241,130 @@ def test_the_context_probes_leftovers_cannot_be_committed():
         "covers every name, including the ones nobody has added yet -- rather "
         "than listing the new file. Files named deploy.pem and id_rsa reaching "
         "a public repository is not a tidiness problem.")
+
+
+# --- what the build NEEDS, derived rather than listed ------------------------
+
+def _force_includes() -> dict[str, str]:
+    """Every path `pyproject.toml` copies into the wheel, and where to.
+
+    Read from the build config, never written down here: this is the half of
+    the pair that must not be re-listed, because a force-include added next
+    month has to arrive at these pins as a new requirement by itself.
+    """
+    import tomllib
+
+    with (ROOT / "pyproject.toml").open("rb") as fh:
+        return tomllib.load(fh)["tool"]["hatch"]["build"]["targets"]["wheel"].get(
+            "force-include", {})
+
+
+def _images_that_build_the_project() -> list[Path]:
+    """The Dockerfiles that build waku-agent itself, found by what they DO.
+
+    `uv sync --no-install-project` never reaches the build backend, so the
+    services image needs no force-include source and must not be made to admit
+    one: its allowlist refusing waku/ is the licence boundary. Found by
+    reading the Dockerfiles rather than named here, so a third image that
+    installs the project cannot be forgotten.
+    """
+    found = []
+    for dockerfile in sorted(IMAGE.glob("*.Dockerfile")):
+        text = dockerfile.read_text(encoding="utf-8")
+        if "uv sync" in text and "--no-install-project" not in text:
+            found.append(dockerfile)
+    return found
+
+
+def _admissions(name: str) -> set[str]:
+    return {line[1:] for line in _lines(name) if line.startswith("!")}
+
+
+def _admits(admissions: set[str], path: str) -> bool:
+    """Whether an allowlist admits `path`.
+
+    A prefix check on the `!` lines, which is all an allowlist does for a
+    tree: `!data/` admits `data/providers.toml`, and `!skills/` admits
+    `skills`. It does not model moby's glob matcher and does not need to --
+    every admission in these files is a literal path or a literal tree, and
+    the build below is the authority on the rest.
+    """
+    wanted = path.strip("/")
+    return any(wanted == rule.strip("/") or wanted.startswith(rule.strip("/") + "/")
+               for rule in admissions)
+
+
+def test_every_force_include_is_admitted_by_the_image_that_builds_it():
+    """THE INVARIANT. The table above pins today's answer, and on 2026-11-01
+    that was not enough: the tenant context refused `data/` while
+    pyproject.toml force-included two paths out of it, so every deterministic
+    test stayed green and the image build could not have succeeded. This reads
+    the OTHER half -- what the build actually needs -- so a force-include added
+    tomorrow fails here instead of in a daemon nobody runs on a PR."""
+    forced = _force_includes()
+    assert forced, (
+        "pyproject force-includes nothing — the wheel would ship no skills, no "
+        "provider registry and no dashboard frontend")
+    images = _images_that_build_the_project()
+    assert images, (
+        "no Dockerfile installs the project, so this pin checks nothing: the "
+        "`uv sync` line it looks for has moved or been renamed")
+    for dockerfile in images:
+        ignore = dockerfile.with_name(dockerfile.name + ".dockerignore")
+        assert ignore.is_file(), f"{ignore.name} is missing, so the context is the whole checkout"
+        admissions = _admissions(ignore.name)
+        for source in forced:
+            assert _admits(admissions, source), (
+                f"{dockerfile.name}'s context refuses {source!r}, and pyproject.toml "
+                f"force-includes it into the wheel — the build fails with "
+                f"`Forced include not found: {source}`.\n"
+                f"Admit it in {ignore.name}: a force-include source is part of what "
+                "the image is built FROM, not a detail of the wheel.")
+
+
+def test_a_context_of_only_the_admitted_paths_still_builds_the_wheel(tmp_path):
+    """The failure, reproduced and turned green, without a daemon.
+
+    A Docker build sends the daemon exactly the admitted paths, so this copies
+    exactly those into a scratch directory, builds the wheel there with the
+    backend the project already pins as a dev dependency, and looks inside the
+    result. Remove `!data/` from the tenant ignore file and this fails with the
+    build's own `FileNotFoundError`; add a force-include the context cannot see
+    and it fails the same way. That is the Docker tier's failure, on every PR,
+    in about a second."""
+    import shutil
+    import zipfile
+
+    from hatchling.builders.wheel import WheelBuilder
+
+    forced = _force_includes()
+    # The `**/` re-exclusions, as the same patterns: a context that carried
+    # __pycache__ and dotfiles is not the context the image gets.
+    re_excluded = shutil.ignore_patterns("__pycache__", "*.pyc", ".*", "*.pem", "*.key")
+
+    for dockerfile in _images_that_build_the_project():
+        ignore = dockerfile.with_name(dockerfile.name + ".dockerignore")
+        context = tmp_path / dockerfile.stem
+        context.mkdir()
+        for rule in sorted(_admissions(ignore.name)):
+            source = ROOT / rule.strip("/")
+            assert source.exists(), (
+                f"{ignore.name} admits {rule!r}, which is not in the checkout — the "
+                "context would be missing a path it claims to send")
+            target = context / rule.strip("/")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_dir():
+                shutil.copytree(source, target, ignore=re_excluded)
+            else:
+                shutil.copy2(source, target)
+
+        out = tmp_path / (dockerfile.stem + "-wheel")
+        built = list(WheelBuilder(str(context)).build(directory=str(out)))
+        assert built, "the wheel build produced no artefact"
+        with zipfile.ZipFile(built[0]) as wheel:
+            members = set(wheel.namelist())
+        for source, destination in forced.items():
+            wanted = destination.strip("/")
+            assert wanted in members or any(m.startswith(wanted + "/") for m in members), (
+                f"the wheel built from {dockerfile.name}'s context carries no "
+                f"{destination!r}: {source!r} was not in the context to copy")
