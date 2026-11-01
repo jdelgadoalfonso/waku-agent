@@ -178,6 +178,7 @@ Commits landed (rama `nim-first`):
 | `a81c3d5` | `chore(nim): stop tracking the compiled factstore_fakes fixture` — en `add-cline-provider` |
 | `8d9445c` | `docs(odd): add the nim-first feature document` — T1 |
 | `6520c00` | `docs(nim): make the front door Nim-first` — T2 |
+| `f834ffd` | `refactor(providers): give the provider registry a home outside the frozen package` — T4a |
 
 ## Log
 
@@ -345,3 +346,29 @@ Commits landed (rama `nim-first`):
   nuevos en `test_packaging.py`, y en Nim `findProvidersToml`
   (`nim/src/waku.nim:124-129`) pasa de los candidatos `waku/providers.toml` a
   `data/providers.toml` sin dejar candidatos muertos.
+- **L28** (evidencia, T4a landed en `f834ffd`, 2026-10-31): 26 archivos,
+  +101/−46, con el move contado aparte. Test-first de verdad: los dos pines
+  nuevos de `evals/deterministic/test_packaging.py` se agregaron ANTES del
+  movimiento y se observaron rojos (`2 failed, 8 deselected`, con
+  `assert None == 'waku/providers.toml'` y `AttributeError: module
+  'waku.loop.models' has no attribute 'registry_path'`), y verdes después
+  (`2 passed`). Differential de la suite completa: **7 failed, 3343 passed, 62
+  skipped** contra el baseline de 3341 passed: las mismas 7 rojas de L23, y +2 que
+  son los pines nuevos. Nim: `test_dashboard` 136 OK / 0 FAILED — venía de 135/1
+  por el **quinto lector**, `nim/tests/test_dashboard.nim:302-303`, que arma la
+  ruta por segmentos (`"waku" / "providers.toml"`) y por eso el grep del literal
+  no lo veía —, más `test_repo_gates` 14, `test_repo_docs` 14, `test_cli` 28,
+  `test_providers` 8 y `test_pricing` 16, todas exit 0.
+  Verificación independiente (`gentle-ai-verify`): **accept-with-notes**. Construyó
+  el wheel offline con hatchling y encontró `waku/providers.toml` adentro con el
+  mismo sha256 (`2db31c5e…63e6`); el sdist también, y un wheel construido desde el
+  sdist desempacado también, o sea que la instalación desde fuente también sirve.
+  Las dos formas del lookup resuelven por separado en un directorio aislado, y sin
+  ninguna de las dos el import tira `FileNotFoundError` en vez de un registry vacío
+  en silencio. Revirtiendo cada mitad del arreglo, su pin falla.
+  Notas aceptadas y **no** arregladas en esta unidad: el error de "no hay registry"
+  nombra el candidato instalado cuando estás en un checkout (ruidoso, pero apunta
+  al archivo equivocado); el pin del lookup es un pin sobre el texto fuente, así
+  que una reescritura correcta lo rompe (es la misma forma que el pin de `skills/`);
+  y nada copia el registry al lado de un binario instalado con nimble
+  (pre-existente).
