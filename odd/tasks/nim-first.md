@@ -6,16 +6,24 @@ del repo que hoy son pytest. **Retirar `evals/deterministic/` no es parte de
 esta feature**: el port es lo que lo habilita, y la decisión de retirarlo queda
 para después. `hosted/` queda en Python, sin tocar.
 
-**Estado al 2026-10-30 (fin de sesión).** En la rama `nim-first`: T0, T1, T2, T2b
-Y T3 landed (11 commits). T3b y T6 arrancaron y murieron por cuota del proveedor,
-sin escribir un byte y sin dañar el árbol. T4, T5, T7, T8 y T9 sin empezar. El
-review nativo de la rama **no puede arrancar**: el controlador lo rechazó con
-`lens_context_budget_exceeded` para el alcance completo y su única continuación es
-trocear.
+**Estado al 2026-10-31 (reanudación).** En la rama `nim-first` están landed T0
+(que vive en `add-cline-provider`), T1, T2, T2b y T3: 10 commits, 16 archivos,
+1.203 líneas sobre su base. T3b y T6 siguen sin empezar, bloqueadas por cuota del
+proveedor. T4, T5, T7, T8 y T9 sin empezar.
 
-**Reanudar en este orden:** (1) el troceo de la entrega, que es compuerta del
-review nativo; (2) T4, que desbloquea T5 y T8; (3) T7; (4) la decisión sobre la
-roja de `test_tls`; (5) T3b y T6 en cuanto vuelva la cuota del proveedor.
+El review nativo sigue rechazando el alcance por defecto
+(`lens_context_budget_exceeded`), y el 2026-10-31 se estableció por qué el troceo
+no lo arregla solo: la base que el controlador usa es `origin/main`, que sólo se
+mueve publicando, y `main` está protegido. La salida elegida ese día fue **no
+publicar**: el review se abre con un `baseRef` explícito en el punto de rama,
+`a81c3d5986acb0a7fcc59e77ddf0892abf1eba5e`, y el candidato pasa a ser los 16
+archivos de esta rama en vez de los 288 de `origin/main`.
+
+**Reanudar en este orden:** (1) abrir la compuerta del review con ese `baseRef`;
+(2) T4 en tres rebanadas, que desbloquea T5 y T8; (3) T7; (4) la decisión sobre la
+roja de `test_tls`; (5) las 7 rojas deterministas de `a81c3d5`, sin las cuales la
+rama del port no puede aterrizar; (6) T3b y T6 en cuanto vuelva la cuota del
+proveedor.
 
 ## Estrategia de entrega
 
@@ -52,6 +60,26 @@ desactivar el switch, y reintentar un alcance sin reducir es exactamente el
 reintento que el controlador dice que no puede funcionar. **Consecuencia
 práctica: mientras la rama siga sin trocear, cada commit nuevo va a regenerar un
 candidato que falla igual.** El troceo es la compuerta, no un paso posterior.
+
+**`main` está protegido, así que "mergear la rama del port" no es una merge
+local.** `docs/context/maintainers.md` lo fija: `git push origin main` lo rechaza
+para todos (`enforce_admins` incluido) y un commit entra sólo por PR con
+`gh pr merge --squash` y `skills-and-evals` en verde. Una merge local dejaría un
+`main` que nunca se puede pushear y no movería la base del review, que es
+`origin/main`.
+
+Medido el 2026-10-31: `git ls-remote origin main` = `4b69b321`, y `origin/main`
+**es ancestro** de `add-cline-provider` (0 commits por detrás, 222 por delante), o
+sea que la rama ya fue rebasada sobre él y `main` local quedó 12 commits atrás. Un
+merge local habría metido esos 12 commits de upstream dentro del aterrizaje del
+port, sin ganar nada.
+
+Y el preflight determinista sobre `a81c3d5` da **7 rojas** pre-existentes
+(`test_pinned_models` ×5, `test_static_assets`, `test_turn_evals`; 3341 passed, 62
+skipped, 2m05s), las mismas documentadas desde `c657414`: el check requerido está
+rojo, así que el PR del port no podría mergear hasta arreglarlas. Decisión del
+usuario el 2026-10-31: **no publicar por ahora**, y abrir el review con el
+`baseRef` explícito.
 
 ## Specs
 
@@ -124,8 +152,8 @@ Una por commit. `R` = route: `P` parent inline, `W` worker, `V` verify independi
 | T2 | Front door Nim-first: `README.md`, `AGENTS.md`, `docs/status.md`, `architecture.md`, `roadmap.md`, `getting-started.md`, `commands.md`, `tour.md`, `Makefile`. Declara `waku/` congelado y dice por qué sigue en el árbol | S1, S2 | W |
 | T3 | Portar a Nim los pines estructurales del rulebook: índice de `docs/`, links del rulebook, topes de AGENTS/README/status, emojis, `CLAUDE.md` | S3, S5 | W |
 | T3b | Segunda pasada de T3, que su handoff dejó fuera por ser un brief más angosto que esta fila: `gotchas` con fecha y tope, playbook de `lab/`, y el par ELv2 de `hosted/LICENSE` | S3, S5 | W |
-| T4 | Datos compartidos: decidir y registrar el hogar neutral de `providers.toml`, `ops/static` y el registry que renderiza `.env.example`. Test-first sobre la ruta nueva | S1, S3 | W+V |
-| T5 | Reapuntar el guardarraíl de diseño y brand mark al hogar de T4, y portarlo a Nim | S3, S5 | W |
+| T4 | Datos compartidos mudados a un hogar neutral `data/`, en tres rebanadas: **T4a** el registry de proveedores (`providers.toml`), **T4b** los 64 archivos de `ops/static`, **T4c** los datos del registry que renderiza `.env.example` (hoy código Python) a un formato que ambas mitades lean. Test-first sobre la ruta nueva | S1, S3 | W+V |
+| T5 | Reapuntar el guardarraíl de diseño y brand mark al hogar `data/static` de T4b, y portarlo a Nim | S3, S5 | W |
 | T6 | Portar validación de skills y trigger test (hoy importan el loader Python) | S3, S5 | W |
 | T7 | Versión única entre las dos mitades: `nim/waku.nimble` vs `waku/__init__.py` vs pyproject. Definir "una versión" en un repo Nim-first | S3, S5 | W |
 | T8 | `.env.example` contra el registry, en Nim (depende de T4) | S3, S5 | W |
@@ -238,3 +266,40 @@ Commits landed (rama `nim-first`):
   unidades quedan sin relanzar: un recurso externo agotado no se reintenta solo,
   y cambiar de agente para esquivar el límite sería un rodeo, no una solución.
   Ambas siguen pendientes y sin empezar.
+- **L20** (usuario, decisión, verbatim de la opción elegida): "Mergear
+  add-cline-provider a main primero" — cómo abrir paso al review nativo y a la
+  entrega de la rama.
+- **L21** (hallazgo, el mismo día, y que corrige la premisa de L20): `main` está
+  protegido (`docs/context/maintainers.md`), así que la única forma de aterrizar
+  es push + PR + squash con `skills-and-evals` verde; una merge local no se puede
+  pushear y no mueve la base del review. Además `origin/main` (`4b69b321`) **es
+  ancestro** de `add-cline-provider` (0/222): la rama ya fue rebasada sobre él y
+  `main` local quedó 12 commits atrás, así que un merge local sólo habría metido
+  esos 12 commits de upstream dentro del aterrizaje.
+- **L22** (usuario, decisión, verbatim de la opción elegida, tomada con L21 ya
+  sobre la mesa): "No publicar: review con baseRef en a81c3d5" — el review se abre
+  con `baseRef` explícito en el punto de rama y la entrega queda sin publicar.
+- **L23** (evidencia, preflight del 2026-10-31): `pytest evals/deterministic -q`
+  sobre `a81c3d5` → **7 failed, 3341 passed, 62 skipped** en 2m05s. Las rojas son
+  `test_pinned_models.py` ×5, `test_static_assets.py` y `test_turn_evals.py`, las
+  mismas documentadas desde `c657414`: pre-existentes, no causadas por esta rama.
+  Consecuencia: el check requerido `skills-and-evals` está rojo y la rama del port
+  no puede aterrizar hasta arreglarlas. Es un pendiente nuevo: no estaba en la
+  lista de tasks.
+- **L24** (usuario, decisión de alcance, verbatim de la opción elegida): "Todos
+  los datos a un hogar neutral (data/)" — T4 pasa a mudar el registry de
+  proveedores, los 64 archivos de `ops/static` y los datos del registry de
+  integraciones, no sólo a declarar las rutas donde están. Tres rebanadas: T4a
+  `providers.toml`, T4b `ops/static`, T4c el registry de integraciones a datos que
+  ambas mitades lean, que es lo que vuelve real el pin de T8. Alcance descartado y
+  por qué: mover 796K de assets mientras la mitad que los lee (`waku/`) se queda
+  en el árbol igual no se paga con declarar las rutas, pero por eso mismo T4b es
+  la rebanada de mayor radio y va con verificación independiente.
+- **L25** (decisión propia, por seguir de L24 y para resolver la tensión con S4):
+  mover `ops/static` vuelve falso el puntero de
+  `hosted/gateway/static/design/SOURCE.md` y deja apuntando al maestro al
+  drift-check `evals/deterministic/hosted/test_login_page.py:71`. S4 congela el
+  **lenguaje y el comportamiento** de `hosted/`, no su documentación ni las
+  pruebas que vigilan su frontera: la regla 9 de AGENTS.md ("arregla el doc que
+  tu cambio vuelve falso") manda sobre el puntero. Las copias byte a byte de
+  `hosted/` no se mueven ni se editan; sólo se reapunta el maestro que nombran.
