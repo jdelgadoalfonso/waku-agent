@@ -24,9 +24,10 @@ abre cuando `origin/main` se mueva, y eso pasa por el aterrizaje del port.
 **Reanudar en este orden:** (1) las 7 rojas deterministas de `a81c3d5` (L23), que
 son lo que impide aterrizar el port; (2) el aterrizaje del port (hoy: decisión del
 usuario de no publicar), que es lo único que mueve `origin/main` y con él la base
-del review; (3) T4 en tres rebanadas: T4a y T4b landed, T4c pendiente, y T4
-desbloquea T5 y T8; (4) T7; (5) la decisión sobre la roja de `test_tls`; (6) T3b y
-T6 en cuanto vuelva la cuota del proveedor de subagentes (L19).
+del review; (3) T4 en tres rebanadas: T4a y T4b landed, **T4c sin empezar** (su
+primer commit espera al proveedor, L33) y T4 desbloquea T5 y T8; (4) T7; (5) la
+decisión sobre la roja de `test_tls`; (6) T4c-1, T3b y T6 en cuanto vuelva la cuota
+del proveedor de subagentes (L19, L33).
 
 ## Estrategia de entrega
 
@@ -470,3 +471,14 @@ Commits landed (rama `nim-first`):
   los evals existentes (`test_integrations.py`, `test_gmail.py` fija `gmail` justo
   detrás de `google_calendar`, `test_static_assets.py` deriva un logo por key) y el
   dorado de Nim. Se corren antes y después.
+- **L33** (interrupción externa y cierre de sesión, 2026-10-31): el worker de T4c-1
+  murió con `assistant reported an error (quota)` — el proveedor de subagentes está
+  agotado otra vez, como en L19 — **sin escribir un byte**: `git status --porcelain
+  -uall` vacío, `data/integrations.toml` inexistente y `pyproject.toml` intacto. No se
+  reintenta ni se cambia de agente para esquivarlo. Antes de delegar quedó capturado
+  de primera mano el baseline del oráculo de la mudanza: `python
+  scripts/generate_env_example.py --check` → **exit 0 sin diff**, y el differential de
+  la suite sigue en **7 failed, 3347 passed, 62 skipped** (L23 + L30). El brief
+  completo de T4c-1 quedó en la sesión del 2026-10-31 y su diseño en L32: alcanza con
+  releerlos para relanzar. Estado al cerrar: T0-T3, T4a y T4b landed y verificados,
+  más `57c60fb` (el build del tenant); árbol limpio en `0850cae`.
