@@ -23,9 +23,10 @@ abre cuando `origin/main` se mueva, y eso pasa por el aterrizaje del port.
 **Reanudar en este orden:** (1) las 7 rojas deterministas de `a81c3d5` (L23), que
 son lo que impide aterrizar el port; (2) el aterrizaje del port (hoy: decisión del
 usuario de no publicar), que es lo único que mueve `origin/main` y con él la base
-del review; (3) T4 en tres rebanadas, que desbloquea T5 y T8; (4) T7; (5) la
-decisión sobre la roja de `test_tls`; (6) T3b y T6 en cuanto vuelva la cuota del
-proveedor.
+del review; (3) T4 en tres rebanadas: T4a landed, **T4b no empezó porque su worker
+murió por indisponibilidad del proveedor** (L29), T4c pendiente, y T4 desbloquea T5
+y T8; (4) T7; (5) la decisión sobre la roja de `test_tls`; (6) T4b, T3b y T6 en
+cuanto vuelva el proveedor de subagentes (T3b y T6 murieron por cuota, L19).
 
 ## Estrategia de entrega
 
@@ -372,3 +373,18 @@ Commits landed (rama `nim-first`):
   que una reescritura correcta lo rompe (es la misma forma que el pin de `skills/`);
   y nada copia el registry al lado de un binario instalado con nimble
   (pre-existente).
+- **L29** (interrupción externa, 2026-10-31): el worker de T4b murió con
+  `assistant reported an error (unavailable)` — indisponibilidad del proveedor de
+  subagentes, no cuota, y no se reintenta ni se cambia de agente para esquivarlo
+  (misma regla que L19). Dejó exactamente un archivo tocado: los dos pines
+  test-first en `evals/deterministic/test_packaging.py` (+26 líneas, el paso 1 del
+  brief) y **ningún** movimiento: `data/` seguía con solo `providers.toml` y
+  `waku/ops/static` intacto con sus 64 archivos. Como el árbol había quedado en un
+  rojo a medias, se restauró ese único archivo a `487a4a1` y el árbol volvió a
+  estar limpio. **T4b no empezó.** Su diseño es el de L27 aplicado a un directorio,
+  más `license-files` (`waku/ops/static/fonts/OFL-*.txt`) y el puntero de `hosted/`
+  según L25. Baseline que hay que preservar y que ya se capturó:
+  `test_static_assets.py::test_connection_card_logos_are_local_and_complete` ya está
+  rojo en HEAD por un logo de MÁS en disco — `Extra items in the left set:
+  'obsidian.svg'`, no un faltante — y tras el movimiento tiene que fallar con ese
+  mismo texto, o no se puede distinguir la mudanza de ese rojo pre-existente.
