@@ -9,7 +9,8 @@ para después. `hosted/` queda en Python, sin tocar.
 **Estado al 2026-10-31 (reanudación).** En la rama `nim-first` están landed T0
 (que vive en `add-cline-provider`), T1, T2, T2b y T3: 10 commits, 16 archivos,
 1.203 líneas sobre su base. T3b y T6 siguen sin empezar, bloqueadas por cuota del
-proveedor. T4, T5, T7, T8 y T9 sin empezar.
+proveedor. **T4a y T4b están landed** (`f834ffd` y `f526360`, más `57c60fb` para el
+build del tenant que la mudanza rompió); T4c, T5, T7, T8 y T9 sin empezar.
 
 El review nativo sigue rechazando el alcance por defecto
 (`lens_context_budget_exceeded`), y el 2026-10-31 se estableció por qué el troceo
@@ -23,10 +24,9 @@ abre cuando `origin/main` se mueva, y eso pasa por el aterrizaje del port.
 **Reanudar en este orden:** (1) las 7 rojas deterministas de `a81c3d5` (L23), que
 son lo que impide aterrizar el port; (2) el aterrizaje del port (hoy: decisión del
 usuario de no publicar), que es lo único que mueve `origin/main` y con él la base
-del review; (3) T4 en tres rebanadas: T4a landed, **T4b no empezó porque su worker
-murió por indisponibilidad del proveedor** (L29), T4c pendiente, y T4 desbloquea T5
-y T8; (4) T7; (5) la decisión sobre la roja de `test_tls`; (6) T4b, T3b y T6 en
-cuanto vuelva el proveedor de subagentes (T3b y T6 murieron por cuota, L19).
+del review; (3) T4 en tres rebanadas: T4a y T4b landed, T4c pendiente, y T4
+desbloquea T5 y T8; (4) T7; (5) la decisión sobre la roja de `test_tls`; (6) T3b y
+T6 en cuanto vuelva la cuota del proveedor de subagentes (L19).
 
 ## Estrategia de entrega
 
@@ -180,6 +180,8 @@ Commits landed (rama `nim-first`):
 | `8d9445c` | `docs(odd): add the nim-first feature document` — T1 |
 | `6520c00` | `docs(nim): make the front door Nim-first` — T2 |
 | `f834ffd` | `refactor(providers): give the provider registry a home outside the frozen package` — T4a |
+| `f526360` | `refactor(static): give the dashboard assets a home outside the frozen package` — T4b |
+| `57c60fb` | `fix(hosted): admit data/ in the tenant build context` — consecuencia de T4a y T4b |
 
 ## Log
 
@@ -388,3 +390,51 @@ Commits landed (rama `nim-first`):
   rojo en HEAD por un logo de MÁS en disco — `Extra items in the left set:
   'obsidian.svg'`, no un faltante — y tras el movimiento tiene que fallar con ese
   mismo texto, o no se puede distinguir la mudanza de ese rojo pre-existente.
+- **L30** (evidencia, T4b landed en `f526360`, 2026-10-31): 117 archivos,
+  +197/−108, con los 64 assets mudados en R100 y sha256 iguales archivo por
+  archivo. Pines test-first rojos antes y verdes después. Differential de la suite:
+  **7 failed, 3347 passed, 62 skipped**, y el verificador comparó las dos secciones
+  FAILURES normalizando rutas temporales y direcciones de objetos: diff vacío, o
+  sea las mismas 7 rojas **por nombre y por texto**. Ese detalle importa acá porque
+  `test_static_assets` está rojo dentro del árbol que se movió: se repuntó solo su
+  constante de ruta y sigue fallando con las mismas cuatro líneas (`Extra items in
+  the left set: 'obsidian.svg'`). Nim: `test_dashboard` 137 (con el pin nuevo de la
+  profundidad del walk), `test_repo_gates` 14, `test_repo_docs` 14, `test_embed` 11,
+  `test_cli` 28, `test_blackbox` 15, todas exit 0.
+  Verificación independiente: **accept-with-notes**. Construyó el wheel, el sdist y
+  un wheel desde el sdist desempacado: 64/64 assets byte-idénticos en los tres, las
+  fuentes y los tres textos OFL adentro, y `license-files` resolviendo en
+  `dist-info/licenses/`. Las dos formas del lookup resuelven por separado, y las
+  copias byte a byte de `hosted/` quedaron intactas (solo cambió su `SOURCE.md`).
+  El quinto lector acá no fue uno sino **quince** (los 14 archivos de eval que
+  aparecen abajo más `nim/README.md`): la lista de superficies salió de los literales
+  y no ve los caminos armados por segmentos, así que el worker se detuvo ANTES de
+  mover y preguntó, en vez de dejar 66 `FileNotFoundError` y 2 errores de
+  colección. Se autorizó la extensión, y los dos lectores que anclan en `__file__`
+  pasaron a llamar a `static_dir()` en vez de inventar una segunda ruta.
+  Notas aceptadas: `static_dir()` no levanta cuando no existe ninguna de las dos
+  formas y el fallo aparece en la primera lectura, igual que `registry_path()` (no
+  es regresión, es lo que ya hacía); el pin del lookup es un pin sobre el texto
+  fuente; y la sonda que `test_repo_gates.nim` perdió se descartó con su
+  justificación escrita en el propio test, en vez de reapuntarla a `data/static`,
+  que es un directorio de assets y no un módulo importable.
+- **L31** (hallazgo y decisión, `57c60fb`, 2026-10-31): la mudanza **rompió el build
+  de la imagen del tenant** y la suite determinista quedó verde igual.
+  `pyproject.toml` force-includea tres caminos de `data/` y la allowlist del
+  contexto de esa imagen admitía `waku/` y `skills/` pero no `data/`, así que el
+  build fallaba con `Forced include not found: …/data/providers.toml` — lo introdujo
+  T4a y T4b le sumó la mitad idéntica. Nadie lo veía porque
+  `evals/deterministic/hosted/test_image_context.py` fijaba la allowlist de ayer en
+  vez de lo que el build necesita.
+  Decisión de alcance: **se toca `hosted/`** para arreglar un build que este cambio
+  rompió, con la lectura de S4 que ya fijó L25: `hosted/` no se porta a Nim y sus
+  copias byte a byte no se mueven, pero un build roto por nuestra mudanza se
+  arregla. El arreglo admitió `data/` en el contexto y sobre todo **cambió el pin
+  de lista por el pin del invariante**: deriva los `force-include` de
+  `pyproject.toml`, descubre por sí mismo qué Dockerfiles construyen el proyecto
+  (el de servicios tiene prohibido admitir `waku/`, esa es la frontera de licencia)
+  y construye el wheel en un contexto armado solo con las admisiones, offline y en
+  cada PR. `LICENSE-BRAND` también nombraba la ruta vieja (regla 9) y quedó
+  corregido.
+  No verificado: `evals/hosted_docker/test_image.py` es el guard fuerte y necesita
+  daemon de Docker, que esta máquina no tiene.
