@@ -6,11 +6,13 @@ del repo que hoy son pytest. **Retirar `evals/deterministic/` no es parte de
 esta feature**: el port es lo que lo habilita, y la decisión de retirarlo queda
 para después. `hosted/` queda en Python, sin tocar.
 
-**Estado al 2026-10-31 (reanudación).** En la rama `nim-first` están landed T0
+**Estado al 2026-11-01 (reanudación).** En la rama `nim-first` están landed T0
 (que vive en `add-cline-provider`), T1, T2, T2b y T3: 10 commits, 16 archivos,
 1.203 líneas sobre su base. T3b y T6 siguen sin empezar, bloqueadas por cuota del
-proveedor. **T4a y T4b están landed** (`f834ffd` y `f526360`, más `57c60fb` para el
-build del tenant que la mudanza rompió); T4c, T5, T7, T8 y T9 sin empezar.
+proveedor. **T4a, T4b y T4c-1 están landed** (`f834ffd`, `f526360` y `57c60fb` para
+el build del tenant que la mudanza rompió; T4c-1 en `b30f400`); T4c-2, T5, T7, T8 y
+T9 sin empezar. **El writer de T4c-1 murió dos veces con cuota del proveedor** (L33,
+L34) y la rebanada la ejecutó el padre inline.
 
 El review nativo sigue rechazando el alcance por defecto
 (`lens_context_budget_exceeded`), y el 2026-10-31 se estableció por qué el troceo
@@ -24,10 +26,11 @@ abre cuando `origin/main` se mueva, y eso pasa por el aterrizaje del port.
 **Reanudar en este orden:** (1) las 7 rojas deterministas de `a81c3d5` (L23), que
 son lo que impide aterrizar el port; (2) el aterrizaje del port (hoy: decisión del
 usuario de no publicar), que es lo único que mueve `origin/main` y con él la base
-del review; (3) T4 en tres rebanadas: T4a y T4b landed, **T4c sin empezar** (su
-primer commit espera al proveedor, L33) y T4 desbloquea T5 y T8; (4) T7; (5) la
-decisión sobre la roja de `test_tls`; (6) T4c-1, T3b y T6 en cuanto vuelva la cuota
-del proveedor de subagentes (L19, L33).
+del review; (3) T4 en tres rebanadas: T4a, T4b y **T4c-1 landed**, y queda T4c-2
+(la mitad Nim sobre el archivo más el pin de acuerdo entre mitades); T4 desbloquea
+T5 y T8; (4) T7; (5) la decisión sobre la roja de `test_tls`; (6) T3b y T6 en cuanto
+vuelva la cuota del proveedor de subagentes (L19, L33); (7) la **verificación
+independiente de T4c-1**, que no pudo correr (L34).
 
 ## Estrategia de entrega
 
@@ -183,6 +186,7 @@ Commits landed (rama `nim-first`):
 | `f834ffd` | `refactor(providers): give the provider registry a home outside the frozen package` — T4a |
 | `f526360` | `refactor(static): give the dashboard assets a home outside the frozen package` — T4b |
 | `57c60fb` | `fix(hosted): admit data/ in the tenant build context` — consecuencia de T4a y T4b |
+| `b30f400` | `refactor(integrations): move the connection registry to data/integrations.toml` — T4c-1 |
 
 ## Log
 
@@ -482,3 +486,69 @@ Commits landed (rama `nim-first`):
   completo de T4c-1 quedó en la sesión del 2026-10-31 y su diseño en L32: alcanza con
   releerlos para relanzar. Estado al cerrar: T0-T3, T4a y T4b landed y verificados,
   más `57c60fb` (el build del tenant); árbol limpio en `0850cae`.
+- **L34** (interrupción externa ×2 y ejecución inline, 2026-11-01): el writer de
+  T4c-1 volvió a morir con `assistant reported an error (quota)` —el proveedor de
+  subagentes sigue agotado, como en L19 y L33— **sin escribir un byte**: `git status
+  --porcelain -uall` vacío antes y después. No se reintenta y no se cambia de agente
+  para esquivarlo. Decisión: el padre ejecuta la rebanada **inline**, con test-first y
+  el differential como prueba. El guard de delegación de writers sí se cumplió (el
+  brief llevaba `Spec: odd/tasks/nim-first.md, T4` y las superficies editables
+  canónicas), así que lo que falló fue capacidad, no el brief.
+  Consecuencia honesta: la ruta **V de T4 no puede correr**, porque el mismo
+  proveedor alimenta a `gentle-ai-verify`. Queda registrada como prueba faltante, no
+  simulada, y es la única razón por la que T4c-1 no está verificado como T4a y T4b.
+- **L35** (evidencia y decisiones de T4c-1, 2026-11-01, `b30f400`): `data/
+  integrations.toml`, 432 líneas y 17 filas, **generado** desde el registry vivo por
+  un emisor one-shot en un scratch (`mktemp -d`, descartado al terminar) y no
+  transcrito a mano: 13 filas compartidas, `notion`/`treg`/`typesafe` solo Python,
+  `obsidian` solo Nim (transcrita desde `nim/src/integrations.nim:200-215`).
+  Decisión que el diseño (L32) no fijaba y hubo que resolver antes de escribir: el
+  **orden**. Se comprobó primero que las listas de keys de las dos mitades son la
+  misma secuencia salvo la fila divergente, así que un **único orden de archivo**
+  filtrado por `halves` reproduce el orden exacto de cada mitad y ninguna reordena.
+  Verificado en Python: 16 keys, mismo orden que antes.
+  Semántica del marcador, escrita en el encabezado del propio archivo: nombra las
+  mitades que **tienen** la fila, y no afirma que las dos la rendericen igual. Las
+  filas compartidas se apoyan en el invariante que el repo ya declara
+  (`odd/tasks/google-calendar-nim-read.md`: el texto de las filas es un invariante
+  entre ports), y el pin de acuerdo de **T4c-2** es lo que lo hará cumplir por primera
+  vez. **Residual honesto**: si alguna de las 13 filas compartidas divergiera en un
+  campo, este archivo convertiría la divergencia en convergencia silenciosa dentro de
+  T4c-2 en vez de fallo ruidoso. No se comprobó campo por campo en esta rebanada.
+  Lo que no puede ser dato: `_BEHAVIOUR`, un dict por `key` con
+  `enabled`/`probe`/`normalize`. Una fila marcada `python` sin entrada levanta
+  `ValueError` nombrando la key. Falta el guard simétrico (una entrada sin fila es
+  código muerto); no lo pide el diseño y queda como pendiente.
+  Pines, test-first: el par wheel+lookup en `test_packaging.py` (espejo exacto del
+  que dejó T4a) y, en `test_integrations.py`, que el archivo es la fuente de las filas
+  **y de su orden**, que una fila `python` sin comportamiento levanta, y que Python no
+  gana `obsidian`. Tres rojos antes y verdes después; el cuarto, el de no convergencia,
+  verde desde el principio como pin del comportamiento previo.
+  Evidencia: oráculo `.venv/bin/python scripts/generate_env_example.py --check` exit 0
+  sin diff antes y después; suite determinista **7 failed, 3352 passed, 62 skipped**,
+  los mismos 7 nombres de L23/L33 y `3347 + 5` = los cinco pines nuevos; differential
+  contra `git archive HEAD` **idéntico** en filas declarativas, campos de env,
+  **bytecode** de cada closure, resultados de `enabled`/`normalize` sobre cinco
+  entornos sintéticos (uno inválido, con el mismo `ValueError`) y el render completo de
+  `.env.example`. Detalle que costó una vuelta: la primera versión del differential
+  comparaba `inspect.getsource` de cada closure y marcó 16 diferencias que eran sólo de
+  **ubicación** en el archivo; la prueba buena es la huella del bytecode. Las 5 de
+  `test_pinned_models` dependen del entorno del desarrollador (`.env`) y no se
+  compararon línea por línea: el editable install de hatchling impide correr el código
+  previo desde un árbol aparte (`PYTHONPATH` no gana al finder), así que la evidencia
+  ahí es el conteo y los nombres idénticos contra el baseline ya registrado. Las dos
+  rojas independientes del estado (`test_static_assets`, `test_turn_evals`) fallan
+  igual en un árbol sin estado, y `test_static_assets` conserva el texto exacto de L30
+  (`Extra items in the left set: 'obsidian.svg'`).
+  `ruff`: mis archivos limpios; el único hallazgo es un `F401` en
+  `test_observability.py`, que no toqué, así que el paso de lint de esta rama ya estaba
+  rojo. Regla 9: `AGENTS.md`, `README.md`, `docs/architecture.md` y el comentario del
+  paso de CI en `.github/workflows/validate-skills.yml` enumeraban `data/` sin el
+  registry de conexiones, y el docstring del módulo decía que no hacía I/O.
+  Tamaño: 647 insertions / 141 deletions en 9 archivos, por encima de la guía de ~400
+  líneas, y **no se partió** porque datos y loader son un solo comportamiento —el pin
+  rojo lo prueba—: un commit que sólo agregue el archivo deja un archivo que nadie lee
+  y ninguna prueba que lo exija.
+  El aviso del harness volvió a medir la rama contra `origin/main` (245 commits,
+  68.824 líneas): sigue en pie la decisión de **Estrategia de entrega**, que es del
+  usuario y no mía.
