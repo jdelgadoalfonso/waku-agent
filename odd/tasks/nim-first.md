@@ -438,3 +438,35 @@ Commits landed (rama `nim-first`):
   corregido.
   No verificado: `evals/hosted_docker/test_image.py` es el guard fuerte y necesita
   daemon de Docker, que esta máquina no tiene.
+- **L32** (evidencia y diseño de T4c, 2026-10-31): el mapa del registry en las dos
+  mitades (`gentle-ai-explore`) cambia el diseño. Los datos de Python son
+  `INTEGRATIONS` (`waku/integrations.py:158-286`), una tupla de **16** instancias de
+  dataclass con campos que son **código**: `enabled`, `probe` y `normalize` son
+  closures. El port Nim tiene **su propia copia** (`nim/src/integrations.nim:200-363`,
+  **14** filas) con sus closures (`keyEnabled`, `storeEnabled`, `darwinEnabled`,
+  `positiveInt`), y **las dos listas no coinciden**: Python tiene `notion`, `treg` y
+  `typesafe`; Nim tiene `obsidian` donde Python tiene `notion`. **No hay ningún pin
+  que afirme que las dos mitades coincidan**: el único puente es un string dorado
+  copiado a mano en `nim/tests/test_integrations.nim:249-383`. Y hay una tercera
+  copia de los grupos: `data/static/js/views.js:281`
+  `const CONNECTION_GROUPS = [...]`, fijada como string por
+  `test_static_assets.py:53`. El render de `.env.example` sale solo de Python
+  (`scripts/generate_env_example.py:9`) y CI lo compara con `--check`
+  (`.github/workflows/validate-skills.yml:59`).
+  Diseño que se sigue, por seguir de L27: (a) `data/integrations.toml` lleva **solo
+  la parte declarativa**; `enabled`, `probe` y `normalize` se quedan en código,
+  indexados por `key`, y una fila sin su entrada de comportamiento falla ruidosamente
+  en vez de quedar inerte; (b) el archivo lleva la **unión** de las filas de las dos
+  mitades con un marcador explícito de qué mitad la registra, para que la divergencia
+  `notion`/`obsidian` deje de ser silenciosa **sin cambiar el comportamiento de
+  ninguna**: converger es una decisión de capacidad, no de T4c, y S1 la prohíbe para
+  la mitad Python; (c) las dos mitades lo leen con un lookup de dos formas (checkout
+  vs instalado) y el wheel lo vuelve a empaquetar, igual que el registry de
+  proveedores y los assets; (d) T4c se entrega en **dos commits**, Python sobre el
+  archivo primero y Nim sobre el archivo más el pin de acuerdo después, y el pin de
+  `.env.example` en Nim queda para T8. El oráculo de la mudanza no es un fixture
+  nuevo: es el guard que el repo ya tiene, `python scripts/generate_env_example.py
+  --check`, que compara el render completo contra el `.env.example` versionado, más
+  los evals existentes (`test_integrations.py`, `test_gmail.py` fija `gmail` justo
+  detrás de `google_calendar`, `test_static_assets.py` deriva un logo por key) y el
+  dorado de Nim. Se corren antes y después.
