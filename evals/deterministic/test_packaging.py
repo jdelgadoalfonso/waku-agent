@@ -101,6 +101,33 @@ def test_the_registry_lookup_covers_both_install_shapes():
     assert 'parents[2] / "data" / "providers.toml"' in src, "lost the repo-checkout location"
 
 
+def test_the_wheel_carries_the_integration_registry():
+    """The fourth time this bug would have shipped. The Connections registry is
+    the data every connection surface is built from, and it moved to
+    `data/integrations.toml` at the repo root, which `packages = ["waku"]` does
+    not ship. force-include copies it to waku/integrations.toml so an installed
+    Waku still has it."""
+    wheel = _pyproject()["tool"]["hatch"]["build"]["targets"]["wheel"]
+    assert wheel.get("force-include", {}).get("data/integrations.toml") == "waku/integrations.toml", (
+        "pyproject no longer force-includes data/integrations.toml into the wheel — "
+        "a `pip install waku-agent` would ship with an empty Connections page"
+    )
+
+
+def test_the_integrations_lookup_covers_both_install_shapes():
+    """The lookup half, for the Connections registry. A checkout has
+    data/integrations.toml at the repo root; a wheel has it beside the module at
+    waku/integrations.toml. Exactly one exists at a time, so integrations_path()
+    must look in both."""
+    import inspect
+
+    from waku import integrations
+
+    src = inspect.getsource(integrations.integrations_path)
+    assert 'parents[0] / "integrations.toml"' in src, "lost the installed-wheel location"
+    assert 'parents[1] / "data" / "integrations.toml"' in src, "lost the repo-checkout location"
+
+
 def test_the_wheel_carries_the_dashboard_assets():
     """The third time this bug would have shipped, and the largest: the dashboard
     frontend is 64 files that used to live INSIDE the package at

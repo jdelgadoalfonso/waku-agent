@@ -80,7 +80,8 @@ no new capability and no new behaviour eval, and every new change lands in
    repository on every pull request.
 3. **One file the Nim port reads is still there.** `nim/src/waku.nim` reads
    `../waku.nimble`. Everything else the port needs is data, in `data/`: the
-   provider registry both halves read, and the dashboard assets it embeds.
+   provider and connection registries both halves read, and the dashboard
+   assets it embeds.
 
 `hosted/` stays Python and stays unchanged, with its own Elastic License 2.0.
 [docs/status.md](docs/status.md) records what works today, and

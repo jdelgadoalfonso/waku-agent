@@ -17,9 +17,9 @@ authoritative behaviour reads them. `nim/src/` mirrors the same pillars —
 and new work goes to `nim/`. It stays in the tree for three reasons. It is the
 parity oracle. `evals/deterministic/` still runs and guards this repository.
 And the Nim port reads files inside it: `nim/src/dashboard.nim` embeds
-`data/static`, and `nim/src/waku.nim` reads `../waku.nimble`. The provider
-registry both halves read lives in `data/providers.toml`. `hosted/` stays
-Python and stays unchanged, with its own Elastic License 2.0.
+`data/static`, and `nim/src/waku.nim` reads `../waku.nimble`. The provider and
+connection registries both halves read live in `data/`. `hosted/` stays Python
+and stays unchanged, with its own Elastic License 2.0.
 
 ```mermaid
 flowchart TB

@@ -1,8 +1,10 @@
 """Single registry for every user-configurable connection.
 
-The declarations in this module intentionally have no I/O.  The read, write
-and probe operations below the registry are added here too so all surfaces can
-share one small public API.
+The rows themselves are data and live in `data/integrations.toml`, because the
+Nim half reads those same rows and the two copies had already drifted. This
+module builds that file into `Integration`s, keeps the small part that cannot
+be data (the `enabled`, `probe` and `normalize` closures), and adds the read,
+write and probe operations below, so all surfaces share one small public API.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import json
 import os
 import socket
 import sys
+import tomllib
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping
@@ -155,135 +158,121 @@ def _darwin_tools(env: Mapping[str, str]) -> bool:
     return sys.platform == "darwin" and bool(env.get("WAKU_APPLE_TOOLS"))
 
 
-INTEGRATIONS: tuple[Integration, ...] = (
-    Integration("telegram", "Channels", "Telegram", "Lets Waku receive and send Telegram messages.",
-                (EnvField("TELEGRAM_BOT_TOKEN", "Bot token", required=True, secret=True),
-                 EnvField("TELEGRAM_ALLOWED_USER", "Allowed user")), "telegram", "telegram",
-                "https://t.me/BotFather", ReloadMode.GATEWAY,
-                lambda env: bool(env.get("TELEGRAM_BOT_TOKEN")), None),
-    Integration("discord", "Channels", "Discord", "Lets Waku answer in a Discord server.",
-                (EnvField("DISCORD_BOT_TOKEN", "Bot token", required=True, secret=True),
-                 EnvField("DISCORD_ALLOWED_USER", "Allowed user"),
-                 EnvField("DISCORD_ALLOWED_CHANNEL", "Allowed channel"),
-                 EnvField("DISCORD_REQUIRE_MENTION", "Require mention", FieldKind.BOOL),
-                 EnvField("DISCORD_MAX_TURNS_PER_HOUR", "Max turns per hour"),
-                 EnvField("DISCORD_HOME", "Workspace directory")), "discord", "discord", "",
-                ReloadMode.GATEWAY, lambda env: bool(env.get("DISCORD_BOT_TOKEN")), None,
-                _positive_int),
-    Integration("whatsapp", "Channels", "WhatsApp", "Lets Waku answer WhatsApp messages via the Meta Cloud API.",
-                (EnvField("WHATSAPP_TOKEN", "Access token", required=True, secret=True),
-                 EnvField("WHATSAPP_PHONE_NUMBER_ID", "Phone number ID", required=True),
-                 EnvField("WHATSAPP_APP_SECRET", "App secret", required=True, secret=True),
-                 EnvField("WHATSAPP_VERIFY_TOKEN", "Webhook verify token", required=True, secret=True),
-                 EnvField("WHATSAPP_ALLOWED_PHONE", "Allowed phone",
-                          help="Without '+' prefix. Empty = answer anyone.")),
-                "whatsapp", "httpx", "https://developers.facebook.com/apps",
-                ReloadMode.GATEWAY, lambda env: bool(env.get("WHATSAPP_TOKEN")), None),
-    Integration("google_calendar", "Calendar & Productivity", "Google Calendar",
-                "Lets Waku create and update Google Calendar events.",
-                (EnvField("WAKU_GOOGLE_CALENDAR", "Enable Google Calendar", FieldKind.BOOL),
-                 EnvField("WAKU_GOOGLE_CALENDAR_ID", "Calendar ID", default="primary")),
-                "gcal", "googleapiclient", "https://developers.google.com/calendar/api/quickstart/python",
-                ReloadMode.AGENT, lambda env: bool(env.get("WAKU_GOOGLE_CALENDAR")), None),
-    Integration("gmail", "Calendar & Productivity", "Gmail",
-                "Lets Waku search, read and answer email. Off until you enable it: "
-                "every registered tool rides in every prompt.",
-                (EnvField("WAKU_GMAIL", "Enable Gmail", FieldKind.BOOL),
-                 EnvField("WAKU_GMAIL_SEND", "Send for real", FieldKind.BOOL,
-                          help="Off means gmail_send writes a draft to the outbox instead of "
-                               "sending. An email cannot be unsent, so real delivery is a "
-                               "separate switch.")),
-                "gcal", "googleapiclient", "https://developers.google.com/gmail/api/quickstart/python",
-                ReloadMode.AGENT, lambda env: bool(env.get("WAKU_GMAIL")), None),
-    Integration("apple_calendar", "Calendar & Productivity", "Apple Calendar",
-                "Lets Waku work with Apple Calendar on this Mac.",
-                (EnvField("WAKU_APPLE_CALENDAR", "Enable Apple Calendar", FieldKind.BOOL),
-                 EnvField("WAKU_APPLE_CALENDARS", "Calendars")), None, None, "", ReloadMode.AGENT,
-                _darwin, None),
-    Integration("apple_tools", "Calendar & Productivity", "Apple Tools",
-                "Lets Waku use Apple Mail and other local Apple tools.",
-                (EnvField("WAKU_APPLE_TOOLS", "Enable Apple tools", FieldKind.BOOL),), None, None,
-                "", ReloadMode.AGENT, _darwin_tools, None),
-    Integration("notion", "Memory & Storage", "Notion", "Stores episodic memory in a Notion database.",
-                (EnvField("WAKU_EPISODIC_STORE", "Episodic store", FieldKind.CHOICE,
-                          default="sqlite", options=("sqlite", "notion")),
-                 EnvField("NOTION_TOKEN", "Integration token", required=True, secret=True),
-                 EnvField("NOTION_EPISODES_DATABASE_ID", "Episodes database ID", required=True)),
-                "notion", "notion_client", "https://www.notion.so/my-integrations", ReloadMode.AGENT,
-                lambda env: env.get("WAKU_EPISODIC_STORE") == "notion", None, _notion_normalize),
-    Integration("mem0", "Memory & Storage", "Mem0", "Stores semantic memory in the Mem0 service.",
-                (EnvField("WAKU_SEMANTIC_STORE", "Semantic store", FieldKind.CHOICE,
-                          default="sqlite", options=("sqlite", "mem0")),
-                 EnvField("MEM0_API_KEY", "API key", required=True, secret=True,
-                          help="From app.mem0.ai. The adapter sends infer=False so add() always "
-                               "stores — a bake-off against it measures retrieval, not Mem0's "
-                               "own extraction step."),
-                 EnvField("MEM0_USER_ID", "User id", help="Defaults to 'waku'. Change it only if "
-                                                          "several people share one Mem0 account.")),
-                "arena", "mem0", "", ReloadMode.AGENT,
-                lambda env: env.get("WAKU_SEMANTIC_STORE") == "mem0", None),
-    Integration("zep", "Memory & Storage", "Zep", "Stores semantic memory in a Zep temporal graph.",
-                (EnvField("WAKU_SEMANTIC_STORE", "Semantic store", FieldKind.CHOICE,
-                          default="sqlite", options=("sqlite", "zep")),
-                 EnvField("ZEP_API_KEY", "API key", required=True, secret=True,
-                          help="From getzep.com. Facts become graph edges with validity dates, so a "
-                               "correction supersedes the old value instead of ranking beside it — "
-                               "the one backend built for the update test."),
-                 EnvField("ZEP_USER_ID", "User id", help="Defaults to 'waku'. Zep scopes a graph per user."),
-                 EnvField("ZEP_MAX_WAIT_SECONDS", "Max wait (s)",
-                          help="Ingestion is asynchronous: graph.add returns in ~0.2s with the episode "
-                               "unprocessed, and the text is not searchable until Zep has turned it into "
-                               "nodes and edges. Waku polls until it has, up to this long. Default 120 — "
-                               "raise it if seeding times out, never lower it to make a benchmark finish.")),
-                "arena", "zep_cloud", "", ReloadMode.AGENT,
-                lambda env: env.get("WAKU_SEMANTIC_STORE") == "zep", None),
-    Integration("langmem", "Memory & Storage", "LangMem",
-                "Stores semantic memory in a LangGraph store via LangMem.",
-                (EnvField("WAKU_SEMANTIC_STORE", "Semantic store", FieldKind.CHOICE,
-                          default="sqlite", options=("sqlite", "langmem")),
-                 EnvField("WAKU_LANGMEM_POSTGRES", "Postgres URL",
-                          help="Optional. Without it LangGraph's InMemoryStore is used, which its own "
-                               "docs describe as a reference implementation whose data dies with the "
-                               "process — fine for a benchmark run, not a persistence story."),
-                 EnvField("OPENAI_API_KEY", "OpenAI key", required=True, secret=True,
-                          help="LangMem has no key of its own; it bills through embeddings. Semantic "
-                               "search needs this or the store is a plain key-value dict.")),
-                "arena", "langmem", "", ReloadMode.AGENT,
-                lambda env: env.get("WAKU_SEMANTIC_STORE") == "langmem", None),
-    Integration("supabase", "Memory & Storage", "Supabase", "Stores semantic memory in Supabase pgvector.",
-                (EnvField("WAKU_SEMANTIC_STORE", "Semantic store", FieldKind.CHOICE,
-                          default="sqlite", options=("sqlite", "supabase")),
-                 EnvField("SUPABASE_URL", "Project URL", required=True),
-                 EnvField("SUPABASE_SERVICE_KEY", "Service key", required=True, secret=True,
-                          help="Embeddings also require OPENAI_API_KEY (optionally OPENAI_EMBED_MODEL).")),
-                "supabase", "supabase", "", ReloadMode.AGENT,
-                lambda env: env.get("WAKU_SEMANTIC_STORE") == "supabase", None),
-    Integration("tavily", "Search & Observability", "Tavily", "Lets Waku search the web.",
-                (EnvField("TAVILY_API_KEY", "API key", secret=True),), None, None,
-                "https://tavily.com", ReloadMode.LIVE, lambda env: bool(env.get("TAVILY_API_KEY")), None),
-    # Spec 014: a person's own treg key. Its card is treg's MCP card
-    # (waku/tools/treg.py), which opens this row's dialog; views.js draws no
-    # second card for it. Saving rebuilds the agent, which reconnects treg
-    # with the key (treg.resolve), so the switch is live on the next message.
-    Integration("treg", "Search & Observability", "treg",
-                "Your own treg key. treg then bills your treg account, not your Waku credits.",
-                (EnvField("TREG_API_KEY", "API key", secret=True,
-                          help="An org-scoped key from your treg dashboard. It is sent only to treg."),),
-                None, None, "https://treg.to", ReloadMode.AGENT,
-                lambda env: bool(env.get("TREG_API_KEY")), None),
-    # Spec 005: Jev decides which memories earn a slot. Both fields, or it
-    # stays off: WAKU_SLOT_GATE=jev is the switch, the key is the credential.
-    Integration("typesafe", "Memory & Storage", "TypeSafe Jev",
-                "Lets Jev decide which memories earn a place in each answer.",
-                (EnvField("TYPESAFE_API_KEY", "API key", secret=True),
-                 EnvField("WAKU_SLOT_GATE", "Set to jev to turn it on")), None, None,
-                "https://typesafe.ai", ReloadMode.LIVE,
-                lambda env: env.get("WAKU_SLOT_GATE") == "jev" and bool(env.get("TYPESAFE_API_KEY")),
-                None),
-    Integration("otel", "Search & Observability", "OpenTelemetry", "Exports traces to an OTLP collector.",
-                (EnvField("OTEL_EXPORTER_OTLP_ENDPOINT", "OTLP endpoint"),), "tracing", "opentelemetry",
-                "", ReloadMode.AGENT, lambda env: bool(env.get("OTEL_EXPORTER_OTLP_ENDPOINT")), None),
-)
+def integrations_path() -> Path:
+    """Where the connection registry lives — and why there are two answers.
+
+    The registry is data, not code: `data/integrations.toml` at the repo root is
+    the master a maintainer edits, and the Nim half reads the same file. But the
+    wheel only packages the `waku/` directory, so a `pip install waku-agent`
+    would have found nothing there and started with an empty Connections page.
+    pyproject force-includes the same file into the wheel at
+    `waku/integrations.toml`, so an installed Waku finds it next to the code.
+
+    Exactly one of these exists at a time — the package copy only in a built
+    wheel, the repo copy only in a checkout — so preferring whichever is there
+    is not a double-read, it is "wherever you installed from, the registry came
+    too". Same shape as `waku.loop.models.registry_path`, same reason; this
+    module sits one directory shallower, so the indexes differ by one.
+    """
+    here = Path(__file__).resolve()
+    repo = here.parents[1] / "data" / "integrations.toml"
+    installed = here.parents[0] / "integrations.toml"
+    return repo if repo.is_file() else installed
+
+
+@dataclass(frozen=True)
+class _Behaviour:
+    """The part of a connection that is code, and so cannot be data.
+
+    `enabled`, `probe` and `normalize` are closures over real Python — reading a
+    switch, probing a service, cleaning a database id — so they stay here keyed
+    by `key` while the rest of the row lives in `data/integrations.toml`.
+    `load_integrations` refuses a row marked for Python that has no entry in
+    `_BEHAVIOUR`: the alternative is a connection that renders as an option,
+    looks complete, and can never turn on.
+    """
+
+    enabled: Callable[[Mapping[str, str]], bool]
+    probe: Callable[[Mapping[str, str]], None] | None = None
+    normalize: Callable[[dict[str, str]], dict[str, str]] | None = None
+
+
+_BEHAVIOUR: dict[str, _Behaviour] = {
+    "telegram": _Behaviour(lambda env: bool(env.get("TELEGRAM_BOT_TOKEN"))),
+    "discord": _Behaviour(lambda env: bool(env.get("DISCORD_BOT_TOKEN")),
+                          normalize=_positive_int),
+    "whatsapp": _Behaviour(lambda env: bool(env.get("WHATSAPP_TOKEN"))),
+    "google_calendar": _Behaviour(lambda env: bool(env.get("WAKU_GOOGLE_CALENDAR"))),
+    "gmail": _Behaviour(lambda env: bool(env.get("WAKU_GMAIL"))),
+    "apple_calendar": _Behaviour(_darwin),
+    "apple_tools": _Behaviour(_darwin_tools),
+    "notion": _Behaviour(lambda env: env.get("WAKU_EPISODIC_STORE") == "notion",
+                         normalize=_notion_normalize),
+    "mem0": _Behaviour(lambda env: env.get("WAKU_SEMANTIC_STORE") == "mem0"),
+    "zep": _Behaviour(lambda env: env.get("WAKU_SEMANTIC_STORE") == "zep"),
+    "langmem": _Behaviour(lambda env: env.get("WAKU_SEMANTIC_STORE") == "langmem"),
+    "supabase": _Behaviour(lambda env: env.get("WAKU_SEMANTIC_STORE") == "supabase"),
+    "tavily": _Behaviour(lambda env: bool(env.get("TAVILY_API_KEY"))),
+    "treg": _Behaviour(lambda env: bool(env.get("TREG_API_KEY"))),
+    "typesafe": _Behaviour(lambda env: env.get("WAKU_SLOT_GATE") == "jev"
+                           and bool(env.get("TYPESAFE_API_KEY"))),
+    "otel": _Behaviour(lambda env: bool(env.get("OTEL_EXPORTER_OTLP_ENDPOINT"))),
+}
+
+
+def _env_field(row: Mapping[str, object]) -> EnvField:
+    """One `[[<key>.env]]` table, as the EnvField the panel renders."""
+    return EnvField(
+        name=str(row["name"]),
+        label=str(row["label"]),
+        kind=FieldKind(str(row.get("kind", FieldKind.TEXT.value))),
+        required=bool(row.get("required", False)),
+        secret=bool(row.get("secret", False)),
+        default=str(row.get("default", "")),
+        options=tuple(str(option) for option in row.get("options", ())),
+        placeholder=str(row.get("placeholder", "")),
+        help=str(row.get("help", "")),
+        option_labels=tuple(str(label) for label in row.get("option_labels", ())),
+    )
+
+
+def load_integrations(path: Path | None = None) -> tuple[Integration, ...]:
+    """Build the registry from `data/integrations.toml`, in the file's order.
+
+    Only the rows marked for Python are built. Every one of them needs its entry
+    in `_BEHAVIOUR`, and a missing one raises here naming the key.
+    """
+    with (path or integrations_path()).open("rb") as registry:
+        document = tomllib.load(registry)
+    rows = []
+    for key, row in document.items():
+        if "python" not in row["halves"]:
+            continue
+        behaviour = _BEHAVIOUR.get(key)
+        if behaviour is None:
+            raise ValueError(
+                f"integration {key!r} is marked for python in the integration registry "
+                f"but has no _BEHAVIOUR entry — add one, or drop the row"
+            )
+        rows.append(Integration(
+            key=key,
+            group=str(row["group"]),
+            name=str(row["name"]),
+            what=str(row["what"]),
+            env=tuple(_env_field(field) for field in row.get("env", ())),
+            extra=None if row.get("extra") is None else str(row["extra"]),
+            import_name=None if row.get("import_name") is None else str(row["import_name"]),
+            setup_url=str(row["setup_url"]),
+            reload=ReloadMode(str(row["reload"])),
+            enabled=behaviour.enabled,
+            probe=behaviour.probe,
+            normalize=behaviour.normalize,
+        ))
+    return tuple(rows)
+
+
+INTEGRATIONS: tuple[Integration, ...] = load_integrations()
+
 
 
 def _integration_from_provider(name: str, provider: Provider) -> Integration:

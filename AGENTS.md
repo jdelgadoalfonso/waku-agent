@@ -12,7 +12,7 @@ for three reasons. It is the parity oracle every phase of the Nim port was
 verified against. `evals/deterministic/` still runs and guards this
 repository. And the Nim port still reads one file inside it: `nim/src/waku.nim`
 reads `../waku.nimble`. The rest of what the port needs is data, and lives in
-`data/`: the provider registry, and the dashboard assets it embeds.
+`data/`: the provider and connection registries, and the dashboard assets it embeds.
 
 This file is for everyone who changes the repo, human or coding agent. A test
 caps it at 100 lines, so the detail lives in the files it points to.

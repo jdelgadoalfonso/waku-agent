@@ -204,6 +204,10 @@ packages = ["waku"]
 # the package, so this copy-back is what keeps `pip install waku-agent` serving
 # a dashboard instead of a 404 — the same shape as the two entries above.
 "data/static" = "waku/ops/static"
+# The Connections registry is the rest of the data. Same fix again: the master is
+# data/integrations.toml at the repo root, where the Nim half reads it, and this
+# copies it back beside the module for an installed Waku.
+"data/integrations.toml" = "waku/integrations.toml"
 
 [tool.ruff]
 line-length = 100

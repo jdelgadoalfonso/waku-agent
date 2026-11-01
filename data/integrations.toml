@@ -1,0 +1,432 @@
+# Every user-configurable connection Waku offers, as data.
+#
+# Adding one is a row here, a logo at data/static/logos/<key>.svg, and — for
+# the Python half — one entry in the behaviour table in waku/integrations.py.
+# The Connections panel, the health probes, the gateway wiring and the
+# Connections block of .env.example are all built from the rows below.
+#
+# Fields
+#   halves        which halves register this row: "python", "nim", or both.
+#                 It names the halves that HAVE the row, and nothing more: it
+#                 is not a claim that both render every field identically.
+#                 Where the two disagree today the file carries BOTH rows, each
+#                 with its own data, so the disagreement is visible instead of
+#                 silent. Converging a divergence is a capability decision and
+#                 does not happen by editing this file.
+#   group         the panel heading the row is drawn under
+#   name          the card's title
+#   what          one sentence, shown under the title
+#   extra         optional tag tying the row to a feature area
+#   import_name   the pip extra that installs the client it needs
+#   setup_url     where a person gets the credential; "" when there is nowhere
+#   reload        when a saved value takes effect: "live" | "agent" | "gateway"
+#   env           the credential and switch fields, in the order the form shows
+#                 them. name is the variable; label is the visible label; kind
+#                 is "text" | "bool" | "choice" (omitted means text); default,
+#                 options and option_labels belong to choice fields; required
+#                 and secret are what they say; help is the note under the
+#                 field.
+#
+# Order is the registration order. Filtered by `halves`, this file's order is
+# each half's order, so both halves agree on the panel layout without either
+# re-sorting.
+#
+# What is NOT here: `enabled`, `probe` and `normalize` are closures, so they
+# live in code keyed by `key`. A row that says Python registers it and has no
+# entry there fails loudly and names the key, rather than building a card that
+# can never turn on.
+
+
+[telegram]
+halves = ["python", "nim"]
+group = "Channels"
+name = "Telegram"
+what = "Lets Waku receive and send Telegram messages."
+extra = "telegram"
+import_name = "telegram"
+setup_url = "https://t.me/BotFather"
+reload = "gateway"
+
+[[telegram.env]]
+name = "TELEGRAM_BOT_TOKEN"
+label = "Bot token"
+required = true
+secret = true
+
+[[telegram.env]]
+name = "TELEGRAM_ALLOWED_USER"
+label = "Allowed user"
+
+[discord]
+halves = ["python", "nim"]
+group = "Channels"
+name = "Discord"
+what = "Lets Waku answer in a Discord server."
+extra = "discord"
+import_name = "discord"
+setup_url = ""
+reload = "gateway"
+
+[[discord.env]]
+name = "DISCORD_BOT_TOKEN"
+label = "Bot token"
+required = true
+secret = true
+
+[[discord.env]]
+name = "DISCORD_ALLOWED_USER"
+label = "Allowed user"
+
+[[discord.env]]
+name = "DISCORD_ALLOWED_CHANNEL"
+label = "Allowed channel"
+
+[[discord.env]]
+name = "DISCORD_REQUIRE_MENTION"
+label = "Require mention"
+kind = "bool"
+
+[[discord.env]]
+name = "DISCORD_MAX_TURNS_PER_HOUR"
+label = "Max turns per hour"
+
+[[discord.env]]
+name = "DISCORD_HOME"
+label = "Workspace directory"
+
+[whatsapp]
+halves = ["python", "nim"]
+group = "Channels"
+name = "WhatsApp"
+what = "Lets Waku answer WhatsApp messages via the Meta Cloud API."
+extra = "whatsapp"
+import_name = "httpx"
+setup_url = "https://developers.facebook.com/apps"
+reload = "gateway"
+
+[[whatsapp.env]]
+name = "WHATSAPP_TOKEN"
+label = "Access token"
+required = true
+secret = true
+
+[[whatsapp.env]]
+name = "WHATSAPP_PHONE_NUMBER_ID"
+label = "Phone number ID"
+required = true
+
+[[whatsapp.env]]
+name = "WHATSAPP_APP_SECRET"
+label = "App secret"
+required = true
+secret = true
+
+[[whatsapp.env]]
+name = "WHATSAPP_VERIFY_TOKEN"
+label = "Webhook verify token"
+required = true
+secret = true
+
+[[whatsapp.env]]
+name = "WHATSAPP_ALLOWED_PHONE"
+label = "Allowed phone"
+help = "Without '+' prefix. Empty = answer anyone."
+
+[google_calendar]
+halves = ["python", "nim"]
+group = "Calendar & Productivity"
+name = "Google Calendar"
+what = "Lets Waku create and update Google Calendar events."
+extra = "gcal"
+import_name = "googleapiclient"
+setup_url = "https://developers.google.com/calendar/api/quickstart/python"
+reload = "agent"
+
+[[google_calendar.env]]
+name = "WAKU_GOOGLE_CALENDAR"
+label = "Enable Google Calendar"
+kind = "bool"
+
+[[google_calendar.env]]
+name = "WAKU_GOOGLE_CALENDAR_ID"
+label = "Calendar ID"
+default = "primary"
+
+[gmail]
+halves = ["python", "nim"]
+group = "Calendar & Productivity"
+name = "Gmail"
+what = "Lets Waku search, read and answer email. Off until you enable it: every registered tool rides in every prompt."
+extra = "gcal"
+import_name = "googleapiclient"
+setup_url = "https://developers.google.com/gmail/api/quickstart/python"
+reload = "agent"
+
+[[gmail.env]]
+name = "WAKU_GMAIL"
+label = "Enable Gmail"
+kind = "bool"
+
+[[gmail.env]]
+name = "WAKU_GMAIL_SEND"
+label = "Send for real"
+kind = "bool"
+help = "Off means gmail_send writes a draft to the outbox instead of sending. An email cannot be unsent, so real delivery is a separate switch."
+
+[apple_calendar]
+halves = ["python", "nim"]
+group = "Calendar & Productivity"
+name = "Apple Calendar"
+what = "Lets Waku work with Apple Calendar on this Mac."
+setup_url = ""
+reload = "agent"
+
+[[apple_calendar.env]]
+name = "WAKU_APPLE_CALENDAR"
+label = "Enable Apple Calendar"
+kind = "bool"
+
+[[apple_calendar.env]]
+name = "WAKU_APPLE_CALENDARS"
+label = "Calendars"
+
+[apple_tools]
+halves = ["python", "nim"]
+group = "Calendar & Productivity"
+name = "Apple Tools"
+what = "Lets Waku use Apple Mail and other local Apple tools."
+setup_url = ""
+reload = "agent"
+
+[[apple_tools.env]]
+name = "WAKU_APPLE_TOOLS"
+label = "Enable Apple tools"
+kind = "bool"
+
+[notion]
+halves = ["python"]
+group = "Memory & Storage"
+name = "Notion"
+what = "Stores episodic memory in a Notion database."
+extra = "notion"
+import_name = "notion_client"
+setup_url = "https://www.notion.so/my-integrations"
+reload = "agent"
+
+[[notion.env]]
+name = "WAKU_EPISODIC_STORE"
+label = "Episodic store"
+kind = "choice"
+default = "sqlite"
+options = ["sqlite", "notion"]
+
+[[notion.env]]
+name = "NOTION_TOKEN"
+label = "Integration token"
+required = true
+secret = true
+
+[[notion.env]]
+name = "NOTION_EPISODES_DATABASE_ID"
+label = "Episodes database ID"
+required = true
+
+[obsidian]
+halves = ["nim"]
+group = "Memory & Storage"
+name = "Obsidian"
+what = "Stores episodic memory as notes in your local Obsidian vault."
+setup_url = ""
+reload = "agent"
+
+[[obsidian.env]]
+name = "WAKU_EPISODIC_STORE"
+label = "Episodic store"
+kind = "choice"
+default = "sqlite"
+options = ["sqlite", "obsidian"]
+
+[[obsidian.env]]
+name = "WAKU_OBSIDIAN_VAULT"
+label = "Vault path"
+required = true
+help = "Root of your local Obsidian vault. Episodes live under waku/episodes/."
+
+[mem0]
+halves = ["python", "nim"]
+group = "Memory & Storage"
+name = "Mem0"
+what = "Stores semantic memory in the Mem0 service."
+extra = "arena"
+import_name = "mem0"
+setup_url = ""
+reload = "agent"
+
+[[mem0.env]]
+name = "WAKU_SEMANTIC_STORE"
+label = "Semantic store"
+kind = "choice"
+default = "sqlite"
+options = ["sqlite", "mem0"]
+
+[[mem0.env]]
+name = "MEM0_API_KEY"
+label = "API key"
+required = true
+secret = true
+help = "From app.mem0.ai. The adapter sends infer=False so add() always stores — a bake-off against it measures retrieval, not Mem0's own extraction step."
+
+[[mem0.env]]
+name = "MEM0_USER_ID"
+label = "User id"
+help = "Defaults to 'waku'. Change it only if several people share one Mem0 account."
+
+[zep]
+halves = ["python", "nim"]
+group = "Memory & Storage"
+name = "Zep"
+what = "Stores semantic memory in a Zep temporal graph."
+extra = "arena"
+import_name = "zep_cloud"
+setup_url = ""
+reload = "agent"
+
+[[zep.env]]
+name = "WAKU_SEMANTIC_STORE"
+label = "Semantic store"
+kind = "choice"
+default = "sqlite"
+options = ["sqlite", "zep"]
+
+[[zep.env]]
+name = "ZEP_API_KEY"
+label = "API key"
+required = true
+secret = true
+help = "From getzep.com. Facts become graph edges with validity dates, so a correction supersedes the old value instead of ranking beside it — the one backend built for the update test."
+
+[[zep.env]]
+name = "ZEP_USER_ID"
+label = "User id"
+help = "Defaults to 'waku'. Zep scopes a graph per user."
+
+[[zep.env]]
+name = "ZEP_MAX_WAIT_SECONDS"
+label = "Max wait (s)"
+help = "Ingestion is asynchronous: graph.add returns in ~0.2s with the episode unprocessed, and the text is not searchable until Zep has turned it into nodes and edges. Waku polls until it has, up to this long. Default 120 — raise it if seeding times out, never lower it to make a benchmark finish."
+
+[langmem]
+halves = ["python", "nim"]
+group = "Memory & Storage"
+name = "LangMem"
+what = "Stores semantic memory in a LangGraph store via LangMem."
+extra = "arena"
+import_name = "langmem"
+setup_url = ""
+reload = "agent"
+
+[[langmem.env]]
+name = "WAKU_SEMANTIC_STORE"
+label = "Semantic store"
+kind = "choice"
+default = "sqlite"
+options = ["sqlite", "langmem"]
+
+[[langmem.env]]
+name = "WAKU_LANGMEM_POSTGRES"
+label = "Postgres URL"
+help = "Optional. Without it LangGraph's InMemoryStore is used, which its own docs describe as a reference implementation whose data dies with the process — fine for a benchmark run, not a persistence story."
+
+[[langmem.env]]
+name = "OPENAI_API_KEY"
+label = "OpenAI key"
+required = true
+secret = true
+help = "LangMem has no key of its own; it bills through embeddings. Semantic search needs this or the store is a plain key-value dict."
+
+[supabase]
+halves = ["python", "nim"]
+group = "Memory & Storage"
+name = "Supabase"
+what = "Stores semantic memory in Supabase pgvector."
+extra = "supabase"
+import_name = "supabase"
+setup_url = ""
+reload = "agent"
+
+[[supabase.env]]
+name = "WAKU_SEMANTIC_STORE"
+label = "Semantic store"
+kind = "choice"
+default = "sqlite"
+options = ["sqlite", "supabase"]
+
+[[supabase.env]]
+name = "SUPABASE_URL"
+label = "Project URL"
+required = true
+
+[[supabase.env]]
+name = "SUPABASE_SERVICE_KEY"
+label = "Service key"
+required = true
+secret = true
+help = "Embeddings also require OPENAI_API_KEY (optionally OPENAI_EMBED_MODEL)."
+
+[tavily]
+halves = ["python", "nim"]
+group = "Search & Observability"
+name = "Tavily"
+what = "Lets Waku search the web."
+setup_url = "https://tavily.com"
+reload = "live"
+
+[[tavily.env]]
+name = "TAVILY_API_KEY"
+label = "API key"
+secret = true
+
+[treg]
+halves = ["python"]
+group = "Search & Observability"
+name = "treg"
+what = "Your own treg key. treg then bills your treg account, not your Waku credits."
+setup_url = "https://treg.to"
+reload = "agent"
+
+[[treg.env]]
+name = "TREG_API_KEY"
+label = "API key"
+secret = true
+help = "An org-scoped key from your treg dashboard. It is sent only to treg."
+
+[typesafe]
+halves = ["python"]
+group = "Memory & Storage"
+name = "TypeSafe Jev"
+what = "Lets Jev decide which memories earn a place in each answer."
+setup_url = "https://typesafe.ai"
+reload = "live"
+
+[[typesafe.env]]
+name = "TYPESAFE_API_KEY"
+label = "API key"
+secret = true
+
+[[typesafe.env]]
+name = "WAKU_SLOT_GATE"
+label = "Set to jev to turn it on"
+
+[otel]
+halves = ["python", "nim"]
+group = "Search & Observability"
+name = "OpenTelemetry"
+what = "Exports traces to an OTLP collector."
+extra = "tracing"
+import_name = "opentelemetry"
+setup_url = ""
+reload = "agent"
+
+[[otel.env]]
+name = "OTEL_EXPORTER_OTLP_ENDPOINT"
+label = "OTLP endpoint"

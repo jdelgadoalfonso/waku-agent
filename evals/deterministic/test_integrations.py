@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import socket
+import tomllib
 
 import pytest
 
@@ -459,3 +460,55 @@ def test_a_genuinely_missing_required_field_still_says_needs_setup(monkeypatch, 
     view = next(v for v in integrations.list_integrations() if v.key == "notion")
     assert view.status.state is IntegrationState.INSTALLED_BUT_UNCONFIGURED
     assert required[1] in view.status.message
+
+
+def test_the_connections_registry_is_read_from_the_data_file():
+    """`data/integrations.toml` is the master, not a mirror of a tuple that lives
+    in code: the registry's rows, and their order, are the file's rows marked for
+    this half. Before this, each half carried its own copy and the two had
+    already drifted (`notion` against `obsidian`) with nothing in the repo
+    saying they were ever meant to agree."""
+    path = integrations.integrations_path()
+    assert path.is_file(), f"no integration registry at {path}"
+    with path.open("rb") as fh:
+        document = tomllib.load(fh)
+    marked_python = [key for key, row in document.items() if "python" in row["halves"]]
+    assert [row.key for row in integrations.INTEGRATIONS] == marked_python
+    assert len(document) > len(marked_python), (
+        "the file must carry the other half's rows too — if every row is this "
+        "half's, the divergence this file exists to make visible is back to "
+        "being silent"
+    )
+
+
+def test_python_keeps_only_the_rows_marked_for_it():
+    """The row-level divergence, pinned so it stops being silent. This half has
+    `notion`, the Nim half has `obsidian`, and the file lists both. Python's
+    registry keeps exactly the rows marked for Python, so it must NOT gain
+    `obsidian` — that would be a capability change in a frozen half."""
+    keys = {row.key for row in integrations.INTEGRATIONS}
+    assert "notion" in keys
+    assert "obsidian" not in keys, (
+        "Python gained the Nim half's row — converging the halves is a capability "
+        "decision, not a data-file side effect"
+    )
+
+
+def test_a_row_python_registers_needs_its_behaviour_entry(tmp_path):
+    """`enabled`, `probe` and `normalize` are closures, so they stay in code keyed
+    by `key`. A row that says Python registers it but has no entry in that code
+    would build a connection card that can never turn on, and every surface would
+    render it as a working option. It fails loudly instead, naming the key."""
+    path = tmp_path / "integrations.toml"
+    path.write_text(
+        '[brand_new]\n'
+        'halves = ["python"]\n'
+        'group = "Channels"\n'
+        'name = "Brand New"\n'
+        'what = "Would never turn on."\n'
+        'setup_url = ""\n'
+        'reload = "live"\n'
+    )
+    with pytest.raises(ValueError) as raised:
+        integrations.load_integrations(path)
+    assert "brand_new" in str(raised.value)
