@@ -105,7 +105,7 @@ def test_tracer_refuses_to_append_to_legacy_non_utf8_trace(tmp_path):
 
 def test_dashboard_observability_view_surfaces_trace_encoding_errors():
     views = (
-        Path(__file__).resolve().parents[2] / "waku" / "ops" / "static" / "js" / "observe.js"
+        Path(__file__).resolve().parents[2] / "data" / "static" / "js" / "observe.js"
     ).read_text(encoding="utf-8")
 
     assert "trace_errors" in views

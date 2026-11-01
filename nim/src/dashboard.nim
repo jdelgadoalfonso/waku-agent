@@ -47,7 +47,7 @@
 ##   non-numeric env value where Python would raise — startup must not
 ##   crash on a typo.
 ## - `/` and `/static/...` answer from the compile-time embed of
-##   `waku/ops/static/` when `DashboardDeps.staticDir` is `""`, which is
+##   `data/static/` when `DashboardDeps.staticDir` is `""`, which is
 ##   what `findStaticDir` returns for a binary with no checkout beside it.
 ##   A configured `staticDir` still wins and still reads the disk, so
 ##   frontend edits in a checkout need no rebuild and the Python
@@ -257,7 +257,7 @@ type
     ## tests inject a stub that captures host/port and returns.
 
   StaticAsset* = tuple[name, body: string]
-    ## One `waku/ops/static/` file frozen into the executable: its
+    ## One `data/static/` file frozen into the executable: its
     ## checkout-relative name (always `/`-separated, so a Windows build
     ## looks up the same keys) and its exact bytes. Built by the
     ## compile-time walk in the embed section.
@@ -267,7 +267,7 @@ type
     home*: string
       ## `WAKU_HOME`: usage ledger, traces, state.db.
     staticDir*: string
-      ## A `waku/ops/static/` checkout served from disk; `""` means
+      ## A `data/static/` checkout served from disk; `""` means
       ## there is none and the compile-time embed answers instead (a bare
       ## binary). Set by `findStaticDir`, injected by tests.
     provider*: string
@@ -401,7 +401,7 @@ proc splitTarget*(target: string): (string, Table[string, string]) =
 # ---------------------------------------------------------------------------
 # Compile-time asset embed (9a-1) — the dashboard frontend in the binary.
 #
-# `waku/ops/static/` holds 62 files / ~600 KB (largest: `style.css`,
+# `data/static/` holds 62 files / ~600 KB (largest: `style.css`,
 # 67 KB) and EVERY one of them embeds byte-identically, the three
 # `.woff2` fonts included: `staticRead` keeps raw bytes, so there is no
 # escaping, no codegen pass and NO asset left behind for size or format.
@@ -412,14 +412,20 @@ proc splitTarget*(target: string): (string, Table[string, string]) =
 #
 # The walk happens in the VM, so the checkout must exist when the
 # COMPILER runs. Compiling without one (a source drop with no
-# `waku/ops/static/`) is not a build error: the table comes out empty
+# `data/static/`) is not a build error: the table comes out empty
 # and the SPA routes answer with the same missing-frontend 404 Python
 # gives. At RUN time no binary needs a checkout either way — the served
 # bytes are the literals below, never a path.
+#
+# The directory is data, not code: it sits at `data/static` beside the
+# provider registry because the Nim port reads it and the frozen Python
+# half only serves it. `pyproject.toml` force-includes it back to
+# `waku/ops/static` inside the wheel, which is the only place that path
+# still exists.
 
 const
-  staticCheckoutDir = currentSourcePath().parentDir / ".." / ".." / "waku" /
-    "ops" / "static"
+  staticCheckoutDir = currentSourcePath().parentDir / ".." / ".." / "data" /
+    "static"
     ## This module's own checkout, derived from this file's path so the
     ## walk works from any working directory and any relative compile.
 
@@ -1492,9 +1498,10 @@ proc checkoutRoot*(staticDir: string): string =
   ## The repository root beside a checkout, or "" for a bare binary
   ## (no `evals/` anywhere): what the observability payload counts the
   ## eval suites from. Measured from the static dir exactly like
-  ## `memoryExampleFor`, so one checkout layout answers both.
+  ## `memoryExampleFor`, so one checkout layout answers both — the
+  ## assets sit two levels under the root, in `data/static`.
   let root = if staticDir.len > 0: staticDir else: "."
-  let cand = normalizedPath(root / ".." / ".." / "..")
+  let cand = normalizedPath(root / ".." / "..")
   if dirExists(cand / "evals"): cand else: ""
 
 proc observabilityPayload*(d: DashboardDeps, window: string): JsonNode =
@@ -3004,8 +3011,8 @@ proc findStaticDir*(): string =
   ## `waku.nim`. `""` when no checkout is on disk anywhere: that is the
   ## shipped-binary case, and the compile-time embed answers the SPA
   ## routes instead of the filesystem.
-  for candidate in ["waku/ops/static", "../waku/ops/static",
-      "../../waku/ops/static"]:
+  for candidate in ["data/static", "../data/static",
+      "../../data/static"]:
     if dirExists(candidate):
       return candidate
   let besideBin = getAppDir() / "static"
@@ -3018,10 +3025,10 @@ proc memoryExampleFor*(staticDir: string): string =
   ## (`<repo>/evals/memory_arena.json`), or "" in a bare binary — then
   ## `/api/memory-arena` answers `available: false`, like the pip wheel
   ## that never shipped `evals/`. With no checkout there is no directory
-  ## to walk up from, so the same three levels are measured from the
+  ## to walk up from, so the same two levels are measured from the
   ## working directory: the spot a developer's checkout runs in.
   let root = if staticDir.len > 0: staticDir else: "."
-  let cand = normalizedPath(root / ".." / ".." / ".." / "evals" /
+  let cand = normalizedPath(root / ".." / ".." / "evals" /
     "memory_arena.json")
   if fileExists(cand): cand else: ""
 

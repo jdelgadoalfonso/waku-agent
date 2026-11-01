@@ -130,7 +130,7 @@ proc designDir(): string =
   ## The copied design files, read only: AGENTS.md rule 8 forbids editing
   ## them here, and this suite holds to it in both directions — it reads
   ## the bytes and writes nothing back.
-  repoRoot() / "waku" / "ops" / "static" / "design"
+  repoRoot() / "data" / "static" / "design"
 
 proc isThisSuite(path: string): bool =
   ## Whether a path is this file. The boundary scans below hold the denied
@@ -422,7 +422,13 @@ suite "phase 9b-1 the trees nim/ may not reach":
   test "the boundary reader names components, not substrings":
     # The negative that keeps the pin honest in both directions: a real
     # reach fails, and the words that merely CONTAIN a denied name pass.
-    for line in ["import ../waku/ops/static", "import std/strutils",
+    # `import ../waku/ops/static` was in this list until the assets moved
+    # to `data/static` (T4b): it was there because the embed read them out
+    # of `waku/`, and a probe that named the old path would now assert
+    # something about a directory the tree no longer has. It was never an
+    # exemption from the rule — `waku` is not a denied component, and the
+    # four lines below still carry the claim this test makes.
+    for line in ["import std/strutils",
         "import ../labelled", "import evals/deterministic/helpers",
         "include ./lab_brief"]:
       assert deniedComponent(importPath(line), DeniedComponents) == "",
@@ -492,8 +498,8 @@ suite "phase 9b-1 the repo gates this suite reads":
     # resolved somewhere else and the pins above passed for the wrong
     # reason — so it is pinned rather than trusted.
     let root = repoRoot()
-    for rel in ["AGENTS.md", "waku", "waku/ops/static/design",
-        "waku/ops/static/design/SOURCE.md", "nim/src/waku.nim", "nim/tests"]:
+    for rel in ["AGENTS.md", "waku", "data/static/design",
+        "data/static/design/SOURCE.md", "nim/src/waku.nim", "nim/tests"]:
       assert dirExists(root / rel.replace('/', DirSep)) or
           fileExists(root / rel.replace('/', DirSep)),
         "the repo root this suite anchored to has no " & rel

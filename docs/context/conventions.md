@@ -82,7 +82,7 @@ this ladder either.
 - Run `make gate` and `make lint` before you push. CI runs the deterministic
   tier. The judge tier needs a key, so only `make gate` runs it.
 - The dashboard's JavaScript has no test runner. Verify a frontend change in a
-  browser, as [waku/ops/static/README.md](../../waku/ops/static/README.md)
+  browser, as [data/static/README.md](../../data/static/README.md)
   describes.
 
 ## 5. Git, commits and PRs

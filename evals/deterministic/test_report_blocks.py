@@ -28,7 +28,7 @@ from pathlib import Path
 
 import pytest
 
-STATIC = Path(__file__).resolve().parents[2] / "waku" / "ops" / "static"
+STATIC = Path(__file__).resolve().parents[2] / "data" / "static"
 JS = STATIC / "js"
 NODE = shutil.which("node")
 needs_node = pytest.mark.skipif(NODE is None, reason="node not installed")

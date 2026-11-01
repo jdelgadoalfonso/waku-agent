@@ -58,6 +58,6 @@ def test_settings_info_reports_disabled(monkeypatch, tmp_path):
 
 
 def test_every_provider_has_a_logo():
-    logos = Path(__file__).resolve().parents[2] / "waku" / "ops" / "static" / "logos"
+    logos = Path(__file__).resolve().parents[2] / "data" / "static" / "logos"
     missing = [name for name in PROVIDERS if not (logos / f"{name}.svg").is_file()]
     assert not missing, f"providers without a logo: {missing}"

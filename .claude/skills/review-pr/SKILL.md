@@ -30,7 +30,7 @@ Post review comments and change requests freely. Merging is his call.
 
 ## Frontend and TUI changes are HIS to test
 
-If the diff touches the dashboard frontend (anything under `waku/ops/static/` —
+If the diff touches the dashboard frontend (anything under `data/static/` —
 HTML, CSS, JS) or the TUI/CLI experience, **never recommend merge on your own
 testing.** Your screenshots, a clean console and a green suite are not enough
 evidence for these. Stand the PR up on port 7778 so the live 7777 is untouched,

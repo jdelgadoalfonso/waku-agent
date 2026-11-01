@@ -141,7 +141,8 @@ def test_a_laptop_oauth_card_is_unchanged(tmp_path, no_key):
 
 
 def test_the_page_offers_configure_and_draws_treg_once():
-    views = (Path(treg.__file__).parents[1] / "ops" / "static" / "js" / "views.js").read_text(encoding="utf-8")
+    from waku.ops.dashboard import static_dir
+    views = (static_dir() / "js" / "views.js").read_text(encoding="utf-8")
     assert "item.configurable" in views and "openConnectionModal('${esc(item.key)}')" in views
     assert "drawnAsMcp" in views
 

@@ -41,7 +41,7 @@ Good places to add real value:
 
 - **Providers** (`nim/src/providers.nim`): most models expose an OpenAI- or Anthropic-compatible
   endpoint, so a new provider is one row in `data/providers.toml` — no new wire code, no
-  pricing row, no test to edit. Add `waku/ops/static/logos/<name>.svg`, run
+  pricing row, no test to edit. Add `data/static/logos/<name>.svg`, run
   `python scripts/generate_env_example.py`, and the evals pick it up.
   [docs/providers-registry.md](docs/providers-registry.md) has the fields.
 - **Gateways** (`nim/src/`): receive/send for another channel (Slack, email). Keep it to one

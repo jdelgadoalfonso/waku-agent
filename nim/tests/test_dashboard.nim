@@ -921,7 +921,7 @@ suite "phase 8a /api/data frontend contract":
     # owned by the still-unlanded 8x units; porting one means deleting its
     # line here, which the companion test below enforces.
     let jsDir = normalizedPath(currentSourcePath().parentDir / ".." / ".." /
-      "waku" / "ops" / "static" / "js")
+      "data" / "static" / "js")
     if not dirExists(jsDir):
       skip()
     # No gaps left: every key the SPA reads is served. Keep the list
@@ -2389,4 +2389,22 @@ suite "phase 15 turn-evals judge route":
 
   test "an unwrapped binary has no eval counts to read":
     assert checkoutRoot("") == "" or dirExists(checkoutRoot("") / "evals")
-    assert checkoutRoot("/nonexistent-xyz/waku/ops/static") == ""
+    assert checkoutRoot("/nonexistent-xyz/data/static") == ""
+
+  test "the checkout walk from the static dir is two levels, not three":
+    # `checkoutRoot` and `memoryExampleFor` both reach the repo root by
+    # walking UP from the static dir, and how many `..` that takes is a
+    # property of where the assets live: inside the package
+    # (`waku/ops/static`) it was three, at the neutral home
+    # (`data/static`) it is two. Getting it wrong breaks nothing loudly —
+    # the observability payload counts ZERO eval suites and
+    # /api/memory-arena answers `available: false` — so the depth is
+    # pinned against this checkout, the only layout that can answer it.
+    let repo = absolutePath(currentSourcePath().parentDir / ".." / "..")
+    let assets = repo / "data" / "static"
+    assert dirExists(assets), "no checkout at " & assets
+    assert absolutePath(checkoutRoot(assets)) == repo,
+      "checkoutRoot() reached " & checkoutRoot(assets) & ", not " & repo
+    assert absolutePath(memoryExampleFor(assets)) ==
+        repo / "evals" / "memory_arena.json",
+      "memoryExampleFor() resolved " & memoryExampleFor(assets)

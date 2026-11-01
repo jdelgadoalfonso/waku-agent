@@ -71,7 +71,7 @@ STATIC = Path(__file__).resolve().parent / "static"
 # traversal that has to be defended against.
 #
 # design/ and fonts/ are copies of the Waku design system, byte-identical to
-# waku/ops/static/. They are copies rather than a shared directory because
+# data/static/. They are copies rather than a shared directory because
 # the services image's build context refuses waku/ outright
 # (services.Dockerfile.dockerignore) -- that refusal is the hosted/waku
 # boundary, and it is worth more than the duplication.

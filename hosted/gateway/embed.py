@@ -63,7 +63,7 @@ def page_location(theme: str) -> str:
     return f"{PAGE_PATH}?theme={theme}" if theme in EMBED_THEMES else PAGE_PATH
 
 
-# The frame's "Dashboard" button (waku/ops/static/js/embed.js). A POST with
+# The frame's "Dashboard" button (data/static/js/embed.js). A POST with
 # the session the frame already has answers {"url": "/auth/enter?code=..."}:
 # a SIGN-IN hand-off code, from the same HandoffCodes the apex's sign-in uses
 # (60 seconds, single use, bound to this tenant), which the frame opens in a

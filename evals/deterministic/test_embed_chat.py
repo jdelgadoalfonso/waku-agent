@@ -33,7 +33,7 @@ import pytest
 from evals.helpers import ScriptedClient, make_waku
 from waku.ops import browser_agent, dashboard
 
-STATIC = Path(__file__).resolve().parents[2] / "waku" / "ops" / "static"
+STATIC = Path(__file__).resolve().parents[2] / "data" / "static"
 EMBED = (STATIC / "embed.html").read_text(encoding="utf-8")
 JS = STATIC / "js"
 DEFAULT = "https://www.waku.one https://waku.one https://dev.waku.one"

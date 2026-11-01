@@ -41,7 +41,7 @@ from waku.memory.semantic.store import SqliteFactStore
 from waku.ops.dashboard import _thread_history, session_list
 from waku.runtime.session import Session
 
-JS = Path(__file__).resolve().parents[2] / "waku" / "ops" / "static" / "js"
+JS = Path(__file__).resolve().parents[2] / "data" / "static" / "js"
 NODE = shutil.which("node")
 
 QUERY = {"query": "agent memory competitors mem0 zep letta"}

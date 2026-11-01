@@ -105,4 +105,4 @@ because a tag is not a release. So:
 To change a token, change it in Waku Memory's frontend, commit it there, then
 run `python scripts/sync_design.py <path to waku-memory-frontend>`. The script
 copies `tokens.css` and `controls.css` and records their hashes in
-`waku/ops/static/design/SOURCE.md`.
+`data/static/design/SOURCE.md`.

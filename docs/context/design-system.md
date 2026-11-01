@@ -1,13 +1,13 @@
 # Design system
 
-The dashboard (`waku/ops/static/`) uses the Waku Memory design system. Read
+The dashboard (`data/static/`) uses the Waku Memory design system. Read
 this file before changing how anything looks.
 
 ## Where it comes from
 
 - The master copy lives in Waku Memory's own frontend, where the design is
   decided. This repo holds a copy.
-- `waku/ops/static/design/tokens.css` and `controls.css` are copied unchanged.
+- `data/static/design/tokens.css` and `controls.css` are copied unchanged.
   `evals/deterministic/test_design_system.py` checks their hashes, so a hand
   edit fails CI, and `design/SOURCE.md` names the commit they came from.
 - `type.css` holds the type scale, the two weights, the line heights and the
@@ -76,5 +76,5 @@ design decision.
 ## Checking your change
 
 Verify the result in a browser, as "Verifying a change" in
-[waku/ops/static/README.md](../../waku/ops/static/README.md) describes, in both
+[data/static/README.md](../../data/static/README.md) describes, in both
 the light and the dark theme.

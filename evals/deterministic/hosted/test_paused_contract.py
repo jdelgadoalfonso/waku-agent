@@ -33,7 +33,7 @@ from pathlib import Path
 from hosted.core import policy
 
 ROOT = Path(__file__).resolve().parents[3]
-JS_DIR = ROOT / "waku" / "ops" / "static" / "js"
+JS_DIR = ROOT / "data" / "static" / "js"
 MAIN_JS = JS_DIR / "main.js"
 
 # Every `.code` occurrence, whatever it is doing. This is the closed set.

@@ -43,7 +43,7 @@ nim/
 ```
 
 `waku/` and `evals/` never import from `nim/`. `nim/` never imports from
-`examples/` or `lab/`. Static assets under `waku/ops/static/` are embedded at
+`examples/` or `lab/`. Static assets under `data/static/` are embedded at
 compile time (`include`/`staticRead`), never copied.
 
 ## 3. Compatibility contract (must not drift)

@@ -249,7 +249,7 @@ down costs that turn's spans and nothing else.
 
 ## The dashboard frontend is inside the binary
 
-`src/dashboard.nim` freezes `waku/ops/static/` into the executable at
+`src/dashboard.nim` freezes `data/static/` into the executable at
 compile time (`staticRead`, 62 files, ~600 KB, the `.woff2` fonts
 included — bytes, not text). Nothing is copied into `nim/`, nothing under
 `design/` is touched (AGENTS.md rule 8), and LICENSE-BRAND still holds:
@@ -266,7 +266,7 @@ Two rules fall out of that:
   checkout, so a stale embed (an asset added and not rebuilt) fails the
   suite instead of 404ing in a browser.
 
-A run that DOES find a checkout (`waku/ops/static` in the working
+A run that DOES find a checkout (`data/static` in the working
 directory, or `static/` beside the binary) keeps serving it from disk, so
 frontend edits need no rebuild and behave exactly like Python. Compiling
 with no checkout present is not an error: the embed comes out empty and

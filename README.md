@@ -78,9 +78,9 @@ no new capability and no new behaviour eval, and every new change lands in
    against what the Python code does, so the Python code is the answer key.
 2. **`evals/deterministic/` still runs.** 950 offline evals guard this
    repository on every pull request.
-3. **The Nim port reads files inside `waku/`.** `nim/src/dashboard.nim` embeds
-   `waku/ops/static`, and `nim/src/waku.nim` reads `../waku.nimble`. The
-   provider registry both halves read lives in `data/providers.toml`.
+3. **One file the Nim port reads is still there.** `nim/src/waku.nim` reads
+   `../waku.nimble`. Everything else the port needs is data, in `data/`: the
+   provider registry both halves read, and the dashboard assets it embeds.
 
 `hosted/` stays Python and stays unchanged, with its own Elastic License 2.0.
 [docs/status.md](docs/status.md) records what works today, and

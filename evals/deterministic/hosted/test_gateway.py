@@ -790,7 +790,7 @@ def test_the_login_page_reaches_into_no_other_tree():
     is written up in the spec's own amendments section.
 
     What survives unchanged is the reason this test exists: the import
-    boundary test reads *.py only, so an href into waku/ops/static/ would be
+    boundary test reads *.py only, so an href into data/static/ would be
     invisible to it -- and such an href cannot work anyway, because the
     services image's build context refuses waku/. This is that refusal,
     checked at the layer that would otherwise find out in production.

@@ -18,11 +18,11 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-JS = ROOT / "waku" / "ops" / "static" / "js"
+JS = ROOT / "data" / "static" / "js"
 MAIN = JS / "main.js"
 SETUP = JS / "setup.js"
 MODELS = JS / "models.js"
-INDEX = ROOT / "waku" / "ops" / "static" / "index.html"
+INDEX = ROOT / "data" / "static" / "index.html"
 
 
 def test_render_consults_the_gate_before_choosing_a_view():
@@ -115,7 +115,7 @@ def test_the_gate_hides_the_control_that_used_to_fail():
     APIConnectionError, and it has three parts: the panel, the drag handle
     and the reopen button. Hiding only the panel leaves the button that
     brings it back."""
-    css = (ROOT / "waku" / "ops" / "static" / "style.css").read_text(encoding="utf-8")
+    css = (ROOT / "data" / "static" / "style.css").read_text(encoding="utf-8")
     block = css[css.index("body.first-run"):]
     block = block[:block.index("{ display: none }")]
     for part in ("#dock", "#dock-resizer", "#dock-reopen", "#nav"):

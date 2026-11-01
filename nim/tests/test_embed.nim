@@ -1,7 +1,7 @@
 ## Phase 9a-1 tests: the compile-time dashboard asset embed.
 ##
 ## One contract, offline and with no temp home: a bare binary — one with
-## no `waku/ops/static/` checkout beside it, which is exactly
+## no `data/static/` checkout beside it, which is exactly
 ## `staticDir: ""` — answers `/` and `/static/...` from the bytes frozen
 ## into the executable at compile time, and every frozen byte is the
 ## checkout byte.
@@ -24,13 +24,13 @@ type
     ## — are rejected by this compiler, so an alias carries the shape.)
 
 proc checkoutStatic(): string =
-  ## The `waku/ops/static/` checkout this port was compiled beside,
+  ## The `data/static/` checkout this port was compiled beside,
   ## resolved from this file's own path and never from the working
   ## directory, so the suite behaves the same from `nim/` and from the
   ## repo root. `parentDir` first, on purpose: `normalizedPath` here pops
   ## whatever component precedes a `..`, filename included.
-  normalizedPath(currentSourcePath().parentDir / ".." / ".." / "waku" /
-    "ops" / "static")
+  normalizedPath(currentSourcePath().parentDir / ".." / ".." / "data" /
+    "static")
 
 proc checkoutFiles(): seq[EmbedFile] =
   ## The checkout as the same `(name, bytes)` pairs the embed holds, so

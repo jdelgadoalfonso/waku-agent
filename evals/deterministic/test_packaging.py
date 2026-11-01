@@ -7,10 +7,11 @@ every other test runs from a git checkout on the maintainer's machine.
    bundled skills live in `skills/` at the REPO ROOT, so `pip install
    waku-agent` produced a Waku with zero procedural memory — one of the four
    pillars, silently absent. The dashboard shipped fine (it lives under
-   `waku/ops/static`), which is exactly why nobody noticed: the thing you can
-   see worked. Nothing here can catch a broken wheel by inspecting a checkout,
-   so these tests pin the two halves of the fix instead — the build config that
-   copies the folder in, and the lookup that finds it once it's there.
+   `waku/ops/static`, force-included into the wheel), which is exactly why
+   nobody noticed: the thing you can see worked. Nothing here can catch a
+   broken wheel by inspecting a checkout, so these tests pin the two halves of
+   the fix instead — the build config that copies the folder in, and the lookup
+   that finds it once it's there.
 
 2. THE TEST SUITE READ THE DEVELOPER'S `.env`. `waku/config.py` calls
    load_dotenv() at import, so a stale `WAKU_GRAPH_WORKFLOWS=1` routed every
@@ -98,6 +99,33 @@ def test_the_registry_lookup_covers_both_install_shapes():
     src = inspect.getsource(models.registry_path)
     assert 'parents[1] / "providers.toml"' in src, "lost the installed-wheel location"
     assert 'parents[2] / "data" / "providers.toml"' in src, "lost the repo-checkout location"
+
+
+def test_the_wheel_carries_the_dashboard_assets():
+    """The third time this bug would have shipped, and the largest: the dashboard
+    frontend is 64 files that used to live INSIDE the package at
+    `waku/ops/static`, where `packages = ["waku"]` would still ship them. They
+    now live in `data/static` at the repo root, next to the registry and where
+    the Nim binary embeds them from, so the wheel needs them copied back to the
+    place `waku/ops/dashboard.py` serves them from."""
+    wheel = _pyproject()["tool"]["hatch"]["build"]["targets"]["wheel"]
+    assert wheel.get("force-include", {}).get("data/static") == "waku/ops/static", (
+        "pyproject no longer force-includes data/static into the wheel — a "
+        "`pip install waku-agent` would ship with no dashboard frontend"
+    )
+
+
+def test_the_static_lookup_covers_both_install_shapes():
+    """The lookup half, for the assets. A checkout keeps them in data/static at
+    the repo root; a wheel has them at waku/ops/static, beside the code.
+    Exactly one exists at a time, so static_dir() must look in both."""
+    import inspect
+
+    from waku.ops import dashboard
+
+    src = inspect.getsource(dashboard.static_dir)
+    assert 'parents[1] / "ops" / "static"' in src, "lost the installed-wheel location"
+    assert 'parents[2] / "data" / "static"' in src, "lost the repo-checkout location"
 
 
 @pytest.mark.parametrize("field", ["urls", "keywords", "classifiers"])

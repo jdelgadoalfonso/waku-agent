@@ -5,7 +5,7 @@ Supabase bundle to make one request, and started using the Waku design
 system. Both changes moved something out of a library's hands and into this
 repo's, and each created a way to be silently wrong that nothing else checks:
 
-  the copies drift      design/ and fonts/ here are copies of waku/ops/static/,
+  the copies drift      design/ and fonts/ here are copies of data/static/,
                         because the services image's build context refuses
                         waku/ outright. A copy nobody compares is a fork.
   an asset is orphaned  the page references a file by URL; the gateway serves
@@ -31,13 +31,13 @@ from hosted.gateway.app import STATIC_FILES
 
 ROOT = Path(__file__).resolve().parents[3]
 HOSTED_STATIC = ROOT / "hosted" / "gateway" / "static"
-WAKU_STATIC = ROOT / "waku" / "ops" / "static"
+WAKU_STATIC = ROOT / "data" / "static"
 LOGIN_HTML = ROOT / "hosted" / "templates" / "login.html"
 LOGIN_CSS = HOSTED_STATIC / "login.css"
 LOGIN_JS = HOSTED_STATIC / "login.js"
 
 # Every copied file, as the pair (path under hosted/gateway/static, path under
-# waku/ops/static). Derived by walking the copies, so a file added to design/
+# data/static). Derived by walking the copies, so a file added to design/
 # or fonts/ without an original here is a failure rather than an omission.
 # design/SOURCE.md is NOT a copy: it is this tree's own note saying why the
 # rest of the directory is one. It is the only exception, and naming it here
@@ -68,7 +68,7 @@ def test_every_copied_design_file_matches_wakus(relative):
     mine = (HOSTED_STATIC / relative).read_bytes()
     theirs = (WAKU_STATIC / relative).read_bytes()
     assert mine == theirs, (
-        f"{relative} has drifted from waku/ops/static/{relative}. The master "
+        f"{relative} has drifted from data/static/{relative}. The master "
         "is Waku Memory; sync there, then copy both.")
 
 

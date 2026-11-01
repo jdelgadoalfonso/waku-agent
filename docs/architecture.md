@@ -17,7 +17,7 @@ authoritative behaviour reads them. `nim/src/` mirrors the same pillars —
 and new work goes to `nim/`. It stays in the tree for three reasons. It is the
 parity oracle. `evals/deterministic/` still runs and guards this repository.
 And the Nim port reads files inside it: `nim/src/dashboard.nim` embeds
-`waku/ops/static`, and `nim/src/waku.nim` reads `../waku.nimble`. The provider
+`data/static`, and `nim/src/waku.nim` reads `../waku.nimble`. The provider
 registry both halves read lives in `data/providers.toml`. `hosted/` stays
 Python and stays unchanged, with its own Elastic License 2.0.
 
@@ -298,7 +298,7 @@ shows those instead. A proxy that does not know the turn leaves the estimate.
 - `waku/ops/` — tracing (JSONL + OTel), the dashboard (localhost:7777),
   `release_gate.py`, and `compare_history.py` (the Compare arena's own JSONL
   scoreboard, never `state.db`).
-- `waku/ops/static/` — the dashboard frontend. Read
+- `data/static/` — the dashboard frontend, beside the provider registry. Read
   [context/design-system.md](context/design-system.md) before changing how
   anything looks.
 - `evals/deterministic/` (0/1, pytest) and `evals/judge/` (DeepEval, scored).
@@ -307,7 +307,7 @@ shows those instead. A proxy that does not know the turn leaves the estimate.
 - `examples/` — teaching material, not product; one folder per topic.
 - `nim/src/` — the port that ships, one file per box above: `loop.nim`,
   `memory.nim`, `graph/engine.nim`, `gateway.nim`, `mcp.nim`, `integrations.nim`,
-  `dashboard.nim` (which embeds `waku/ops/static` at compile time) and
+  `dashboard.nim` (which embeds `data/static` at compile time) and
   `waku.nim` (the CLI, reading its version from `../waku.nimble`). `waku/` is
   frozen at parity: it is the answer key, not a second place to add behaviour.
   [../nim/README.md](../nim/README.md) says what is ported and what is not.

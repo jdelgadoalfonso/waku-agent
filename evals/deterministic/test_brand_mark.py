@@ -11,7 +11,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-MASTER = ROOT / "waku" / "ops" / "static" / "waku-mark.svg"
+MASTER = ROOT / "data" / "static" / "waku-mark.svg"
 VARIANTS = {
     "waku-mark-on-light.svg": "#161614",
     "waku-mark-on-dark.svg": "#C9CDD1",

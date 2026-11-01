@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-STATIC = Path(__file__).resolve().parents[2] / "waku" / "ops" / "static"
+STATIC = Path(__file__).resolve().parents[2] / "data" / "static"
 INDEX = (STATIC / "index.html").read_text()
 CSS = (STATIC / "style.css").read_text()
 RENDER_JS = (STATIC / "js" / "render.js").read_text()

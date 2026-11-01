@@ -1,4 +1,4 @@
-<!-- Generated from waku/ops/static/waku-mark.svg - do not hand-edit.
+<!-- Generated from data/static/waku-mark.svg - do not hand-edit.
      GitHub will not let a README's SVG read the page theme, so the two
      inks ship as two files and <picture> picks one. Geometry is identical
      in all three; test_brand_mark.py fails if they ever drift. -->

@@ -102,7 +102,7 @@ def test_the_dashboard_no_longer_says_you_never_pick_a_mode():
     and a UI that contradicts the feature is worse than no copy at all."""
     import pathlib
 
-    js = pathlib.Path(__file__).resolve().parents[2] / "waku/ops/static/js/views.js"
+    js = pathlib.Path(__file__).resolve().parents[2] / "data/static/js/views.js"
     assert "never pick a mode" not in js.read_text()
 
 

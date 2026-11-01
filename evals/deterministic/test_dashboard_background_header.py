@@ -107,7 +107,7 @@ from pathlib import Path
 
 import pytest
 
-JS_DIR = Path(__file__).resolve().parents[2] / "waku" / "ops" / "static" / "js"
+JS_DIR = Path(__file__).resolve().parents[2] / "data" / "static" / "js"
 
 # --- the wrapper functions a poll can reach, and how each attaches the header.
 # `pattern` is the exact conditional-header expression its fetch/postJSON call

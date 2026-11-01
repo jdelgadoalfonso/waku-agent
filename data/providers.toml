@@ -1,6 +1,6 @@
 # Every model provider Waku can talk to, as data.
 #
-# Adding one is this file plus a logo at waku/ops/static/logos/<name>.svg.
+# Adding one is this file plus a logo at data/static/logos/<name>.svg.
 # Nothing else: the loop, the model picker, the pricing table, the spend chart
 # and .env.example are all built from the rows below. Before 2026-09-22 a
 # provider meant editing seven to nine files across three directories, four of

@@ -28,7 +28,7 @@ from waku import config, integrations
 from waku.key_locations import cli_lines, model_key_locations
 
 ROOT = Path(__file__).resolve().parents[2]
-SETUP = ROOT / "waku" / "ops" / "static" / "js" / "setup.js"
+SETUP = ROOT / "data" / "static" / "js" / "setup.js"
 SECRET = "sk-ant-never-shown-0123456789"
 
 

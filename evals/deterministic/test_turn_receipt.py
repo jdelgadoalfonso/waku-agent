@@ -48,7 +48,7 @@ from waku.ops import dashboard, receipt
 from waku.tools.registry import Tool
 
 SONNET, HAIKU = "claude-sonnet-5", "claude-haiku-4-5-20251001"
-JS = Path(__file__).resolve().parents[2] / "waku" / "ops" / "static" / "js"
+JS = Path(__file__).resolve().parents[2] / "data" / "static" / "js"
 NODE = shutil.which("node")
 needs_node = pytest.mark.skipif(NODE is None, reason="node not installed")
 

@@ -189,7 +189,7 @@ TOOK_TOO_LONG = "That took too long. Try again."
 # Spec, "Error shape": on a streaming route an error is one terminal `done`
 # event carrying `error`, not a JSON body.
 #
-# THE STATUS CODE IS FOR THE LOG, NOT FOR THE PAGE. waku/ops/static/js/
+# THE STATUS CODE IS FOR THE LOG, NOT FOR THE PAGE. data/static/js/
 # render.js calls fetch and goes straight to res.body.getReader(); there is no
 # res.ok branch anywhere in the stream consumers. So the page reads this body
 # whatever the status, render.js turns {"kind": "done", "error": ...} into

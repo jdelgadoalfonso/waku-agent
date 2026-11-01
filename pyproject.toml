@@ -10,7 +10,7 @@ readme = "README.md"
 # are SIL OFL 1.1. PEP 639 lets the package say all three, so PyPI no longer
 # reports the whole wheel as MIT.
 license = "MIT AND OFL-1.1 AND LicenseRef-Waku-Brand"
-license-files = ["LICENSE", "LICENSE-BRAND", "waku/ops/static/fonts/OFL-*.txt"]
+license-files = ["LICENSE", "LICENSE-BRAND", "data/static/fonts/OFL-*.txt"]
 authors = [{ name = "Sean Chen (ShenSeanChen)" }]
 requires-python = ">=3.11"
 keywords = ["ai-agent", "llm", "agent-framework", "local-first", "llmops", "memory", "eval"]
@@ -189,7 +189,8 @@ packages = ["waku"]
 # But `packages = ["waku"]` ships only the package, so before 2026-07-31 a
 # `pip install waku-agent` arrived with ZERO skills — procedural memory, one of
 # the four pillars, silently absent while the dashboard shipped fine (it lives
-# under waku/ops/static). Copying them in at build time keeps one contributor-
+# under the package at waku/ops/static, and rides there by the force-include
+# below). Copying them in at build time keeps one contributor-
 # facing location and still ships them; waku.memory.bundled_skill_dirs() looks
 # in both places and explains why.
 [tool.hatch.build.targets.wheel.force-include]
@@ -198,6 +199,11 @@ packages = ["waku"]
 # Nim binary reads it too. packages = ["waku"] ships only the package, so this
 # copies it back beside the code for an installed Waku — same fix as the skills.
 "data/providers.toml" = "waku/providers.toml"
+# The dashboard frontend is data too, and the largest piece of it: 64 files the
+# Nim binary embeds from `data/static` at the repo root. It used to live inside
+# the package, so this copy-back is what keeps `pip install waku-agent` serving
+# a dashboard instead of a 404 — the same shape as the two entries above.
+"data/static" = "waku/ops/static"
 
 [tool.ruff]
 line-length = 100

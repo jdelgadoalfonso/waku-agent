@@ -229,7 +229,7 @@ def test_endpoint_rows_count_catalog_calls_with_errors_and_avg_time():
 
 
 def test_tools_tab_draws_endpoints_before_treg_actions():
-    js = (Path(obs.__file__).parent / "static" / "js" / "observe.js").read_text(encoding="utf-8")
+    js = _static("js/observe.js")
     body = js[js.index("function obsTools("):]
     assert body.index("Endpoints called") < body.index("treg actions") < body.index("t.treg.tools")
 
@@ -523,8 +523,8 @@ def test_the_memory_card_counts_reads_writes_kept_and_the_gate(tmp_path):
 
 
 def _static(name):
-    from pathlib import Path
-    return (Path(obs.__file__).parent / "static" / name).read_text(encoding="utf-8")
+    from waku.ops.dashboard import static_dir
+    return (static_dir() / name).read_text(encoding="utf-8")
 
 
 def test_the_cards_are_the_tabs_in_one_order_and_evals_has_its_own_page():
@@ -863,7 +863,7 @@ def test_the_llm_ops_panel_names_observability_and_evals_and_closes_the_loop():
     src = _static("js/diagram.js")
     outside = src[src.index("function archSVG(d){"):src.index("<!-- LLM OPS")]
     assert hashlib.sha256(outside.encode()).hexdigest() == ARCH_OUTSIDE_PANEL, (
-        "archSVG outside the LLM Ops panel is byte-frozen (waku/ops/static/README.md)")
+        "archSVG outside the LLM Ops panel is byte-frozen (data/static/README.md)")
 
     svg = _arch_svg()
     nodes = set(re.findall(r'data-node="([^"]+)"', svg))

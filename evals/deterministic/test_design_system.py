@@ -14,7 +14,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-STATIC = ROOT / "waku" / "ops" / "static"
+STATIC = ROOT / "data" / "static"
 DESIGN = STATIC / "design"
 COPIED = ("tokens.css", "controls.css")
 

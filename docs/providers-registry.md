@@ -13,7 +13,7 @@ provider pull requests open when this was written disagreed:
 waku/loop/models.py              the row, and a KEY_URLS row
 waku/ops/pricing.py              a PRICING row
 .env.example                     a generated block, edited by hand anyway
-waku/ops/static/logos/<name>.svg the logo
+data/static/logos/<name>.svg     the logo
 README.md                        a mention
 evals/deterministic/…            two to four separate test files
 ```
@@ -54,7 +54,7 @@ does.
 Adding a provider is now:
 
 1. a table in `data/providers.toml`
-2. `waku/ops/static/logos/<name>.svg`
+2. `data/static/logos/<name>.svg`
 3. `python scripts/generate_env_example.py` — mechanical, and CI checks it
 
 No test needs editing, for an ordinary row. `test_providers.py` was already

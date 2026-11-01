@@ -2,7 +2,7 @@
 
 Usage: python scripts/sync_design.py <path to waku-memory-frontend>
 
-tokens.css and controls.css are copied unchanged into waku/ops/static/design/.
+tokens.css and controls.css are copied unchanged into data/static/design/.
 SOURCE.md is rewritten with the commit that last changed them and each file's
 sha256. evals/deterministic/test_design_system.py checks those hashes, so a
 hand edit to a copied file fails CI. To change a token, change it in Waku
@@ -16,7 +16,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-DEST = Path(__file__).resolve().parents[1] / "waku" / "ops" / "static" / "design"
+DEST = Path(__file__).resolve().parents[1] / "data" / "static" / "design"
 FILES = ("tokens.css", "controls.css")
 
 SOURCE = """\

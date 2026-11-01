@@ -176,12 +176,12 @@ def test_the_connections_page_and_first_run_offer_treg():
     sends `/connect <key>` through the chat. The first-run screen offers treg
     next to Waku Memory."""
     import inspect
-    from pathlib import Path
 
     from waku.ops import dashboard
+    from waku.ops.dashboard import static_dir
 
     assert '"mcp_connections": [treg.card(home)]' in inspect.getsource(dashboard.collect)
-    static = Path(dashboard.__file__).parent / "static"
+    static = static_dir()
     views = (static / "js" / "views.js").read_text(encoding="utf-8")
     assert "d.mcp_connections" in views and "`/connect ${key}`" in views
     setup = (static / "js" / "setup.js").read_text(encoding="utf-8")

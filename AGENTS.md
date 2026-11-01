@@ -10,9 +10,9 @@ follow**: the project will get bigger, and it must never get muddier.
 behaviour eval lands there, and new work goes to `nim/`. It stays in the tree
 for three reasons. It is the parity oracle every phase of the Nim port was
 verified against. `evals/deterministic/` still runs and guards this
-repository. And the Nim port reads files inside it: `nim/src/dashboard.nim`
-embeds `waku/ops/static`, and `nim/src/waku.nim` reads `../waku.nimble`. The
-provider registry both halves read lives in `data/providers.toml`.
+repository. And the Nim port still reads one file inside it: `nim/src/waku.nim`
+reads `../waku.nimble`. The rest of what the port needs is data, and lives in
+`data/`: the provider registry, and the dashboard assets it embeds.
 
 This file is for everyone who changes the repo, human or coding agent. A test
 caps it at 100 lines, so the detail lives in the files it points to.
@@ -32,7 +32,7 @@ caps it at 100 lines, so the detail lives in the files it points to.
 | run waku for other people on a server | [hosted/README.md](hosted/README.md) |
 | touch the loop, memory, graph engine or a tool contract | [docs/architecture.md](docs/architecture.md), then conventions §2: it may need a proposal |
 | change how the dashboard looks | [docs/context/design-system.md](docs/context/design-system.md) |
-| change dashboard JavaScript or CSS | [waku/ops/static/README.md](waku/ops/static/README.md): the binary embeds these files at build time |
+| change dashboard JavaScript or CSS | [data/static/README.md](data/static/README.md): the binary embeds these files at build time |
 | write a doc, UI copy, a commit message or a SKILL.md | [docs/context/writing-rules.md](docs/context/writing-rules.md) |
 | add a lesson to `examples/` or a topic to `lab/` | [lab/README.md](lab/README.md), then [conventions §6](docs/context/conventions.md#6-examples-and-video-material) |
 | hit something surprising | [docs/context/gotchas.md](docs/context/gotchas.md), and add it if it is missing |
@@ -62,7 +62,7 @@ caps it at 100 lines, so the detail lives in the files it points to.
    the Waku mark and the names — is `LICENSE-BRAND`. List any new brand file
    there, never copy one into `examples/`, and **do not move code between
    `hosted/` and `waku/` without saying which license it lands under.**
-8. **Don't edit the copied design files** in `waku/ops/static/design/`. They are
+8. **Don't edit the copied design files** in `data/static/design/`. They are
    synced from the private master; ask for a new token in an issue.
 9. **Fix the doc your change makes false,** in the same PR.
 

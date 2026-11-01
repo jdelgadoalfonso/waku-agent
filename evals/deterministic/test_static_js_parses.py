@@ -29,7 +29,7 @@ import subprocess
 
 import pytest
 
-JS_DIR = pathlib.Path(__file__).resolve().parents[2] / "waku" / "ops" / "static" / "js"
+JS_DIR = pathlib.Path(__file__).resolve().parents[2] / "data" / "static" / "js"
 SCRIPTS = sorted(JS_DIR.glob("*.js"))
 
 

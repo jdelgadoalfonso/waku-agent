@@ -833,7 +833,7 @@ def _adoptable(selected: Provider, key: str | None) -> bool:
 
     Somebody already stranded on an unusable provider, who is not entering a
     key, is recovered by the dashboard's first-run gate instead
-    (waku/ops/static/js/setup.js, needsSetup), which can ask rather than guess.
+    (data/static/js/setup.js, needsSetup), which can ask rather than guess.
     """
     return bool(key) and not _provider_can_serve(
         os.environ.get("WAKU_PROVIDER", ""))

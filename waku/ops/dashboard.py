@@ -62,10 +62,33 @@ from waku.ops.tracing import TraceEncodingError, iter_trace_lines
 from waku.tools import treg
 
 PORT = 7777
+
+
+def static_dir() -> Path:
+    """Where the dashboard frontend lives — and why there are two answers.
+
+    The frontend is data, not code: the Nim binary embeds these same files at
+    compile time, so `data/static` at the repo root is the master a maintainer
+    edits. But the wheel only packages the `waku/` directory, so a `pip install
+    waku-agent` would have served nothing at all. pyproject force-includes the
+    same tree into the wheel at `waku/ops/static`, so an installed Waku finds
+    it next to the code that serves it.
+
+    Exactly one of these exists at a time — the package copy only in a built
+    wheel, the repo copy only in a checkout — so preferring whichever is there
+    is not a double-read, it is "wherever you installed from, the assets came
+    too". Same shape as `waku.loop.models.registry_path`, same reason.
+    """
+    here = Path(__file__).resolve()
+    repo = here.parents[2] / "data" / "static"
+    installed = here.parents[1] / "ops" / "static"
+    return repo if repo.is_dir() else installed
+
+
 # The frontend lives in its own files (static/index.html + style.css + app.js),
 # served as-is by this stdlib server — no build step, no framework. Edit those
 # to change the UI; edit this file to change the server/API.
-STATIC = Path(__file__).resolve().parent / "static"
+STATIC = static_dir()
 
 
 def chat(message: str) -> dict:
