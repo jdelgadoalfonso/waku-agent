@@ -329,3 +329,19 @@ Commits landed (rama `nim-first`):
   `mutation_performed: false`. Consecuencia registrada: la compuerta no se abre por
   `baseRef`; se abre cuando `origin/main` se mueva, o sea cuando el port aterrice, y
   para eso hacen falta las 7 rojas de L23.
+- **L27** (decisión propia, diseño de T4a, 2026-10-31): mudar el registry a `data/`
+  **no es un `git mv`**. El wheel es `packages = ["waku"]` con un `force-include`,
+  así que `waku/providers.toml` viaja dentro del paquete publicado: sacarlo de
+  `waku/` sin más dejaría a `pip install waku-agent` sin registry, y
+  `license-files` nombra `waku/ops/static/fonts/OFL-*.txt`, que es el mismo problema
+  esperando a T4b. El repo ya tenía este problema resuelto y su precedente manda:
+  `skills/` vive en la raíz, se copia al wheel con `force-include`
+  (`"skills" = "waku/skills"`) y `waku.memory.bundled_skill_dirs()` "looks in both
+  places and explains why"; `evals/deterministic/test_packaging.py` fija las dos
+  mitades, el build config y el lookup. T4a replica ese patrón exacto: master en
+  `data/providers.toml`, `force-include` de `data/providers.toml` a
+  `waku/providers.toml`, un `registry_path()` en `waku/loop/models.py` que mira las
+  dos formas (checkout `parents[2]`, instalado `parents[1]`), el mismo par de pines
+  nuevos en `test_packaging.py`, y en Nim `findProvidersToml`
+  (`nim/src/waku.nim:124-129`) pasa de los candidatos `waku/providers.toml` a
+  `data/providers.toml` sin dejar candidatos muertos.
