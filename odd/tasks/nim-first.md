@@ -6,13 +6,15 @@ del repo que hoy son pytest. **Retirar `evals/deterministic/` no es parte de
 esta feature**: el port es lo que lo habilita, y la decisión de retirarlo queda
 para después. `hosted/` queda en Python, sin tocar.
 
-**Estado al 2026-11-01 (reanudación).** En la rama `nim-first` están landed T0
+**Estado al 2026-11-02 (reanudación).** En la rama `nim-first` están landed T0
 (que vive en `add-cline-provider`), T1, T2, T2b y T3: 10 commits, 16 archivos,
 1.203 líneas sobre su base. T3b y T6 siguen sin empezar, bloqueadas por cuota del
-proveedor. **T4a, T4b y T4c-1 están landed** (`f834ffd`, `f526360` y `57c60fb` para
-el build del tenant que la mudanza rompió; T4c-1 en `b30f400`); T4c-2, T5, T7, T8 y
-T9 sin empezar. **El writer de T4c-1 murió dos veces con cuota del proveedor** (L33,
-L34) y la rebanada la ejecutó el padre inline.
+proveedor. **T4a, T4b, T4c-1 y T4c-2 están landed** (`f834ffd`, `f526360` y
+`57c60fb` para el build del tenant que la mudanza rompió; T4c-1 en `b30f400`;
+**T4c-2 en `1524a45`**), así que **T4 está cerrada**: las dos mitades leen
+`data/integrations.toml`. T5, T7, T8 y T9 sin empezar. **El writer de T4c murió
+tres veces con cuota del proveedor** (L33, L34, L36) y las dos rebanadas las
+ejecutó el padre inline.
 
 El review nativo sigue rechazando el alcance por defecto
 (`lens_context_budget_exceeded`), y el 2026-10-31 se estableció por qué el troceo
@@ -26,11 +28,14 @@ abre cuando `origin/main` se mueva, y eso pasa por el aterrizaje del port.
 **Reanudar en este orden:** (1) las 7 rojas deterministas de `a81c3d5` (L23), que
 son lo que impide aterrizar el port; (2) el aterrizaje del port (hoy: decisión del
 usuario de no publicar), que es lo único que mueve `origin/main` y con él la base
-del review; (3) T4 en tres rebanadas: T4a, T4b y **T4c-1 landed**, y queda T4c-2
-(la mitad Nim sobre el archivo más el pin de acuerdo entre mitades); T4 desbloquea
-T5 y T8; (4) T7; (5) la decisión sobre la roja de `test_tls`; (6) T3b y T6 en cuanto
-vuelva la cuota del proveedor de subagentes (L19, L33); (7) la **verificación
-independiente de T4c-1**, que no pudo correr (L34).
+del review; (3) **T4 cerrada con T4c-2 landed** (`1524a45`), que desbloquea T5 y
+T8: T5 reapunta el guardarraíl de diseño y brand mark al hogar `data/static` y lo
+porta a Nim —y con él entra la roja de los logos por key que hoy deja
+`test_static_assets`—, y T8 porta a Nim el `--check` de `.env.example`; (4) T7;
+(5) la decisión sobre la roja de `test_tls`; (6) T3b y T6 en cuanto vuelva la cuota
+del proveedor de subagentes (L19, L33, L36); (7) la **verificación independiente de
+T4c-1**, que sigue sin poder correr (L34): la de T4c-2 **sí corrió** y encontró una
+regresión real (L37).
 
 ## Estrategia de entrega
 
@@ -187,6 +192,7 @@ Commits landed (rama `nim-first`):
 | `f526360` | `refactor(static): give the dashboard assets a home outside the frozen package` — T4b |
 | `57c60fb` | `fix(hosted): admit data/ in the tenant build context` — consecuencia de T4a y T4b |
 | `b30f400` | `refactor(integrations): move the connection registry to data/integrations.toml` — T4c-1 |
+| `1524a45` | `refactor(integrations): read the Nim connection registry from data/integrations.toml` — T4c-2 |
 
 ## Log
 
@@ -552,3 +558,74 @@ Commits landed (rama `nim-first`):
   El aviso del harness volvió a medir la rama contra `origin/main` (245 commits,
   68.824 líneas): sigue en pie la decisión de **Estrategia de entrega**, que es del
   usuario y no mía.
+- **L36** (interrupción externa ×3 y ejecución inline, 2026-11-02): el writer de
+  T4c-2 murió con `assistant reported an error (quota)` como los tres anteriores
+  (L19, L33, L34) — y esta vez **después de escribir parte del brief**: dejó
+  `nim/tests/test_blackbox.nim` con el par de pines end-to-end y el fixture
+  (`runBinaryIn`, `registryFreeDir`) ya puestos, y no tocó `nim/src/` (ni un byte
+  del arreglo). No se reintenta y no se cambia de agente para esquivarlo. **La
+  salida parcial de un writer muerto es evidencia a verificar, no a descartar ni a
+  creer**: el padre la leyó, la compiló, **observó el RED con ella** (el binario de
+  ese momento, 15 OK, los dos pines nuevos en rojo con la excepción de
+  inicialización, EXIT=1) y ejecutó el arreglo del código fuente inline. Esos pines
+  recuperados, con un nombre de API distinto al que el padre terminó implementando,
+  quedaron reconciliados a favor de los nombres del writer (`loadIntegrationsBestEffort`,
+  `integrationRegistryError`) y **fueron los que atraparon la regresión de punta a
+  punta**, que ninguna suite de módulo veía.
+- **L37** (evidencia, regresión encontrada y decisiones de T4c-2, 2026-11-02,
+  `1524a45`): la mitad Nim lee `data/integrations.toml` — filtrado por `halves`, en
+  el orden del archivo — y `INTEGRATIONS` pasó de literal a dato. Lo que no puede
+  ser dato: `BEHAVIOUR`, un `Table[string, IntegrationBehaviour]` con
+  `enabled`/`normalize` por `key` (el `_BEHAVIOUR` de Python). El parser cubre el
+  subconjunto que el archivo usa (`[key]`, `[[key.env]]`, string/bool/lista de
+  strings) y reusa `unquote`/`stripInlineComment` de `providers.nim`, que ahora se
+  exportan sin cambiar una línea de su cuerpo. El lookup vive **en el propio
+  módulo** y no en `waku.nim` como `findProvidersToml`, porque `INTEGRATIONS` se
+  inicializa acá y `waku.nim` importa este módulo: allá era un ciclo.
+  **La verificación independiente encontró una regresión real que las 20 primeras
+  suites no veían**: con `INTEGRATIONS` como `let` de módulo, un registro
+  inalcanzable levantaba **en la inicialización del módulo**, así que TODOS los
+  comandos morían, `--help` incluido (medido con los dos binarios: desde un
+  directorio fuera del checkout, `--help` daba exit 1 con el cambio y exit 0
+  antes). El arreglo copia el precedente de `providers.toml` en vez de inventar
+  otro: `loadIntegrationsBestEffort` degrada a cero filas y devuelve el motivo, y
+  los dos comandos que renderizan esas filas (`connections` y `dashboard`) lo
+  imprimen en stderr y salen 1. Medición de cierre: desde un temp dir,
+  `--help`/`--version` exit 0 y `connections` exit 1 con **una** línea que nombra
+  `integrations.toml` (con `data/providers.toml` copiado, porque el guard de
+  proveedores corre primero y sin él el pin medía el archivo equivocado); desde el
+  repo root y desde `nim/`, `connections` sigue en 0 y lista.
+  **Decisiones.** (a) **Un solo commit**, no dos: partir el guard de arranque
+  dejaría un estado intermedio donde un registro faltante renderiza una página de
+  Connections vacía, que es justo el fallo silencioso que este diseño evita; el
+  tamaño (633 líneas en 7 archivos, más la suite nueva) excede la guía de ~400 y se
+  registra acá en vez de partirse por la línea. (b) La tabla se llama `BEHAVIOUR` y
+  no `INTEGRATION_BEHAVIOUR` porque Nim ignora guiones bajos y mayúsculas salvo la
+  primera letra: `INTEGRATION_BEHAVIOUR` y el tipo `IntegrationBehaviour` son el
+  mismo identificador, y el choque costó una compilación. (c) El pin de acuerdo
+  lee la tabla de Python **como texto** a propósito: el port no puede importar
+  Python, y ese pin es lo único que hace ruidoso el desvío de `notion`/`obsidian`
+  mientras `waku/` siga en el árbol; muere con la mitad Python. Se lo robusteció
+  para que el marcador sea estructural (`_BEHAVIOUR`, …, `{`) y no el nombre del
+  tipo anotado al lado.
+  **Evidencia.** Differential en dos árboles separados (el módulo de `HEAD` contra
+  el nuevo, mismo dumper): 14 filas, mismo orden, 1.598 líneas por lado, 504
+  observaciones de `enabled` × `normalize` (incluido el `ValueError` exacto de
+  `DISCORD_MAX_TURNS_PER_HOUR`) y **diff vacío**, reproducible byte a byte. Suites
+  Nim tocadas: `test_integration_rows` 24, `test_blackbox` 17, `test_integrations`
+  70, `test_dashboard` 137, `test_cli` 28, `test_memory_arena` 48, `test_connect`
+  32, `test_registry` 7, todas EXIT=0. Oráculo `generate_env_example.py --check`
+  exit 0 sin diff.
+  **Residuales honestos.** (1) Los pines 1 y 2 de la suite de acuerdo quedan
+  tapados por la negativa de inicialización: ante un desvío del lado Nim el
+  binario de test muere nombrando la clave y corren 0 pines; el único con poder de
+  detección independiente es el de Python (probado con 9 mutaciones, incluida una
+  fila `python` sin `halves`, que ahora es una línea de motivo y no un crash).
+  (2) Sólo los dos comandos del binario rechazan; otro consumidor de `INTEGRATIONS`
+  (el `memory_arena` del banco) vería una lista vacía y no renderizaría nada —
+  deliberado, son las superficies de esta unidad. (3) Los conteos fijos (17 filas,
+  14 claves) hacen que una conexión nueva legítima cueste editar un pin. (4) La
+  roja de `test_static_assets` (`obsidian.svg` de más) **no se toca acá**: el
+  invariante "un logo por key" es de T5. (5) El aviso del harness volvió a medir la
+  rama contra `origin/main` (69.493 líneas en 247 commits): la Estrategia de
+  entrega sigue siendo decisión del usuario.
