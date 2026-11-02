@@ -507,12 +507,16 @@ episode; `settle` waits for the graph to stop growing, not just the episodes.
   `WAKU_STT_COMMAND` / `WAKU_TTS_COMMAND`. A missing engine is named in
   one line and the command exits 1.
 - `src/integrations.nim` ports `integrations.py` (phases 5d1+5d2):
-  the 13 static rows, provider-derived registry, status machine, views
-  and the env-example block, with env/hostOs/health/gateway injected,
-  plus the health store, injected probes, dotenv apply with rollback,
-  provider save/disable and the plain-text `cliMain` behind the
-  `connections` dispatch. No pip-extra check (single binary) and no
-  regional Base URL field (no `[[array]]` parsing).
+  the registry rows read from `data/integrations.toml` (the same file the
+  Python half reads, filtered by each row's `halves` marker — 14 rows for
+  this half), provider-derived registry, status machine, views and the
+  env-example block, with env/hostOs/health/gateway injected, plus the
+  health store, injected probes, dotenv apply with rollback, provider
+  save/disable and the plain-text `cliMain` behind the `connections`
+  dispatch. The closures a row cannot carry as data (`enabled`,
+  `normalize`) live in a `BEHAVIOUR` table keyed by row key, and a row for
+  this half with no entry — or an entry with no row — is refused by name.
+  No pip-extra check (single binary) and no regional Base URL field.
 - `tests/test_phase0.nim` tests the env overrides, the `.env` parser and the
   command table offline.
 - `tests/test_tls.nim` pins the conditional TLS contract in BOTH build

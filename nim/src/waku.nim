@@ -157,6 +157,13 @@ proc runConnections*(): int =
       " upward or beside the binary"
     return 1
   let rows = loadProviders(registryPath)
+  # The connections registry, on the other hand, is data too (T4c-2), and a
+  # listing built from an empty one would say "no connections available"
+  # about a file somebody has to put back: refuse instead, in one line, the
+  # way the missing provider registry above does.
+  if integrationRegistryError.len > 0:
+    stderr.writeLine integrationRegistryError
+    return 1
   let store = newHealthStore(loadSettings().home)
   let code = cliMain(rows, processEnv(), hostOS, storeHealthFn(store), nil)
   # Where a model key was looked for, in the order
@@ -362,6 +369,11 @@ proc runDashboard(dotenvStart: string, serve: bool): int =
       " upward or beside the binary"
     return 1
   let rows = loadProviders(registryPath)
+  # The Connections page is built from the other registry (T4c-2), so the
+  # dashboard refuses for the same reason and in the same voice.
+  if integrationRegistryError.len > 0:
+    stderr.writeLine integrationRegistryError
+    return 1
   if serve:
     let dp = if dotenvPath.len > 0: dotenvPath else: ".env"
     return serveDashboardCmd(rows, loadSettings(), dp)

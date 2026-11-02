@@ -164,22 +164,19 @@ proc blackboxEnv(): StringTableRef =
   for name in credentialVars:
     result[name] = ""
 
-proc runBinary(args: seq[string], home: string,
-               extra: seq[tuple[key, value: string]] = @[]): Run =
-  ## One child: this binary, `args`, the environment above, and `nim/`
-  ## as the working directory (header, rule 3). `extra` is what one pin
-  ## needs ON TOP of the blank table — a fixture key, or the three
-  ## WhatsApp credentials that must NOT be the missing one. Callers guard
-  ## with `needBinary`: with no binary, `startProcess` raises instead of
-  ## quietly pinning nothing.
+proc runBinaryIn(cwd: string, args: seq[string], home: string,
+                 extra: seq[tuple[key, value: string]] = @[]): Run =
+  ## One child: this binary, `args`, the environment above, and `cwd` as
+  ## the working directory. The sibling below pins `nim/`; the T4c-2
+  ## regression pins need a directory the checkout does NOT reach, because
+  ## what they watch is the binary run away from its registry.
   let env = blackboxEnv()
   env["WAKU_HOME"] = home
   for pair in extra:
     env[pair.key] = pair.value
   # `options = {}` on purpose: osproc's default merges stderr into
   # stdout, and one of these pins is exactly "the refusal is on stderr".
-  let child = startProcess(binaryPath(), packageDir(), args, env,
-                           options = {})
+  let child = startProcess(binaryPath(), cwd, args, env, options = {})
   # The child's stdin is a pipe this suite never writes to, so it is
   # closed here: a command that reached a prompt would then see EOF and
   # exit instead of hanging the whole suite on a read.
@@ -191,6 +188,42 @@ proc runBinary(args: seq[string], home: string,
   result.errText = errorStream(child).readAll()
   result.code = child.waitForExit()
   child.close()
+
+proc runBinary(args: seq[string], home: string,
+               extra: seq[tuple[key, value: string]] = @[]): Run =
+  ## The same child from `nim/` (header, rule 3), which is the working
+  ## directory every pin below but the two T4c-2 ones needs: it is where
+  ## `nimble build` leaves the binary and where `findProvidersToml`'s
+  ## `../data/providers.toml` candidate reaches the checkout. Callers
+  ## guard with `needBinary`: with no binary, `startProcess` raises
+  ## instead of quietly pinning nothing.
+  runBinaryIn(packageDir(), args, home, extra)
+
+proc registryFreeDir(name: string): string =
+  ## A temp directory with no connections registry reachable from it — the
+  ## fixture the two T4c-2 pins need. It is only a fixture if every place
+  ## `findIntegrationsToml` looks is empty, so the four candidates are
+  ## checked here: a pin that ran where the registry WAS reachable would
+  ## prove nothing about a binary shipped without it.
+  ##
+  ## The PROVIDER registry is deliberately copied in. Both commands guard
+  ## their provider registry first, so a fixture missing both would stop
+  ## there and the pin would never reach the guard it is about — measured:
+  ## `connections` answered "providers.toml not found" and the assertion on
+  ## `integrations.toml` failed for the right reason about the wrong file.
+  result = tmpHome("no-registry-" & name)
+  createDir(result / "data")
+  copyFile(packageDir() / ".." / "data" / "providers.toml",
+           result / "data" / "providers.toml")
+  assert fileExists(result / "data" / "providers.toml"),
+    "the fixture needs the provider registry it copies in"
+  for candidate in ["data/integrations.toml", "../data/integrations.toml",
+                    "../../data/integrations.toml"]:
+    assert not fileExists(result / candidate),
+      "the fixture dir reaches " & (result / candidate)
+  let besideBin = packageDir() / "integrations.toml"
+  assert not fileExists(besideBin), "a registry sits beside the binary: " &
+    besideBin
 
 proc declaredNimbleVersion(manifest: string): string =
   ## The `version = "..."` a nimble manifest declares, read the way nimble
@@ -339,6 +372,39 @@ suite "phase 9c black-box process pins":
       assert "Usage: waku <command>" in run.outText, run.outText
       assert "Run 'waku --version' for the port version." in run.outText,
         run.outText
+
+  test "--help works with no connection registry (T4c-2 regression)":
+    if not needBinary():
+      skip()
+    else:
+      # The regression: `INTEGRATIONS` became a module-level `let` built by
+      # `loadIntegrations`, so an unreachable registry raised during module
+      # initialization — before `main` — and EVERY command died, `--help`
+      # included. A shipped binary has no checkout beside it and `--help`
+      # must not depend on a data file. The temp cwd is the shipped shape.
+      let cwd = registryFreeDir("help")
+      let run = runBinaryIn(cwd, @["--help"], tmpHome("help-noregistry"))
+      assert run.code == 0, "exit " & $run.code & ", stderr: " & run.errText
+      assert "Usage: waku <command>" in run.outText, run.outText
+      assert run.errText == "", "stderr: " & run.errText
+      discardHome(cwd)
+
+  test "connections with no registry exits 1 naming integrations.toml":
+    if not needBinary():
+      skip()
+    else:
+      # What must still refuse, and refuse the way `providers.toml` does:
+      # one stderr line naming the file a person has to put back, and no
+      # half-rendered listing on stdout.
+      let cwd = registryFreeDir("connections")
+      let run = runBinaryIn(cwd, @["connections"],
+                            tmpHome("connections-noregistry"))
+      assert run.code == 1, "exit " & $run.code & ", stderr: " & run.errText
+      assert run.outText == "", "a listing was rendered anyway: " & run.outText
+      assert "integrations.toml" in run.errText, run.errText
+      assert run.errText.strip.count('\n') == 0,
+        "the refusal is not one line: " & run.errText
+      discardHome(cwd)
 
   test "mcp in an empty home prints Python's sentence, character for character":
     if not needBinary():

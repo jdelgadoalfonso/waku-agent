@@ -84,14 +84,18 @@ proc parsePriceField(p: var Provider, rawValue: string) =
   except ValueError:
     discard
 
-proc unquote(value: string): (bool, string) =
+proc unquote*(value: string): (bool, string) =
+  ## A quoted string, as `(found, text)`. Exported because the connections
+  ## registry (`integrations.parseIntegrationRows`) reads the same TOML subset
+  ## out of its own file: one vocabulary beats two readers drifting apart.
   let v = value.strip()
   if v.len >= 2 and v[0] == '"' and v[^1] == '"':
     return (true, v[1 ..< ^1])
   return (false, v)
 
-proc stripInlineComment(line: string): string =
-  ## Drop a `#` comment that starts outside a quoted value. A `#` inside
+proc stripInlineComment*(line: string): string =
+  ## Drop a `#` comment that starts outside a quoted value. Exported beside
+  ## `unquote`, for the same second reader. A `#` inside
   ## quotes (a URL fragment) survives; a commented header like
   ## `[foo] # note` becomes `[foo]`.
   var inQuotes = false

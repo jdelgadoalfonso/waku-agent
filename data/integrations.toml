@@ -1,7 +1,10 @@
 # Every user-configurable connection Waku offers, as data.
 #
-# Adding one is a row here, a logo at data/static/logos/<key>.svg, and — for
-# the Python half — one entry in the behaviour table in waku/integrations.py.
+# Adding one is a row here, a logo at data/static/logos/<key>.svg, and one
+# entry in each half's behaviour table: `_BEHAVIOUR` in waku/integrations.py
+# for Python, `BEHAVIOUR` in nim/src/integrations.nim for Nim. The closures a
+# row cannot carry as data (`enabled`, `probe`, `normalize`) live there, keyed
+# by row key, and a row marked for a half with no entry is refused by name.
 # The Connections panel, the health probes, the gateway wiring and the
 # Connections block of .env.example are all built from the rows below.
 #

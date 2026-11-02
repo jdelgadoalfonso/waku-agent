@@ -1,8 +1,9 @@
 ## Integrations registry plus stateful seams — port of `waku/integrations.py` (phases 5d1+5d2).
 ##
-## Covers the registry types, the 13 static `INTEGRATIONS` rows, the provider
-## row derivation, the `_configured`/`_status` state machine, the list views
-## and the `.env.example` block renderer. Everything is pure: `env` travels
+## Covers the registry types, the `INTEGRATIONS` rows read from
+## `data/integrations.toml`, the provider row derivation, the
+## `_configured`/`_status` state machine, the list views and the
+## `.env.example` block renderer. Everything is pure: `env` travels
 ## as a `Table`, `hostOs` is injected, and health/gateway arrive as closures.
 ##
 ## Deliberate divergences from the Python source:
@@ -55,7 +56,11 @@
 ##
 ## This port replaces the Python `notion` episodic row with `obsidian`
 ## (local vault files): no `notionNormalize`/`normalizeDatabaseId` port,
-## no extra to install, no token to probe.
+## no extra to install, no token to probe. The registry file carries BOTH
+## rows, each marked with the half that has it (`halves`), so the divergence
+## is visible data instead of two lists that drifted apart unseen — and the
+## pin in `tests/test_integration_rows.nim` fails when a half's behaviour
+## table stops matching the rows the file marks for it.
 
 import std/algorithm
 import std/json
@@ -127,6 +132,30 @@ type
     enabled*: EnabledFn = nil
     normalize*: NormalizeFn = nil
 
+  IntegrationBehaviour* = object
+    ## The part of a connection that is CODE, so it cannot be data: the
+    ## closure that reads the row's switch and the one that cleans what the
+    ## user typed. Keyed by `key` in `BEHAVIOUR` and attached by
+    ## `registerIntegrations`; a row marked for a half with no entry here is
+    ## refused, because the alternative is a card that can never turn on.
+    enabled*: EnabledFn = nil
+    normalize*: NormalizeFn = nil
+
+  IntegrationRow* = object
+    ## One row of `data/integrations.toml`, before a half is chosen: the
+    ## declarative half of an `Integration` plus the `halves` marker that
+    ## says which halves register it.
+    key*: string
+    halves*: seq[string] = @[]
+    group*: string = ""
+    name*: string = ""
+    what*: string = ""
+    env*: seq[EnvField] = @[]
+    extra*: string = ""
+    importName*: string = ""
+    setupUrl*: string = ""
+    reload*: ReloadMode = agent
+
   FieldView* = object
     name*: string
     label*: string
@@ -197,170 +226,307 @@ proc positiveInt*(values: Table[string, string]): Table[string, string] =
       raise newException(ValueError,
         "DISCORD_MAX_TURNS_PER_HOUR must be a positive integer")
 
-let INTEGRATIONS*: seq[Integration] = @[
-  Integration(key: "telegram", group: "Channels", name: "Telegram",
-    what: "Lets Waku receive and send Telegram messages.",
-    env: @[EnvField(name: "TELEGRAM_BOT_TOKEN", label: "Bot token",
-              required: true, secret: true),
-            EnvField(name: "TELEGRAM_ALLOWED_USER", label: "Allowed user")],
-    extra: "telegram", importName: "telegram",
-    setupUrl: "https://t.me/BotFather", reload: gateway,
-    enabled: keyEnabled("TELEGRAM_BOT_TOKEN")),
-  Integration(key: "discord", group: "Channels", name: "Discord",
-    what: "Lets Waku answer in a Discord server.",
-    env: @[EnvField(name: "DISCORD_BOT_TOKEN", label: "Bot token",
-              required: true, secret: true),
-            EnvField(name: "DISCORD_ALLOWED_USER", label: "Allowed user"),
-            EnvField(name: "DISCORD_ALLOWED_CHANNEL", label: "Allowed channel"),
-            EnvField(name: "DISCORD_REQUIRE_MENTION", label: "Require mention",
-              kind: boolField),
-            EnvField(name: "DISCORD_MAX_TURNS_PER_HOUR",
-              label: "Max turns per hour"),
-            EnvField(name: "DISCORD_HOME", label: "Workspace directory")],
-    extra: "discord", importName: "discord", setupUrl: "", reload: gateway,
-    enabled: keyEnabled("DISCORD_BOT_TOKEN"),
-    normalize: (proc(v: Table[string, string]): Table[string, string] {.closure.} =
-      positiveInt(v))),
-  Integration(key: "whatsapp", group: "Channels", name: "WhatsApp",
-    what: "Lets Waku answer WhatsApp messages via the Meta Cloud API.",
-    env: @[EnvField(name: "WHATSAPP_TOKEN", label: "Access token",
-              required: true, secret: true),
-            EnvField(name: "WHATSAPP_PHONE_NUMBER_ID",
-              label: "Phone number ID", required: true),
-            EnvField(name: "WHATSAPP_APP_SECRET", label: "App secret",
-              required: true, secret: true),
-            EnvField(name: "WHATSAPP_VERIFY_TOKEN",
-              label: "Webhook verify token", required: true, secret: true),
-            EnvField(name: "WHATSAPP_ALLOWED_PHONE", label: "Allowed phone",
-              help: "Without '+' prefix. Empty = answer anyone.")],
-    extra: "whatsapp", importName: "httpx",
-    setupUrl: "https://developers.facebook.com/apps", reload: gateway,
-    enabled: keyEnabled("WHATSAPP_TOKEN")),
-  Integration(key: "google_calendar", group: "Calendar & Productivity",
-    name: "Google Calendar",
-    what: "Lets Waku create and update Google Calendar events.",
-    env: @[EnvField(name: "WAKU_GOOGLE_CALENDAR",
-              label: "Enable Google Calendar", kind: boolField),
-            EnvField(name: "WAKU_GOOGLE_CALENDAR_ID", label: "Calendar ID",
-              default: "primary")],
-    extra: "gcal", importName: "googleapiclient",
-    setupUrl: "https://developers.google.com/calendar/api/quickstart/python",
-    reload: agent, enabled: keyEnabled("WAKU_GOOGLE_CALENDAR")),
-  Integration(key: "gmail", group: "Calendar & Productivity", name: "Gmail",
-    what: "Lets Waku search, read and answer email. Off until you enable it: " &
-          "every registered tool rides in every prompt.",
-    env: @[EnvField(name: "WAKU_GMAIL", label: "Enable Gmail", kind: boolField),
-            EnvField(name: "WAKU_GMAIL_SEND", label: "Send for real",
-              kind: boolField,
-              help: "Off means gmail_send writes a draft to the outbox instead " &
-                    "of sending. An email cannot be unsent, so real delivery " &
-                    "is a separate switch.")],
-    extra: "gcal", importName: "googleapiclient",
-    setupUrl: "https://developers.google.com/gmail/api/quickstart/python",
-    reload: agent, enabled: keyEnabled("WAKU_GMAIL")),
-  Integration(key: "apple_calendar", group: "Calendar & Productivity",
-    name: "Apple Calendar",
-    what: "Lets Waku work with Apple Calendar on this Mac.",
-    env: @[EnvField(name: "WAKU_APPLE_CALENDAR",
-              label: "Enable Apple Calendar", kind: boolField),
-            EnvField(name: "WAKU_APPLE_CALENDARS", label: "Calendars")],
-    extra: "", importName: "", setupUrl: "", reload: agent,
-    enabled: darwinEnabled("WAKU_APPLE_CALENDAR")),
-  Integration(key: "apple_tools", group: "Calendar & Productivity",
-    name: "Apple Tools",
-    what: "Lets Waku use Apple Mail and other local Apple tools.",
-    env: @[EnvField(name: "WAKU_APPLE_TOOLS", label: "Enable Apple tools",
-              kind: boolField)],
-    extra: "", importName: "", setupUrl: "", reload: agent,
-    enabled: darwinEnabled("WAKU_APPLE_TOOLS")),
-  Integration(key: "obsidian", group: "Memory & Storage", name: "Obsidian",
-    what: "Stores episodic memory as notes in your local Obsidian vault.",
-    env: @[EnvField(name: "WAKU_EPISODIC_STORE", label: "Episodic store",
-              kind: choiceField, default: "sqlite",
-              options: @["sqlite", "obsidian"]),
-            EnvField(name: "WAKU_OBSIDIAN_VAULT", label: "Vault path",
-              required: true,
-              help: "Root of your local Obsidian vault. " &
-                "Episodes live under waku/episodes/.")],
-    extra: "", importName: "", setupUrl: "", reload: agent,
-    enabled: storeEnabled("WAKU_EPISODIC_STORE", "obsidian")),
-  Integration(key: "mem0", group: "Memory & Storage", name: "Mem0",
-    what: "Stores semantic memory in the Mem0 service.",
-    env: @[EnvField(name: "WAKU_SEMANTIC_STORE", label: "Semantic store",
-              kind: choiceField, default: "sqlite",
-              options: @["sqlite", "mem0"]),
-            EnvField(name: "MEM0_API_KEY", label: "API key", required: true,
-              secret: true,
-              help: "From app.mem0.ai. The adapter sends infer=False so add() " &
-                "always stores — a bake-off against it measures retrieval, " &
-                "not Mem0's own extraction step."),
-            EnvField(name: "MEM0_USER_ID", label: "User id",
-              help: "Defaults to 'waku'. Change it only if several people " &
-                "share one Mem0 account.")],
-    extra: "arena", importName: "mem0", setupUrl: "", reload: agent,
-    enabled: storeEnabled("WAKU_SEMANTIC_STORE", "mem0")),
-  Integration(key: "zep", group: "Memory & Storage", name: "Zep",
-    what: "Stores semantic memory in a Zep temporal graph.",
-    env: @[EnvField(name: "WAKU_SEMANTIC_STORE", label: "Semantic store",
-              kind: choiceField, default: "sqlite",
-              options: @["sqlite", "zep"]),
-            EnvField(name: "ZEP_API_KEY", label: "API key", required: true,
-              secret: true,
-              help: "From getzep.com. Facts become graph edges with validity " &
-                "dates, so a correction supersedes the old value instead of " &
-                "ranking beside it — the one backend built for the update test."),
-            EnvField(name: "ZEP_USER_ID", label: "User id",
-              help: "Defaults to 'waku'. Zep scopes a graph per user."),
-            EnvField(name: "ZEP_MAX_WAIT_SECONDS", label: "Max wait (s)",
-              help: "Ingestion is asynchronous: graph.add returns in ~0.2s " &
-                "with the episode unprocessed, and the text is not searchable " &
-                "until Zep has turned it into nodes and edges. Waku polls " &
-                "until it has, up to this long. Default 120 — raise it if " &
-                "seeding times out, never lower it to make a benchmark finish.")],
-    extra: "arena", importName: "zep_cloud", setupUrl: "", reload: agent,
-    enabled: storeEnabled("WAKU_SEMANTIC_STORE", "zep")),
-  Integration(key: "langmem", group: "Memory & Storage", name: "LangMem",
-    what: "Stores semantic memory in a LangGraph store via LangMem.",
-    env: @[EnvField(name: "WAKU_SEMANTIC_STORE", label: "Semantic store",
-              kind: choiceField, default: "sqlite",
-              options: @["sqlite", "langmem"]),
-            EnvField(name: "WAKU_LANGMEM_POSTGRES", label: "Postgres URL",
-              help: "Optional. Without it LangGraph's InMemoryStore is used, " &
-                "which its own docs describe as a reference implementation " &
-                "whose data dies with the process — fine for a benchmark run, " &
-                "not a persistence story."),
-            EnvField(name: "OPENAI_API_KEY", label: "OpenAI key",
-              required: true, secret: true,
-              help: "LangMem has no key of its own; it bills through " &
-                "embeddings. Semantic search needs this or the store is a " &
-                "plain key-value dict.")],
-    extra: "arena", importName: "langmem", setupUrl: "", reload: agent,
-    enabled: storeEnabled("WAKU_SEMANTIC_STORE", "langmem")),
-  Integration(key: "supabase", group: "Memory & Storage", name: "Supabase",
-    what: "Stores semantic memory in Supabase pgvector.",
-    env: @[EnvField(name: "WAKU_SEMANTIC_STORE", label: "Semantic store",
-              kind: choiceField, default: "sqlite",
-              options: @["sqlite", "supabase"]),
-            EnvField(name: "SUPABASE_URL", label: "Project URL",
-              required: true),
-            EnvField(name: "SUPABASE_SERVICE_KEY", label: "Service key",
-              required: true, secret: true,
-              help: "Embeddings also require OPENAI_API_KEY (optionally " &
-                "OPENAI_EMBED_MODEL).")],
-    extra: "supabase", importName: "supabase", setupUrl: "", reload: agent,
-    enabled: storeEnabled("WAKU_SEMANTIC_STORE", "supabase")),
-  Integration(key: "tavily", group: "Search & Observability", name: "Tavily",
-    what: "Lets Waku search the web.",
-    env: @[EnvField(name: "TAVILY_API_KEY", label: "API key", secret: true)],
-    extra: "", importName: "", setupUrl: "https://tavily.com", reload: live,
-    enabled: keyEnabled("TAVILY_API_KEY")),
-  Integration(key: "otel", group: "Search & Observability",
-    name: "OpenTelemetry", what: "Exports traces to an OTLP collector.",
-    env: @[EnvField(name: "OTEL_EXPORTER_OTLP_ENDPOINT",
-              label: "OTLP endpoint")],
-    extra: "tracing", importName: "opentelemetry", setupUrl: "",
-    reload: agent, enabled: keyEnabled("OTEL_EXPORTER_OTLP_ENDPOINT")),
-]
+const
+  KnownHalves = ["python", "nim"]
+    ## The halves a row may name. A third value is a maintainer error, not a
+    ## future half: the file is read by exactly these two.
+  ThisHalf = "nim"
+    ## The half this compiler's registry belongs to.
+
+proc findIntegrationsToml*(): string =
+  ## Locate the connections registry, trying the caller's working directory
+  ## first (repo checkout layout) and the binary directory last — the two
+  ## shapes `findProvidersToml` covers, for the same reason. Returns `""` when
+  ## no candidate exists.
+  ##
+  ## It lives beside its parser instead of in `waku.nim` (where the provider
+  ## lookup sits) because `INTEGRATIONS` initializes down here and `waku.nim`
+  ## imports this module: a lookup over there would close an import cycle.
+  for candidate in ["data/integrations.toml", "../data/integrations.toml",
+                    "../../data/integrations.toml"]:
+    if fileExists(candidate):
+      return candidate
+  let besideBin = getAppDir() / "integrations.toml"
+  if fileExists(besideBin):
+    return besideBin
+  return ""
+
+proc parseStringArray(raw: string): (bool, seq[string]) =
+  ## `key = ["a", "b"]`, as `(found, entries)`. Only quoted entries are kept,
+  ## so a malformed list yields what it could read instead of aborting the
+  ## registry over a stray comma.
+  let value = raw.strip()
+  if not (value.startsWith("[") and value.endsWith("]")):
+    return (false, @[])
+  result = (true, @[])
+  for part in value[1 ..< ^1].split(','):
+    let (quoted, entry) = unquote(part.strip())
+    if quoted:
+      result[1].add(entry)
+
+proc parseFieldKind(raw: string): FieldKind =
+  ## A field kind the panel does not know is refused rather than defaulted:
+  ## a `choice` typo that silently became text would render a text box over a
+  ## closed set of options.
+  case raw.strip()
+  of "text": textField
+  of "bool": boolField
+  of "choice": choiceField
+  else:
+    raise newException(ValueError, "unknown field kind: " & raw.strip())
+
+proc parseReloadMode(raw: string): ReloadMode =
+  ## Same reasoning as `parseFieldKind`: what a change to this connection
+  ## needs (a live reload, an agent rebuild, a gateway restart) decides
+  ## whether the row works after the user saves it.
+  case raw.strip()
+  of "live": live
+  of "agent": agent
+  of "gateway": gateway
+  else:
+    raise newException(ValueError, "unknown reload mode: " & raw.strip())
+
+proc setRowField(row: var IntegrationRow, key, rawValue: string) =
+  ## One `key = value` inside a `[row]` table. An unknown key is skipped, the
+  ## way `providers.parseProviders` skips one: this file is data a maintainer
+  ## edits, and a key the loader does not know must not abort the registry
+  ## every other row depends on.
+  let (quoted, text) = unquote(rawValue)
+  case key
+  of "group":
+    if quoted: row.group = text
+  of "name":
+    if quoted: row.name = text
+  of "what":
+    if quoted: row.what = text
+  of "extra":
+    if quoted: row.extra = text
+  of "import_name":
+    if quoted: row.importName = text
+  of "setup_url":
+    if quoted: row.setupUrl = text
+  of "reload":
+    if quoted: row.reload = parseReloadMode(text)
+  of "halves":
+    let (found, halves) = parseStringArray(rawValue)
+    if found: row.halves = halves
+  else:
+    discard
+
+proc setEnvField(field: var EnvField, key, rawValue: string) =
+  ## One `key = value` inside a `[[row.env]]` table, same rule as
+  ## `setRowField`.
+  let (quoted, text) = unquote(rawValue)
+  case key
+  of "name":
+    if quoted: field.name = text
+  of "label":
+    if quoted: field.label = text
+  of "default":
+    if quoted: field.default = text
+  of "placeholder":
+    if quoted: field.placeholder = text
+  of "help":
+    if quoted: field.help = text
+  of "kind":
+    if quoted: field.kind = parseFieldKind(text)
+  of "required":
+    if rawValue == "true": field.required = true
+    elif rawValue == "false": field.required = false
+  of "secret":
+    if rawValue == "true": field.secret = true
+    elif rawValue == "false": field.secret = false
+  of "options":
+    let (found, options) = parseStringArray(rawValue)
+    if found: field.options = options
+  of "option_labels":
+    let (found, labels) = parseStringArray(rawValue)
+    if found: field.optionLabels = labels
+  else:
+    discard
+
+proc parseIntegrationRows*(text: string): seq[IntegrationRow] =
+  ## Parse `data/integrations.toml`: `[key]` row tables, `[[key.env]]` field
+  ## tables, and `name = value` with a quoted string, a bool or a list of
+  ## quoted strings. That is the whole subset the file uses, and the same
+  ## discipline as `providers.parseProviders`.
+  ##
+  ## What a row NEEDS is checked by the loader that consumes it, never here:
+  ## a document is parsed into rows first, so a refusal can name the key that
+  ## caused it instead of the line.
+  var rowIndex = -1
+  var fieldIndex = -1
+  for rawLine in text.splitLines():
+    let line = stripInlineComment(rawLine.strip()).strip()
+    if line.len == 0 or line.startsWith("#"):
+      continue
+    if line.startsWith("[["):
+      if not line.endsWith("]]") or line.len < 5:
+        raise newException(ValueError, "malformed table header: " & line)
+      let header = line[2 ..< ^2].strip()
+      let parts = header.split('.')
+      if parts.len != 2 or parts[1] != "env":
+        raise newException(ValueError, "unsupported table header: " & line)
+      if rowIndex < 0 or result[rowIndex].key != parts[0]:
+        raise newException(ValueError,
+          "[[" & parts[0] & ".env]] does not follow a [" & parts[0] & "] table")
+      result[rowIndex].env.add(EnvField())
+      fieldIndex = result[rowIndex].env.high
+      continue
+    if line.startsWith("["):
+      if not line.endsWith("]"):
+        raise newException(ValueError, "malformed table header: " & line)
+      let key = line[1 ..< ^1].strip()
+      if key.len == 0 or "." in key:
+        raise newException(ValueError, "unsupported table header: " & line)
+      for row in result:
+        if row.key == key:
+          raise newException(ValueError,
+            "the registry writes [" & key & "] twice — one table per connection")
+      result.add(IntegrationRow(key: key))
+      rowIndex = result.high
+      fieldIndex = -1
+      continue
+    let eq = line.find('=')
+    if eq <= 0 or rowIndex < 0:
+      continue
+    let key = line[0 ..< eq].strip()
+    let rawValue = line[eq + 1 .. ^1].strip()
+    if fieldIndex >= 0:
+      setEnvField(result[rowIndex].env[fieldIndex], key, rawValue)
+    else:
+      setRowField(result[rowIndex], key, rawValue)
+
+proc registerIntegrations*(rows: seq[IntegrationRow], half: string,
+    behaviour: Table[string, IntegrationBehaviour]): seq[Integration] =
+  ## Build the rows ONE half registers: the file's order, filtered by the
+  ## `halves` marker, with the closures attached by key.
+  ##
+  ## Four refusals, each naming what is wrong. Every one of them is a registry
+  ## that renders an option nobody can turn on, or code nobody can reach:
+  ## - a row that names no half, or a half that is neither `python` nor `nim`;
+  ## - a row for THIS half with no behaviour entry;
+  ## - an `env` entry with no `name`, which the panel could not render;
+  ## - a behaviour entry with no row (dead code, the mirror of the above);
+  ## - a behaviour entry with no `enabled` hook.
+  var used: seq[string] = @[]
+  for row in rows:
+    if row.halves.len == 0:
+      raise newException(ValueError, "integration '" & row.key &
+        "' names no half — list the halves that register it")
+    for name in row.halves:
+      if name notin KnownHalves:
+        raise newException(ValueError, "integration '" & row.key &
+          "' names an unknown half '" & name & "' — halves are " &
+          KnownHalves.join(", "))
+    if half notin row.halves:
+      continue
+    if not behaviour.hasKey(row.key):
+      raise newException(ValueError, "integration '" & row.key &
+        "' is marked for " & half & " in the integration registry but has no " &
+        "behaviour entry — add one, or drop the row")
+    let hooks = behaviour[row.key]
+    if hooks.enabled == nil:
+      raise newException(ValueError, "integration '" & row.key &
+        "' has a behaviour entry with no enabled hook — add one, or drop the row")
+    for field in row.env:
+      if field.name.len == 0:
+        raise newException(ValueError, "integration '" & row.key &
+          "' has an env entry with no name — every field names its variable")
+    result.add(Integration(
+      key: row.key, group: row.group, name: row.name, what: row.what,
+      env: row.env, extra: row.extra, importName: row.importName,
+      setupUrl: row.setupUrl, reload: row.reload,
+      enabled: hooks.enabled, normalize: hooks.normalize))
+    used.add(row.key)
+  for key in behaviour.keys:
+    if key notin used:
+      raise newException(ValueError, "the behaviour entry '" & key &
+        "' has no row in the integration registry — add the row, or drop the entry")
+
+proc loadIntegrations*(path, half: string,
+    behaviour: Table[string, IntegrationBehaviour]): seq[Integration] =
+  ## Read a registry document and build the rows one half registers.
+  if path.len == 0:
+    raise newException(ValueError,
+      "the integration registry was not found from " & getCurrentDir() &
+      " upward or beside the binary")
+  registerIntegrations(parseIntegrationRows(readFile(path)), half, behaviour)
+
+proc nimBehaviour(): Table[string, IntegrationBehaviour] =
+  ## The closures of the Nim half, keyed by the row they belong to: the part
+  ## of a connection that is code. It is the port's `_BEHAVIOUR`.
+  result = initTable[string, IntegrationBehaviour]()
+  result["telegram"] = IntegrationBehaviour(
+    enabled: keyEnabled("TELEGRAM_BOT_TOKEN"))
+  result["discord"] = IntegrationBehaviour(
+    enabled: keyEnabled("DISCORD_BOT_TOKEN"), normalize: positiveInt)
+  result["whatsapp"] = IntegrationBehaviour(
+    enabled: keyEnabled("WHATSAPP_TOKEN"))
+  result["google_calendar"] = IntegrationBehaviour(
+    enabled: keyEnabled("WAKU_GOOGLE_CALENDAR"))
+  result["gmail"] = IntegrationBehaviour(enabled: keyEnabled("WAKU_GMAIL"))
+  result["apple_calendar"] = IntegrationBehaviour(
+    enabled: darwinEnabled("WAKU_APPLE_CALENDAR"))
+  result["apple_tools"] = IntegrationBehaviour(
+    enabled: darwinEnabled("WAKU_APPLE_TOOLS"))
+  result["obsidian"] = IntegrationBehaviour(
+    enabled: storeEnabled("WAKU_EPISODIC_STORE", "obsidian"))
+  result["mem0"] = IntegrationBehaviour(
+    enabled: storeEnabled("WAKU_SEMANTIC_STORE", "mem0"))
+  result["zep"] = IntegrationBehaviour(
+    enabled: storeEnabled("WAKU_SEMANTIC_STORE", "zep"))
+  result["langmem"] = IntegrationBehaviour(
+    enabled: storeEnabled("WAKU_SEMANTIC_STORE", "langmem"))
+  result["supabase"] = IntegrationBehaviour(
+    enabled: storeEnabled("WAKU_SEMANTIC_STORE", "supabase"))
+  result["tavily"] = IntegrationBehaviour(enabled: keyEnabled("TAVILY_API_KEY"))
+  result["otel"] = IntegrationBehaviour(
+    enabled: keyEnabled("OTEL_EXPORTER_OTLP_ENDPOINT"))
+
+let BEHAVIOUR*: Table[string, IntegrationBehaviour] = nimBehaviour()
+  ## Exported so a pin can state the agreement between the two halves without
+  ## rebuilding it: the keys here must be exactly the rows the file marks for
+  ## `nim`, and nothing else.
+
+proc loadIntegrationsBestEffort*(path, half: string,
+    behaviour: Table[string, IntegrationBehaviour]): (seq[Integration], string) =
+  ## The shape module initialization can afford: the rows, plus the reason
+  ## they are absent or refused.
+  ##
+  ## A shipped binary and a half-finished edit are different failures, and
+  ## `--help` must not depend on a data file. So the initialization below
+  ## never raises: it keeps what it could build and hands the reason to the
+  ## command that needs the registry, which refuses by name — exactly what
+  ## `providers.toml` already does in `waku.nim`. A registry that IS found
+  ## but still contradicts itself (a row with no behaviour entry, an entry
+  ## with no row, an unknown half, a duplicate table) is reported the same
+  ## way, and just as loudly.
+  if path.len == 0:
+    return (@[], "integrations.toml not found from " & getCurrentDir() &
+      " upward or beside the binary")
+  try:
+    return (loadIntegrations(path, half, behaviour), "")
+  except ValueError as error:
+    return (@[], error.msg)
+  except IOError as error:
+    # Name the file first: `cannot open: <path>` is the OS talking, and this
+    # line is printed by a command to a person who has to put something back.
+    return (@[], "integrations.toml could not be read: " & error.msg)
+
+let integrationRegistryLoad =
+  loadIntegrationsBestEffort(findIntegrationsToml(), ThisHalf, BEHAVIOUR)
+
+## This half's registry: `data/integrations.toml` filtered by `halves`, in the
+## file's order, with the closures above attached. Empty when the file is
+## missing or contradictory — `integrationRegistryError` says which.
+let INTEGRATIONS*: seq[Integration] = integrationRegistryLoad[0]
+
+## Why `INTEGRATIONS` is empty, and `""` when it loaded. A command that
+## renders this half's rows prints it and refuses instead of drawing an empty
+## Connections page, which is how a missing registry becomes a bug report
+## about "no connections available".
+let integrationRegistryError*: string = integrationRegistryLoad[1]
 
 proc titleCase*(name: string): string =
   ## Port of `name.replace("_", " ").title()` for provider row names.
