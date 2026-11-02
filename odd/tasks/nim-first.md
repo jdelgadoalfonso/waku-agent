@@ -629,3 +629,22 @@ Commits landed (rama `nim-first`):
   invariante "un logo por key" es de T5. (5) El aviso del harness volvió a medir la
   rama contra `origin/main` (69.493 líneas en 247 commits): la Estrategia de
   entrega sigue siendo decisión del usuario.
+- **L38** (el usuario declinó este candidato, 2026-11-02): `review.start` sobre el
+  target `sha256:8c32ae8c…` devolvió `answer-consent` / `status: skipped` /
+  `consent-declined-this-candidate`, con `lineage_created: false`,
+  `mutation_performed: false` y `reset_eligible: false`: **no se creó autoridad y
+  no se mutó nada**. El sobre, que es la medición más honesta que tenemos del
+  candidato que el controlador ofrece, dice **414 archivos y 86.462 líneas, riesgo
+  alto**, con evidencia `authentication in nim/src/google_auth.nim` y `shell
+  scripting in .github/workflows/nim.yml` — o sea **la rama entera contra
+  `origin/main`** (`--base-ref=4b69b321…`, `projection=workspace`), no la unidad de
+  T4c-2 (`1524a45`), que ya tiene su verificación independiente y su differential.
+  El `inspect` lo dijo con todas las letras: `applicability: unrelated` y 250+ paths
+  (`paths_digest sha256:5c749d65…`), la misma clase que el controlador ya rechazó
+  dos veces con `lens_context_budget_exceeded` (L26, L31).
+  **Una declinación es del candidato, no el kill switch**: el switch sigue on
+  global, ningún linaje quedó abierto ni quemado, y un candidato distinto pide
+  consentimiento nuevo. Lo que sigue cerrado es la compuerta de la rama, y por la
+  razón de siempre: `inspect` proyecta contra `origin/main`, y `origin/main` sólo se
+  mueve publicando, que es decisión del usuario (hoy: no publicar). Mientras la
+  rama no se trocee, cada commit regenera un candidato de este tamaño.
