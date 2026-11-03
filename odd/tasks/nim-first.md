@@ -161,7 +161,7 @@ la superficie de rutas.
 Lo que **no** está cubierto hoy en Nim: el índice de `docs/`, la regla de emojis,
 los links del rulebook, los topes de gotchas y status, el playbook de `lab/`, la
 licencia ELv2, la validación de skills, la versión cruzando las dos mitades, y
-`.env.example` contra el árbol (sólo hay un string dorado en `test_integrations.nim`).
+y `.env.example` contra el árbol, cerrado por T8.
 
 ## Tasks
 
@@ -718,3 +718,47 @@ Commits landed (rama `nim-first`):
   mueve el trabajo de las tareas**, porque la base sigue siendo `origin/main`; cada
   commit de la rama vuelve a ofrecer el mismo alcance. La salida es la Estrategia de
   entrega (trocear o publicar), que es decisión del usuario, o `D` para esta copia.
+- **L41** (evidencia, T8, 2026-11-03): el pin de `.env.example` contra el registry
+  quedó en Nim y, al escribirlo, destapó que el **port del registry no era
+  byte-paridad**: el render Nim daba 181 líneas contra las 205 del archivo
+  committed, y `python scripts/generate_env_example.py --check` estaba **verde**
+  (así que el drift no era del archivo, era del port). Tres causas, las tres
+  arregladas en esta unidad:
+  (1) `parseProviders` saltaba toda tabla `[[...]]`, así que los
+  `[[minimax.endpoints]]` / `[[moonshot.endpoints]]` / `[[zhipu.endpoints]]`
+  de `data/providers.toml` nunca se leían y la fila base-url del proveedor no
+  existía; ahora hay un `Endpoint` (`label`, `baseUrl`) por fila y el header
+  cuelga del row **que nombra**, no del último (mismo semantics que `tomllib`;
+  lo cazó el segundo test, que esperaba tres filas y veía dos).
+  (2) `integrationFromProvider` documentaba a propósito que omitía el campo
+  Base URL `CHOICE`; Python lo agrega cuando la fila tiene `base_url_env` y
+  endpoints, y el archivo committed lo muestra para esos tres proveedores.
+  (3) el render usaba `INTEGRATIONS` (las filas del half **Nim**), pero el
+  archivo committed es el del half **Python**: `data/integrations.toml` marca
+  `notion`, `treg` y `typesafe` como `["python"]` y `obsidian` como `["nim"]`,
+  así que el bloque dice Notion/treg/TypeSafe y nunca dice Obsidian. Se agregó
+  `envExampleIntegrations(rows)` (filtra `"python" in halves`, en orden de
+  archivo) y `renderEnvExampleBlock(providers, statics)` toma las filas
+  estáticas como parámetro: el pin de repo le pasa el half Python y el test
+  dorado del renderer le sigue pasando `INTEGRATIONS`, así que se conservan
+  los dos hechos.
+  **Evidencia.** Roja conductual observada dos veces: el pin nuevo en el árbol
+  real (205 vs 181, primera diferencia en la línea 31) y los dos `compile
+  error` de los tipos/procs nuevos antes de implementarlos. Verde: en una copia
+  `mktemp` del árbol, editar una línea del bloque la hace fallar con "the
+  generated Connections block in .env.example is out of date: first differing
+  line 32…", y borrar el marcador la hace fallar con ".env.example is missing
+  generated Connections markers: no # BEGIN GENERATED CONNECTIONS"; el árbol
+  real no se tocó. Cinco pines nuevos: `test_providers` (endpoints en orden de
+  archivo, y que una tabla no se herede de la anterior), `test_integrations`
+  (la vista del half Python y el campo choice de base-url, con y sin
+  endpoints), `test_repo_gates` (bloque committed == render del registry).
+  Suite Nim completa: **74 archivos verdes**, 19 checks en `test_repo_gates`,
+  73 en `test_integrations`, 10 en `test_providers`. La única roja es
+  `test_tls` ("why a finally that catches swallows the refusal in flight"),
+  **pre-existente y ajena**: el mismo fallo aparece compilando y corriendo ese
+  archivo en un worktree limpio en `HEAD`.
+  **Residual honesto.** `test_integrations` sigue pineando la forma del bloque
+  dorado con las filas del half Nim; el hecho del archivo committed es el del
+  pin de repo. Y las notas de T5 sobre el candidato de review (L38/L40) no
+  cambian: la base sigue siendo `origin/main`.
