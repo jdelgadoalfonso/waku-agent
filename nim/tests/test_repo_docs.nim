@@ -594,3 +594,53 @@ suite "T3 the pins read this repo":
       let path = at(root, rel)
       assert fileExists(path) or dirExists(path),
         "the repo root this suite anchored to has no " & rel
+
+# --- T7: one version literal per half, pinned in the CI table --------------
+
+proc ciTableRows(markdown: string): seq[seq[string]] =
+  ## The rows of the table under `## What CI blocks`, cells split the same
+  ## way `test_repo_gates.nim` reads it — backticks dropped, since markdown's
+  ## inline code is not what the cell says. A copy of that reader rather than
+  ## a reach into another suite: the two pins guard different facts and must
+  ## not share a helper that one edit could quietly move.
+  var inTable = false
+  for line in markdown.splitLines():
+    if line.startsWith("## What CI blocks"):
+      inTable = true
+      continue
+    if not inTable:
+      continue
+    if line.startsWith("|"):
+      let parts = line.split('|')
+      var cells: seq[string] = @[]
+      for i, cell in parts:
+        if i > 0 and i < parts.len - 1:
+          cells.add cell.strip().replace("`", "")
+      result.add cells
+    elif result.len > 0 and line.len > 0 and not line.startsWith("#"):
+      break
+
+suite "T7 one version literal per half":
+  test "the CI table states the version rule per half and names both guards":
+    # The row `AGENTS.md` used to carry — `| a second version number |
+    # evals/deterministic/test_version.py |` — demanded ONE number across the
+    # repo. That is false now, and false on purpose. The Python half is frozen
+    # (spec S1) and its release workflows rewrite `waku/__init__.py` on their
+    # own schedule (`release-due.yml` does `sed -i` on that line), so the two
+    # halves are not required to agree and are not required to differ either.
+    # What holds is one editable version literal PER HALF, each guarded by its
+    # own suite. This pin holds the table to that; it fails if a reword drops
+    # either guard or the per-half rule.
+    let rows = ciTableRows(readFile(at(repoRoot(), "AGENTS.md")))
+    assert rows.len >= 5, "the CI table in AGENTS.md was not found"
+    var named: seq[seq[string]] = @[]
+    for row in rows:
+      if row.len >= 2 and "test_version.py" in row[1] and
+          "test_version.nim" in row[1]:
+        named.add row
+    assert named.len == 1,
+      "the CI table must name both version guards in one row; it names " &
+      $named.len & " such rows"
+    assert "half" in named[0][0],
+      "the version row must state the per-half rule, not one number: " &
+      named[0][0]
