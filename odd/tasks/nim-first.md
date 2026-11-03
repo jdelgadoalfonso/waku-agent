@@ -892,3 +892,14 @@ Commits landed (rama `nim-first`):
   del proveedor de subagentes que frena T3b y T6, la verificación independiente de
   T4c-1, y la compuerta de review con sus cinco candidatos declinados sin
   autoridad: trocear o publicar, decisión del usuario, o `D`.
+- **L46** (sexto candidato, 2026-11-03, tras T9): se abrió por pedido del
+  usuario. `inspect` ofreció `start` sobre `sha256:f39bdf5a…` (el árbol con
+  `9486dff` y `d277fc9`) y el `START` volvió **`status: skipped`,
+  `outcome: consent-declined-this-candidate`**: 417 archivos, 87.375 líneas,
+  `risk_level: high`, `lineage_created: false`, `mutation_performed: false`.
+  El dato nuevo, y el que importa para la próxima sesión, es el **`skipped`**:
+  el host resolvió el consentimiento como declinado **sin mostrar el prompt**.
+  O sea que ya no hay una decisión humana que tomar en cada intento; la compuerta
+  está cerrada en el host para este candidato. Reintentar solo agrega ruido: lo
+  único que la abre es un target distinto, y eso quiere decir trocear la rama o
+  publicar, o `D`.
