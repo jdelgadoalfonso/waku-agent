@@ -6,15 +6,16 @@ del repo que hoy son pytest. **Retirar `evals/deterministic/` no es parte de
 esta feature**: el port es lo que lo habilita, y la decisión de retirarlo queda
 para después. `hosted/` queda en Python, sin tocar.
 
-**Estado al 2026-11-02 (reanudación).** En la rama `nim-first` están landed T0
+**Estado al 2026-11-03 (reanudación).** En la rama `nim-first` están landed T0
 (que vive en `add-cline-provider`), T1, T2, T2b y T3: 10 commits, 16 archivos,
 1.203 líneas sobre su base. T3b y T6 siguen sin empezar, bloqueadas por cuota del
 proveedor. **T4a, T4b, T4c-1 y T4c-2 están landed** (`f834ffd`, `f526360` y
 `57c60fb` para el build del tenant que la mudanza rompió; T4c-1 en `b30f400`;
 **T4c-2 en `1524a45`**), así que **T4 está cerrada**: las dos mitades leen
-`data/integrations.toml`. T5, T7, T8 y T9 sin empezar. **El writer de T4c murió
-tres veces con cuota del proveedor** (L33, L34, L36) y las dos rebanadas las
-ejecutó el padre inline.
+`data/integrations.toml`. **T5 está landed** en `de4348b` (registro en `L39`).
+T7, T8 y T9 sin empezar. **Los writers de esta feature murieron cuatro veces con
+el proveedor caído** (L19, L33, L34, L36 y L39) y las dos últimas rebanadas las
+ejecutó el padre inline sobre la salida parcial, verificada como evidencia.
 
 El review nativo sigue rechazando el alcance por defecto
 (`lens_context_budget_exceeded`), y el 2026-10-31 se estableció por qué el troceo
@@ -28,10 +29,10 @@ abre cuando `origin/main` se mueva, y eso pasa por el aterrizaje del port.
 **Reanudar en este orden:** (1) las 7 rojas deterministas de `a81c3d5` (L23), que
 son lo que impide aterrizar el port; (2) el aterrizaje del port (hoy: decisión del
 usuario de no publicar), que es lo único que mueve `origin/main` y con él la base
-del review; (3) **T4 cerrada con T4c-2 landed** (`1524a45`), que desbloquea T5 y
-T8: T5 reapunta el guardarraíl de diseño y brand mark al hogar `data/static` y lo
-porta a Nim —y con él entra la roja de los logos por key que hoy deja
-`test_static_assets`—, y T8 porta a Nim el `--check` de `.env.example`; (4) T7;
+del review; (3) **T4 cerrada con T4c-2 landed** (`1524a45`) y **T5 landed** (`de4348b`), que
+reapuntó y portó los guardarraíles de diseño y brand mark —con la roja de los
+logos por key que dejaba `test_static_assets` cerrada en el mismo commit—; sigue
+T8, que porta a Nim el `--check` de `.env.example`; (4) T7;
 (5) la decisión sobre la roja de `test_tls`; (6) T3b y T6 en cuanto vuelva la cuota
 del proveedor de subagentes (L19, L33, L36); (7) la **verificación independiente de
 T4c-1**, que sigue sin poder correr (L34): la de T4c-2 **sí corrió** y encontró una
@@ -150,7 +151,10 @@ del congelamiento.
 
 Ya portado en Nim por `nim/tests/test_repo_gates.nim` (fase 9b-1, aditivo): frontera
 `nim/`↔`hosted/`, escaneo de `examples/`/`lab/`, una definición por nombre, sha256
-de las copias de diseño, y la tabla de CI de AGENTS.md nombrando `nim.yml`.
+de las copias de diseño, el brand mark (las tres copias dibujan una sola `d`, cada
+variante declara su tinta y el README ofrece las dos) y el invariante "un logo por
+key" sobre `data/integrations.toml`, y la tabla de CI de AGENTS.md nombrando
+`nim.yml`.
 `test_version.nim` tiene la versión, `test_embed.nim` el embed, `test_dashboard.nim`
 la superficie de rutas.
 
@@ -193,6 +197,7 @@ Commits landed (rama `nim-first`):
 | `57c60fb` | `fix(hosted): admit data/ in the tenant build context` — consecuencia de T4a y T4b |
 | `b30f400` | `refactor(integrations): move the connection registry to data/integrations.toml` — T4c-1 |
 | `1524a45` | `refactor(integrations): read the Nim connection registry from data/integrations.toml` — T4c-2 |
+| `de4348b` | `test(guards): port the brand mark and the logo invariant to Nim` — T5 |
 
 ## Log
 
@@ -648,3 +653,55 @@ Commits landed (rama `nim-first`):
   razón de siempre: `inspect` proyecta contra `origin/main`, y `origin/main` sólo se
   mueve publicando, que es decisión del usuario (hoy: no publicar). Mientras la
   rama no se trocee, cada commit regenera un candidato de este tamaño.
+- **L39** (T5 landed, 2026-11-03, `de4348b`): el writer de T5 murió con
+  `provider_unavailable` —cuarta muerte de la feature (L19, L33, L34, L36)—
+  después de escribir casi todo: dejó completo el arreglo del pin Python y tres de
+  los cuatro pines Nim (148 líneas en los dos archivos), sin compilar ni reportar.
+  Como en L36, el padre trató esa salida como **evidencia a verificar, no a creer**:
+  la compiló, observó cada RED por su cuenta y **agregó la prueba que faltaba**, la
+  cuarta del pin Python (`test_brand_mark.py:36-41`, el README ofrece las dos
+  tintas), porque S5 no permite portar dos de tres hechos.
+  **Lo que T5 resultó ser.** "Reapuntar" ya estaba hecho por T4b: los dos guards
+  Python leen `data/static` desde entonces. El trabajo real fue la mitad Nim y una
+  roja que llevaba desde L23.
+  **Decisiones.** (a) La llave del invariante "un logo por key" es
+  `data/integrations.toml`, no `INTEGRATIONS`: la tupla de Python es su vista, filtra
+  las filas cuyo `halves` no dice `python`, así que `obsidian` (fila `halves =
+  ["nim"]`) nunca podría satisfacerla y el pin estaba rojo por construcción. El
+  archivo compartido es además lo único que sobrevive a retirar `waku/`, que es de
+  lo que se trata S3. `treg` no necesitó caso especial: es una fila más (17 filas,
+  17 logos), y la afirmación "las tarjetas MCP no están en el registry" que el
+  comentario viejo hacía quedó falsa con T4c-1, así que el comentario nuevo dice lo
+  que el archivo prueba. (b) Los dos pines nuevos viven en
+  `test_repo_gates.nim`, que ya tenía el sha256 de las copias de diseño y la
+  ancla `repoRoot()`; un suite aparte sólo se justificaba si la lógica crecía su
+  propio parser, y no creció. (c) El lector de geometría usa `find` y no `match`:
+  el `re` de Nim ancla `match` al principio de la cadena y el pin Python hace
+  `re.search`.
+  **Evidencia.** Cada pin visto RED por el hecho que afirma antes de GREEN, con el
+  árbol real intacto: las mutaciones se hicieron en una copia en `mktemp -d`. Nim,
+  cuatro pruebas en "phase 9b-1 the brand mark and the connection logos": `d`
+  desviada en la variante clara → `has drifted from data/static/waku-mark.svg`;
+  `<source>` oscura borrada → `only one ink is ever offered`; README sin el archivo
+  oscuro → `never references waku-mark-on-dark.svg`; logo huérfano →
+  `these logos have no key in data/integrations.toml: @["zzz_orphan.svg"]`; y
+  `obsidian.svg` faltante → `no data/static/logos/connections/<key>.svg for:
+  @["obsidian.svg"]`, que es justo la fila que el pin Python no podía ver. Suite
+  EXIT=0 en el árbol real, compilada sin warnings. Python: el pin de `HEAD` rojo con
+  el texto exacto de L30/L35 (`Extra items in the left set: 'obsidian.svg'`), el
+  arreglado 7 passed, y sigue rojo en las dos direcciones (huérfano y faltante).
+  Suite determinista completa **6 failed, 3353 passed, 62 skipped** contra
+  7 failed / 3352 passed: `test_static_assets` sale de la lista de L23 y las seis
+  que quedan son las mismas de siempre (5 de `test_pinned_models`, que dependen del
+  `.env` del desarrollador, y `test_turn_evals`). `ruff` limpio (`uvx ruff`, porque
+  el venv del repo no lo trae).
+  **Residuales honestos.** (1) El pin del brand mark compara el **primer** `d` de
+  cada archivo, igual que el pin Python: un segundo path que divergiera no lo ve
+  ninguno de los dos, y se porta el mismo hecho en vez de mejorarlo en silencio.
+  (2) La precisión del lector se pinea con texto, no con un archivo, porque el test
+  no puede escribir en el árbol. (3) No se porta el `alt`/`width` del README: no es
+  un hecho del pin Python. (4) `test_static_assets.py` ya no importa `INTEGRATIONS`
+  ni `treg`; cualquier otro eval que dependiera de ese import fallaría en su propio
+  import. (5) La roja de `test_turn_evals` sigue ajena a esta feature. (6) El aviso
+  del harness volvió a medir la rama contra `origin/main` (250 commits, 69.754
+  líneas): la Estrategia de entrega sigue siendo decisión del usuario.
