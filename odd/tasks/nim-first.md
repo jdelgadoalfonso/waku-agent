@@ -198,6 +198,7 @@ Commits landed (rama `nim-first`):
 | `b30f400` | `refactor(integrations): move the connection registry to data/integrations.toml` — T4c-1 |
 | `1524a45` | `refactor(integrations): read the Nim connection registry from data/integrations.toml` — T4c-2 |
 | `de4348b` | `test(guards): port the brand mark and the logo invariant to Nim` — T5 |
+| `91750b2` | `test(guardrails): pin .env.example against the registry in Nim` — T8 |
 
 ## Log
 
