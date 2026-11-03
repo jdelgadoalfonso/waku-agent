@@ -15,7 +15,11 @@ proveedor. **T4a, T4b, T4c-1 y T4c-2 están landed** (`f834ffd`, `f526360` y
 `data/integrations.toml`. **T5 está landed** en `de4348b` (registro en `L39`) y
 **T8 en `91750b2`** (L41). **T7 está landed** en `ab67676` (L43): "una versión"
 quiere decir un literal editable por mitad, sin exigir igualdad. Solo T9 queda
-sin empezar. **Los writers de esta feature murieron seis veces con el proveedor
+sin empezar. **T9 está landed** en `9486dff` (L45), así que la lista de tareas
+está cerrada. Lo que queda abierto no son tareas de esta feature: las rojas
+deterministas de `add-cline-provider`, la decisión sobre `test_tls`, la cuota que
+frena T3b y T6, y la compuerta de review y entrega. **Los writers de esta
+feature murieron seis veces con el proveedor
 caído** (L19, L33, L34, L36, L39 y L43) y las últimas rebanadas las ejecutó el
 padre inline sobre la salida parcial, verificada como evidencia.
 
@@ -205,6 +209,8 @@ Commits landed (rama `nim-first`):
 | `de4348b` | `test(guards): port the brand mark and the logo invariant to Nim` — T5 |
 | `91750b2` | `test(guardrails): pin .env.example against the registry in Nim` — T8 |
 | `ab67676` | `test(guardrails): pin one version literal per half instead of one number` — T7 |
+| `af32852` | `docs(odd): record the fifth declined branch candidate after T7` — intento de compuerta |
+| `9486dff` | `docs(nim-first): retarget the prose the port made false` — T9 |
 
 ## Log
 
@@ -840,3 +846,49 @@ Commits landed (rama `nim-first`):
   compuerta no la abre el trabajo de las tareas, la abre mover `origin/main`, y
   `main` está protegido. Las dos salidas siguen siendo la Estrategia de entrega
   (trocear la rama o publicar) o `D` para esta copia.
+- **L45** (T9 landed, 2026-11-03 — cierre de la feature): T9 pedía "los docs que
+  el cambio vuelve falsos (regla 9) + cierre". Se levantó la lista con un
+  explorer, no a ojo, y el resultado desarmó la expectativa de la fila: **`T2` y
+  `T2b` ya habían hecho su trabajo**. `README.md`, `AGENTS.md`, `CONTRIBUTING.md`,
+  el `Makefile`, `docs/README.md`, `status.md`, `architecture.md`,
+  `integrations.md`, `evals.md`, `getting-started.md`, `commands.md`, `tour.md`,
+  `roadmap.md`, `providers-registry.md`, `docs/context/{design-system,gotchas,
+  writing-rules,maintainers}.md`, `nim/README.md`, `data/static/README.md` y
+  `examples/README.md` describen el binario como la puerta y la mitad Python como
+  congelada. **No se tocaron**.
+  **Los cinco que sí mentían** (`9486dff`):
+  (1) **`docs/context/conventions.md` §3, la escalera de footprint** — el daño
+  mayor, porque `AGENTS.md` manda ahí a quien va a agregar capacidad: ponía las
+  herramientas nuevas en `waku/tools/` y los gateways en `waku/gateway/`, y
+  cerraba diciendo que no había escalón para un paquete de primer nivel
+  "como `waku/graph/`" cuando `nim/src/graph/` ya existe. Ahora los escalones 4 a
+  6 nombran `nim/src/`, el flag de build que admite una capacidad
+  (`make nim-build-tls`), los vecinos de `gateway.nim` y `tools.nim`, y la
+  escalera dice en voz alta que `waku/` no toma capacidad nueva de ningún escalón.
+  (2) **`.claude/skills/new-tool/SKILL.md`**, el que `AGENTS.md` recomienda para
+  agregar una herramienta: enseñaba `waku/tools/`, `build_registry` y un eval en
+  `evals/deterministic/`. Ahora construye un `Tool` en `nim/src/`, lo entrega a
+  `register(...)` y pinea comportamiento en `nim/tests/test_*.nim`.
+  (3) **`skills/community/README.md`** instalaba con `python -m waku skill
+  install`; ahora `waku skill install`, que es el dispatch que el binario ya
+  tiene (`nim/src/waku.nim:637`) y la forma que usa `docs/commands.md`.
+  (4) **`skills/waku-memory/SKILL.md`** exigía el extra MCP a todo el mundo; solo
+  lo necesita la mitad congelada.
+  (5) **`docs/nim-port-design.md`** decía "Status: PROPOSED. No Nim code yet" y
+  nombraba a Python fuente de verdad "hasta que el port pase los evals fase por
+  fase". Queda como registro de la propuesta, en pasado.
+  **Evidencia.** `pytest test_rulebook.py test_skill_triggers.py` → 70 passed;
+  `scripts/validate_skills.py` → 7 skills OK; `test_repo_docs` 15 OK y
+  `test_repo_gates` 19 OK (los links nuevos resuelven y el índice sigue completo).
+  Un residual honesto: `docs/status.md:43` dice "0.1.8 is on PyPI" mientras el
+  literal de la mitad Python es `0.1.9`. No lo toqué porque no es un hecho que
+  este cambio vuelva falso: o el release no se publicó, o la línea está vieja, y
+  distinguirlo requiere mirar PyPI, no el repo.
+  **Cierre verde**: T0, T1, T2, T2b, T3, T4 (a, b, c-1, c-2), T5, T7, T8 y T9,
+  cada una con su commit y su registro; `test_version.py` intacto; suite Nim con
+  una sola roja pre-existente y ajena. **Cierre pendiente, y ninguno es una tarea
+  de esta feature**: las 6 rojas deterministas de `add-cline-provider` (lo que
+  impide aterrizar el port), la decisión sobre la roja de `test_tls`, la cuota
+  del proveedor de subagentes que frena T3b y T6, la verificación independiente de
+  T4c-1, y la compuerta de review con sus cinco candidatos declinados sin
+  autoridad: trocear o publicar, decisión del usuario, o `D`.
