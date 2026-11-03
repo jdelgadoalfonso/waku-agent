@@ -705,3 +705,16 @@ Commits landed (rama `nim-first`):
   import. (5) La roja de `test_turn_evals` sigue ajena a esta feature. (6) El aviso
   del harness volvió a medir la rama contra `origin/main` (250 commits, 69.754
   líneas): la Estrategia de entrega sigue siendo decisión del usuario.
+- **L40** (segundo candidato declinado, 2026-11-03, tras T5): `review.start` sobre el
+  target `sha256:df990e0c…` (el árbol con `de4348b` y `ba5bfb1`) volvió con
+  `answer-consent` / `status: skipped` / `consent-declined-this-candidate`, y otra vez
+  con `lineage_created: false`, `mutation_performed: false`, `reset_eligible: false`:
+  **no se creó autoridad y no se mutó nada**. La medición del sobre es la misma foto
+  que L38, movida por dos commits: **414 archivos, 86.703 líneas, riesgo alto**,
+  evidencia `authentication in nim/src/google_auth.nim` y `shell scripting in
+  .github/workflows/nim.yml`, base `4b69b321…` = `origin/main`. El `inspect` volvió a
+  decir `applicability: unrelated` con el **mismo `paths_digest`** (`sha256:5c749d65…`)
+  que la declinación anterior. Conclusión operativa: **la forma del candidato no la
+  mueve el trabajo de las tareas**, porque la base sigue siendo `origin/main`; cada
+  commit de la rama vuelve a ofrecer el mismo alcance. La salida es la Estrategia de
+  entrega (trocear o publicar), que es decisión del usuario, o `D` para esta copia.
