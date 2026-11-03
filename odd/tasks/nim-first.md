@@ -762,3 +762,17 @@ Commits landed (rama `nim-first`):
   dorado con las filas del half Nim; el hecho del archivo committed es el del
   pin de repo. Y las notas de T5 sobre el candidato de review (L38/L40) no
   cambian: la base sigue siendo `origin/main`.
+- **L42** (tercer candidato declinado, 2026-11-03, tras T8): el controlador de RDD
+  ofreció `review.start` para el target `sha256:1e58fde0…` (el árbol con
+  `91750b2` y `d01a264`), y la compuerta de consentimiento se resolvió **declinada**
+  en el host: `action: declined`, `consent: declined_this_candidate`,
+  `lineage_created: false`, `mutation_performed: false`, `reset_eligible: false`.
+  La medición del sobre es la misma foto que L38 y L40, movida por dos commits:
+  **414 archivos, 87.004 líneas, riesgo alto**, evidencia `authentication in
+  nim/src/google_auth.nim` y `shell scripting in .github/workflows/nim.yml`, base
+  `4b69b321…` = `origin/main`. Ningún intento creó autoridad. Un detalle nuevo de
+  la fachada: un `lensesReason` de una línea larga también se rechaza con
+  `reason: lenses-reason-invalid` y `field: lensesReason` (no sólo el vacío o el
+  multilínea): la versión corta pasó. Conclusión sin cambios: el alcance del
+  candidato no lo mueve el trabajo de las tareas; la salida sigue siendo la
+  Estrategia de entrega (trocear o publicar), decisión del usuario, o `D`.
