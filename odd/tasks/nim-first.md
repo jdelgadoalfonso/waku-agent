@@ -828,3 +828,15 @@ Commits landed (rama `nim-first`):
   ya documenta la Estrategia de entrega, no un hallazgo nuevo de T7. Y una deriva
   que T7 no causa ni arregla: `docs/status.md:43` dice "0.1.8 is on PyPI" mientras
   el literal es `0.1.9`; material de T9.
+- **L44** (quinto candidato declinado, 2026-11-03, tras T7): el usuario pidió
+  reintentar la compuerta. `inspect` volvió a ofrecer `start` sobre el mismo
+  candidato de rama (`sha256:ef8cb2868…`, base `4b69b321` = `origin/main`,
+  `committed-only`) y el `START` se resolvió **declinado en el host**:
+  `changed_files: 414`, `changed_lines: 87.257`, `risk_level: high`, evidencia
+  `authentication in nim/src/google_auth.nim` y `shell scripting in
+  .github/workflows/nim.yml`, `lenses_required: false`, `lineage_created: false`,
+  `mutation_performed: false`, `reset_eligible: false`. Tercera medición idéntica
+  salvo el movimiento por commits (L38, L40, L42 → L44). Nada que reintentar: la
+  compuerta no la abre el trabajo de las tareas, la abre mover `origin/main`, y
+  `main` está protegido. Las dos salidas siguen siendo la Estrategia de entrega
+  (trocear la rama o publicar) o `D` para esta copia.
