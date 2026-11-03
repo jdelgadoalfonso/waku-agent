@@ -12,10 +12,12 @@ para después. `hosted/` queda en Python, sin tocar.
 proveedor. **T4a, T4b, T4c-1 y T4c-2 están landed** (`f834ffd`, `f526360` y
 `57c60fb` para el build del tenant que la mudanza rompió; T4c-1 en `b30f400`;
 **T4c-2 en `1524a45`**), así que **T4 está cerrada**: las dos mitades leen
-`data/integrations.toml`. **T5 está landed** en `de4348b` (registro en `L39`).
-T7, T8 y T9 sin empezar. **Los writers de esta feature murieron cuatro veces con
-el proveedor caído** (L19, L33, L34, L36 y L39) y las dos últimas rebanadas las
-ejecutó el padre inline sobre la salida parcial, verificada como evidencia.
+`data/integrations.toml`. **T5 está landed** en `de4348b` (registro en `L39`) y
+**T8 en `91750b2`** (L41). **T7 está landed** en `ab67676` (L43): "una versión"
+quiere decir un literal editable por mitad, sin exigir igualdad. Solo T9 queda
+sin empezar. **Los writers de esta feature murieron seis veces con el proveedor
+caído** (L19, L33, L34, L36, L39 y L43) y las últimas rebanadas las ejecutó el
+padre inline sobre la salida parcial, verificada como evidencia.
 
 El review nativo sigue rechazando el alcance por defecto
 (`lens_context_budget_exceeded`), y el 2026-10-31 se estableció por qué el troceo
@@ -32,7 +34,9 @@ usuario de no publicar), que es lo único que mueve `origin/main` y con él la b
 del review; (3) **T4 cerrada con T4c-2 landed** (`1524a45`) y **T5 landed** (`de4348b`), que
 reapuntó y portó los guardarraíles de diseño y brand mark —con la roja de los
 logos por key que dejaba `test_static_assets` cerrada en el mismo commit—; sigue
-T8, que porta a Nim el `--check` de `.env.example`; (4) T7;
+T8, que porta a Nim el `--check` de `.env.example` (landed en `91750b2`);
+(4) **T7 cerrada** (`ab67676`), con la regla por mitad decidida por el usuario y
+registrada en L43;
 (5) la decisión sobre la roja de `test_tls`; (6) T3b y T6 en cuanto vuelva la cuota
 del proveedor de subagentes (L19, L33, L36); (7) la **verificación independiente de
 T4c-1**, que sigue sin poder correr (L34): la de T4c-2 **sí corrió** y encontró una
@@ -160,8 +164,9 @@ la superficie de rutas.
 
 Lo que **no** está cubierto hoy en Nim: el índice de `docs/`, la regla de emojis,
 los links del rulebook, los topes de gotchas y status, el playbook de `lab/`, la
-licencia ELv2, la validación de skills, la versión cruzando las dos mitades, y
-y `.env.example` contra el árbol, cerrado por T8.
+licencia ELv2, la validación de skills, y `.env.example` contra el árbol, cerrado
+por T8. La versión cruzando las dos mitades la cerró T7, con la regla contraria a
+la que se suponía: no se exige igualdad, se exige un literal por mitad.
 
 ## Tasks
 
@@ -199,6 +204,7 @@ Commits landed (rama `nim-first`):
 | `1524a45` | `refactor(integrations): read the Nim connection registry from data/integrations.toml` — T4c-2 |
 | `de4348b` | `test(guards): port the brand mark and the logo invariant to Nim` — T5 |
 | `91750b2` | `test(guardrails): pin .env.example against the registry in Nim` — T8 |
+| `ab67676` | `test(guardrails): pin one version literal per half instead of one number` — T7 |
 
 ## Log
 
@@ -777,3 +783,48 @@ Commits landed (rama `nim-first`):
   multilínea): la versión corta pasó. Conclusión sin cambios: el alcance del
   candidato no lo mueve el trabajo de las tareas; la salida sigue siendo la
   Estrategia de entrega (trocear o publicar), decisión del usuario, o `D`.
+- **L43** (T7 landed, 2026-11-03): la decisión, primero. T7 pedía "definir ·una
+  versión· en un repo Nim-first", y eso no se resuelve leyendo código: hoy Nim
+  dice `0.0.1` (`nim/waku.nimble:10`) y la mitad Python dice `0.1.9`
+  (`waku/__init__.py:11`), y **ningún pin cruzaba las dos mitades**. Las tres
+  salidas se pusieron sobre la mesa con su costo, y el usuario eligió:
+  **"Dos fuentes, una por mitad, sin exigir igualdad"**. La regla quedó escrita en
+  el pin, no en una nota: un literal editable **por mitad**, y las mitades quedan
+  libres de coincidir o de diferir. Forzar la igualdad habría obligado a tocar la
+  mitad congelada (S1) cada vez que el binario sube, y habría puesto a los tres
+  workflows de release de Python —que reescriben `__version__`— a mover la
+  versión del binario Nim; una `VERSION` en la raíz lo había sido todo lo
+  contrario: la más limpia en teoría y la única que obliga a reescribir esos
+  workflows y a abandonar el `dynamic` de `pyproject.toml`.
+  **Qué se construyó.** El port de S3 vive en `nim/tests/test_version.nim` como
+  segunda suite, `"one version literal per half"`: los tres hechos de
+  `test_version.py` leídos del árbol (el `[project]` de `pyproject.toml` no
+  declara versión y la lista en `dynamic`; `[tool.hatch.version] path` es
+  `waku/__init__.py`; el literal de la mitad Python es `^\d+\.\d+\.\d+$`), con un
+  lector TOML de línea para las dos tablas —no un parser— y sin escaneo de todo
+  el árbol, que sería alcance no pedido y frágil. Y el hecho nuevo que la regla
+  necesita: la fila de CI de `AGENTS.md` decía "a second version number", que ya
+  es falso, así que dice "a second version literal in either half" y nombra los
+  dos guardarraíles. Un pin en `nim/tests/test_repo_docs.nim` sostiene esa fila
+  (T3 es su casa), porque una fila que deja de nombrar un guardarraíl deja de
+  proteger algo. **El writer murió por sexta vez** (`auth`) dejando 186 líneas
+  escritas en 3 archivos y sin reporte; el padre las verificó como evidencia y las
+  commiteó sin reescribirlas.
+  **Evidencia.** Roja real, no simulada: revertir la fila en una copia `mktemp`
+  hace fallar el pin con "the CI table must name both version guards in one row;
+  it names 0 such rows", y restaurarla lo pone verde. Cuatro mutaciones en la
+  copia, cada una cae por su propio hecho: `version = "9.9.9"` bajo `[project]`
+  → "pyproject keeps the version dynamic…"; el `path` de hatch apuntando a otro
+  archivo → "hatchling reads the Python half's version from the package"; `0.1`
+  en la mitad Python → "not a release number: 0.1"; y el `nimble` con una segunda
+  copia sigue cayendo en el pin que ya existía. `make nim-test`: **1.373 `[OK]`,
+  una sola roja, `test_tls`**, que aborta la corrida en la suite 65 de 75; las 10
+  que quedaron sin correr se corrieron una por una (**222 `[OK]`, 0 rojas**), y
+  `test_tls` se reprodujo con el mismo pin en un `git archive HEAD` limpio, así
+  que sigue siendo pre-existente y ajena. `pytest test_rulebook.py test_version.py`
+  → 20 passed, y `test_version.py` quedó **sin tocar** (`git diff --name-only`).
+  **Residual honesto.** El aviso de tamaño de rebanada que imprime el harness en
+  cada commit (257 commits, 70.314 líneas sobre `origin/main`) es la condición que
+  ya documenta la Estrategia de entrega, no un hallazgo nuevo de T7. Y una deriva
+  que T7 no causa ni arregla: `docs/status.md:43` dice "0.1.8 is on PyPI" mientras
+  el literal es `0.1.9`; material de T9.
