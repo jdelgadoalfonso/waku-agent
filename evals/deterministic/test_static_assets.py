@@ -11,19 +11,23 @@ can catch without a browser."""
 from __future__ import annotations
 
 import re
+import tomllib
 from pathlib import Path
 
-from waku.integrations import INTEGRATIONS
-from waku.tools import treg
-
-STATIC = Path(__file__).resolve().parents[2] / "data" / "static"
+ROOT = Path(__file__).resolve().parents[2]
+STATIC = ROOT / "data" / "static"
+CONNECTION_REGISTRY = ROOT / "data" / "integrations.toml"
 INDEX = (STATIC / "index.html").read_text()
 JS_FILES = sorted((STATIC / "js").glob("*.js"))
 JS_SRC = "\n".join(f.read_text() for f in JS_FILES)
-# The registry's cards, plus the MCP sign-in cards (spec 007 E), which are not
-# .env integrations and so are not in the registry.
-CONNECTION_LOGOS = ({f"{integration.key}.svg" for integration in INTEGRATIONS}
-                    | {f"{treg.NAME}.svg"})
+# The keys come from `data/integrations.toml`, the registry both halves read --
+# not from Python's `INTEGRATIONS`, which is the Python-only view (it drops every
+# row without "python" in its `halves`), so a Nim-only row such as `obsidian`
+# could never be satisfied by it. The MCP sign-in cards are rows in the same
+# file, so nothing is added on the side.
+CONNECTION_LOGOS = {
+    f"{key}.svg" for key in tomllib.loads(CONNECTION_REGISTRY.read_text())
+}
 
 # JS keywords / builtins / DOM globals an inline handler may call without a js/
 # definition. Kept small on purpose — anything else must be a real app function.

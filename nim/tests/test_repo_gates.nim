@@ -19,7 +19,7 @@
 ## anywhere else — the same anchoring as `test_version.nim` and
 ## `test_embed.nim`, and the reason no pin below names a relative path.
 
-import std/[algorithm, os, re, strutils, tables, unittest]
+import std/[algorithm, os, re, sets, strutils, tables, unittest]
 
 import ../src/mcp # `sha256Hex`, for the design copies (pin D)
 
@@ -87,6 +87,28 @@ const
     ## file are read: a table that names a workflow nobody added is the
     ## same silent gap as a gate that never runs.
 
+  BrandMaster = "data/static/waku-mark.svg"
+    ## The one file the dashboard paints through a CSS mask, so its colour
+    ## comes from the page and one file is enough. `test_brand_mark.py:14`
+    ## names the same path.
+
+  BrandVariants = [("waku-mark-on-light.svg", "#161614"),
+      ("waku-mark-on-dark.svg", "#C9CDD1")]
+    ## `docs/brand/<name>` and the ink each must state outright, written
+    ## down exactly as `test_brand_mark.py:15-18` writes its dict down. A
+    ## README SVG that inherits its colour renders as nothing on one theme.
+
+  BrandDir = "docs/brand"
+    ## Where the two README inks live.
+
+  ConnectionLogoDir = "data/static/logos/connections"
+    ## The home of the connection card logos, one per registry key.
+
+  IntegrationsToml = "data/integrations.toml"
+    ## The connection registry both halves read. It is the set the logos
+    ## answer to, NOT Python's `INTEGRATIONS`: that tuple is the Python-only
+    ## view, so a Nim-only row could never be satisfied by it.
+
 let
   DeclHead = re("^(" & DeclKeywords.join("|") &
       ")[ \t]+([A-Za-z_][A-Za-z0-9_]*)")
@@ -100,6 +122,16 @@ let
   HashLine = re"^([0-9a-f]{64})  (\S+)$"
     ## One `sha256  name` line of a `sha256sum` listing, which is how
     ## `design/SOURCE.md` records the master's digests.
+
+  FirstGeometry = re("\\sd=\"([^\"]+)\"")
+    ## The first `d="…"` outline of an SVG, the search `test_brand_mark.py`
+    ## runs at `:21-23`. The leading `\s` is deliberate: there is no
+    ## `d` attribute without whitespace before it.
+
+  RowHeader = re("^\\[([a-z0-9_]+)\\]\\s*$")
+    ## One `[key]` row header of `data/integrations.toml`. A
+    ## `[[key.env]]` array below it does not match: the second `[` is not in
+    ## the capture, and neither is the `.`.
 
 proc capture(line: string, pattern: Regex): seq[string] =
   ## The pattern's two captures on this line, or an empty seq when the line
@@ -366,6 +398,121 @@ proc tableRows(markdown: string, heading: string): seq[seq[string]] =
       result.add(cells)
     elif result.len > 0 and line.len > 0 and not line.startsWith("#"):
       break
+
+# --- pin F and G: the brand mark and the connection logos ------------------
+
+proc firstGeometry(svg: string): string =
+  ## The first `d="…"` outline in an SVG, with colour and layout stripped —
+  ## the same search `test_brand_mark.py:21-23` runs. An SVG with no `d`
+  ## attribute reads as `""`, and the pin below says so, so a file that lost
+  ## its geometry cannot compare equal to a master that also lost its own.
+  # `capture` leans on `match`, and this `re` module hands `match` PCRE's
+  # ANCHORED flag: it only matches a pattern that opens the string. A search
+  # for a `d=` anywhere in the file is `find`, which is the `re.search`
+  # `test_brand_mark.py` runs. Captures land from index 0 (see `capture`),
+  # and `FirstGeometry` has one group, so it is at index 0.
+  var groups = newSeq[string](1)
+  if find(svg, FirstGeometry, groups) >= 0:
+    return groups[0]
+  ""
+
+proc tomlRowKeys(source: string): seq[string] =
+  ## The keys `data/integrations.toml` declares as rows, in file order: one
+  ## `[key]` line each, never the `[[key.env]]` arrays nested under it. This
+  ## is the registry BOTH halves read, so it is the set a logo must exist for.
+  for line in source.splitLines():
+    let groups = capture(line, RowHeader)
+    if groups.len == 2:
+      result.add(groups[0])
+
+proc connectionLogos(): seq[string] =
+  ## The `.svg` files in the connection logo home, by name and sorted, so the
+  ## first failure a reader sees does not depend on the filesystem's order.
+  let dir = repoRoot() / (ConnectionLogoDir.replace('/', DirSep))
+  for kind, path in walkDir(dir):
+    if kind == pcFile and path.endsWith(".svg"):
+      result.add(path.extractFilename)
+  result.sort(cmp[string])
+
+suite "phase 9b-1 the brand mark and the connection logos":
+  test "the three copies of the mark draw the same bird":
+    # `test_brand_mark.py:26-33` ported. The dashboard paints the mark through
+    # a CSS mask and the two README inks are its variants, so one file is the
+    # master: a redraw that misses a copy is a drift nothing else catches.
+    let master = firstGeometry(readFile(repoRoot() /
+        (BrandMaster.replace('/', DirSep))))
+    assert master.len > 0, "no d= geometry in " & BrandMaster
+    for (name, ink) in BrandVariants:
+      let rel = BrandDir & "/" & name
+      let path = repoRoot() / (rel.replace('/', DirSep))
+      assert fileExists(path), "missing " & rel
+      let svg = readFile(path)
+      assert firstGeometry(svg) == master,
+        rel & " has drifted from " & BrandMaster &
+        " — regenerate it rather than editing it by hand"
+      assert ("fill=\"" & ink & "\"") in svg,
+        rel & " should paint itself " & ink
+      assert "prefers-color-scheme" notin svg,
+        rel & " must not rely on a media query — GitHub strips styling " &
+        "from README SVGs, and <picture> is what does the switching"
+
+  test "the README offers both inks":
+    # `test_brand_mark.py:36-41` ported. The two files above exist and draw one
+    # outline; this is the pin that says the README actually hands the reader
+    # the ink that matches their theme, because a `<picture>` with one source
+    # renders the same drawing twice in the wrong colour and nothing complains.
+    let readme = readFile(repoRoot() / "README.md")
+    assert "media=\"(prefers-color-scheme: dark)\"" in readme,
+      "README.md has no dark-theme <source>: only one ink is ever offered"
+    for variant in BrandVariants:
+      assert ("docs/brand/" & variant[0]) in readme,
+        "README.md never references " & variant[0]
+
+  test "the geometry reader takes the first path and nothing else":
+    # The reader cannot be exercised by editing a brand file (the tree is
+    # read-only here), so its precision is pinned on text: the first `d` wins,
+    # two outlines must not compare equal, and a file with no `d` reads as
+    # empty rather than as an empty comparison that would pass against
+    # anything.
+    let outline = "<svg><path fill=\"#fff\" d=\"M1 2L3 4\"/></svg>"
+    let other = "<svg><path d=\"M9 9\"/></svg>"
+    assert firstGeometry(outline) == "M1 2L3 4"
+    assert firstGeometry(other) == "M9 9"
+    assert firstGeometry(outline) != firstGeometry(other),
+      "two different outlines must not compare equal"
+    assert firstGeometry("<svg></svg>") == "",
+      "a file with no d= must read as empty"
+
+  test "every registry key has exactly one connection logo":
+    # `test_static_assets.py:48-58` ported, but over `data/integrations.toml`
+    # instead of Python's `INTEGRATIONS`. That tuple is the Python-only view
+    # (it drops every row without `"python"` in `halves`), so `obsidian`, a
+    # Nim-only row, could never be satisfied by it. The shared registry is the
+    # file both halves read, so it is the set the logos answer to — and a logo
+    # without a key, or a key without a logo, fails here.
+    # `treg` needs no special case: it is a row in that same file.
+    let expected = tomlRowKeys(readFile(repoRoot() /
+        (IntegrationsToml.replace('/', DirSep))))
+    let actual = connectionLogos()
+    assert expected.len > 0, "no rows read from " & IntegrationsToml
+    var expectedSet = initHashSet[string]()
+    for key in expected:
+      expectedSet.incl(key & ".svg")
+    let actualSet = actual.toHashSet
+    var absent: seq[string] = @[]
+    for name in expectedSet:
+      if name notin actualSet:
+        absent.add(name)
+    absent.sort(cmp[string])
+    var orphan: seq[string] = @[]
+    for name in actualSet:
+      if name notin expectedSet:
+        orphan.add(name)
+    orphan.sort(cmp[string])
+    assert absent.len == 0,
+      "no " & ConnectionLogoDir & "/<key>.svg for: " & $absent
+    assert orphan.len == 0,
+      "these logos have no key in " & IntegrationsToml & ": " & $orphan
 
 suite "phase 9b-1 the trees nim/ may not reach":
   test "no module imports examples/ or lab/":
