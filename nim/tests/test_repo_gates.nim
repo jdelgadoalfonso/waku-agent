@@ -21,6 +21,8 @@
 
 import std/[algorithm, os, re, sets, strutils, tables, unittest]
 
+import ../src/integrations # `renderEnvExampleBlock`, for the T8 pin
+import ../src/providers   # `loadProviders`, for the T8 pin
 import ../src/mcp # `sha256Hex`, for the design copies (pin D)
 
 type
@@ -702,3 +704,54 @@ suite "phase 9b-1 the repo gates this suite reads":
   test "the gate the CI table names is a workflow in the tree":
     assert fileExists(repoRoot() / NimGate.replace('/', DirSep)),
       "AGENTS.md points at " & NimGate & ", which is not in the tree"
+
+suite "phase nim-first t8 the committed .env.example against the registry":
+  ## T8 ports the pin CI runs as `scripts/generate_env_example.py --check`
+  ## (`.github/workflows/validate-skills.yml`): the generated Connections
+  ## section of `.env.example` must equal the render of the registry,
+  ## `waku.integrations.render_env_example_block()` — provider rows from
+  ## `data/providers.toml` (where `waku.loop.models.PROVIDERS` has read
+  ## them since T4a) plus the static integrations, in registry order.
+  ## The Nim port reads the same file and renders with the byte-parity
+  ## port, so the guard survives the Python half's retirement holding the
+  ## same fact: block drift fails, a missing marker fails loudly.
+
+  const
+    BeginMarker = "# BEGIN GENERATED CONNECTIONS"
+    EndMarker = "# END GENERATED CONNECTIONS"
+
+  test "the generated Connections block equals the registry render":
+    let path = repoRoot() / ".env.example"
+    assert fileExists(path), ".env.example is not at the repo root"
+    let contents = readFile(path)
+    let begin = contents.find(BeginMarker)
+    let finish = contents.find(EndMarker)
+    assert begin >= 0,
+      ".env.example is missing generated Connections markers: no " &
+      BeginMarker
+    assert finish >= 0,
+      ".env.example is missing generated Connections markers: no " &
+      EndMarker
+    assert begin < finish,
+      ".env.example has the generated Connections markers in the wrong order"
+    # The Python checker splices the render between the markers and
+    # leaves everything after EndMarker untouched, so the fact is exactly
+    # the text from BeginMarker through EndMarker. The render ends with a
+    # newline after the marker; the spliced block does not.
+    let committed = contents[begin ..< finish + EndMarker.len] & "\n"
+    let rendered = renderEnvExampleBlock(
+      loadProviders(repoRoot() / "data" / "providers.toml"),
+      envExampleIntegrations(parseIntegrationRows(
+        readFile(repoRoot() / "data" / "integrations.toml"))))
+    var firstDiff = 0
+    let committedLines = committed.splitLines()
+    let renderedLines = rendered.splitLines()
+    while firstDiff < min(committedLines.len, renderedLines.len) and
+        committedLines[firstDiff] == renderedLines[firstDiff]:
+      inc firstDiff
+    assert committed == rendered,
+      "the generated Connections block in .env.example is out of date: " &
+      "first differing line " & $(firstDiff + 1) & ", committed has " &
+      $committedLines.len & " lines and the render has " &
+      $renderedLines.len & " lines (run scripts/generate_env_example.py " &
+      "--write, or re-port the renderer)"

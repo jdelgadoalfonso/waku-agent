@@ -44,8 +44,10 @@
 ##   does NOT do: `create_event` writes the local SQLite + ICS only, and
 ##   Python's `sync_to_google_calendar` is unported. The row text stays byte-
 ##   identical anyway, because `renderEnvExampleBlock` must reproduce
-##   `.env.example` (generated from the Python registry) and a per-port string
-##   would break that. The READ half IS ported: `google_calendar.nim` answers
+##   `.env.example`, and that file is the PYTHON half's render (provider rows
+##   from `data/providers.toml` plus the rows `data/integrations.toml` marks
+##   for Python, which is why it names notion, treg and typesafe but never
+##   obsidian). A per-port string would break that. The READ half IS ported: `google_calendar.nim` answers
 ##   `list_events` from the signed-in primary calendar, so the sentence a
 ##   Nim user reads on screen overstates the WRITE path only. See
 ##   `nim/README.md` and `docs/integrations.md`.
@@ -544,15 +546,28 @@ proc providerLabel*(p: Provider, name: string): string =
   if p.label.len > 0: p.label else: titleCase(name)
 
 proc integrationFromProvider*(p: Provider): Integration =
-  ## Port of `_integration_from_provider`: one secret API Key field named
-  ## after the row's key var. The Base URL choice field is deliberately
-  ## absent — Nim `Provider` carries no regional endpoints.
+  ## Port of `_integration_from_provider`: a secret API Key field named
+  ## after the row's key var, plus — for a row that sets both `base_url_env`
+  ## and `endpoints` — a Base URL `CHOICE` field offering every regional
+  ## endpoint. Python's registry data has carried the second field since the
+  ## registry moved to `data/`; the committed `.env.example` renders it for
+  ## minimax, moonshot and zhipu, so a reader that dropped it could never
+  ## reproduce that file.
   let label = providerLabel(p, p.name)
   let keyEnv = p.keyEnv
+  var fields = @[EnvField(name: keyEnv, label: "API Key", secret: true)]
+  if p.baseUrlEnv.len > 0 and p.endpoints.len > 0:
+    var options: seq[string] = @[]
+    var optionLabels: seq[string] = @[]
+    for endpoint in p.endpoints:
+      options.add(endpoint.baseUrl)
+      optionLabels.add(endpoint.label)
+    fields.add(EnvField(name: p.baseUrlEnv, label: "Base URL",
+      kind: choiceField, default: p.baseUrl, options: options,
+      optionLabels: optionLabels))
   Integration(key: p.name, group: "AI Providers", name: label,
     what: "Uses " & label & " models.",
-    env: @[EnvField(name: keyEnv, label: "API Key", secret: true)],
-    extra: "", importName: "", setupUrl: "", reload: agent,
+    env: fields, extra: "", importName: "", setupUrl: "", reload: agent,
     enabled: keyEnabled(keyEnv))
 
 proc isVisibleIn*(p: Provider, env: Table[string, string]): bool =
@@ -583,6 +598,24 @@ proc envExampleProviders*(providers: seq[Provider]): seq[Integration] =
   for p in providers:
     if not p.hiddenUnlessEnv:
       result.add(integrationFromProvider(p))
+
+proc envExampleIntegrations*(rows: seq[IntegrationRow]): seq[Integration] =
+  ## The static rows of the PYTHON half, in file order: what
+  ## `load_integrations` builds (`"python" in row["halves"]`) and therefore
+  ## what the committed `.env.example` names. Its registry is not this
+  ## half's: `obsidian` is `halves = ["nim"]` and never appears there, while
+  ## `notion`, `treg` and `typesafe` are python-only and always do. Rendering
+  ## `INTEGRATIONS` here would describe a file the repo does not commit.
+  ##
+  ## The `enabled`/`normalize` closures are left nil on purpose: the committed
+  ## file only carries declarative text, so no half's Python behaviour is
+  ## needed to reproduce it.
+  for row in rows:
+    if "python" notin row.halves:
+      continue
+    result.add(Integration(key: row.key, group: row.group, name: row.name,
+      what: row.what, env: row.env, extra: row.extra,
+      importName: row.importName, setupUrl: row.setupUrl, reload: row.reload))
 
 proc gatewayEnvFields*(): seq[(string, seq[string])] =
   ## The registry rows the gateway supervisor owns, as the `envFields`
@@ -693,10 +726,17 @@ proc listConnections*(providers: seq[Provider], env: Table[string, string],
     if view.group != "AI Providers":
       result.add(view)
 
-proc renderEnvExampleBlock*(providers: seq[Provider]): string =
+proc renderEnvExampleBlock*(providers: seq[Provider],
+    statics: seq[Integration]): string =
   ## Byte-parity port of `render_env_example_block`: the deterministic
   ## Connections section of `.env.example`, provider rows (hidden rows
-  ## unconditionally skipped) then statics, in registry order.
+  ## unconditionally skipped) then the static rows, in registry order.
+  ##
+  ## `statics` is a parameter because the committed file is the PYTHON half's
+  ## render, while this half's own registry is `INTEGRATIONS`. The repo-gate
+  ## pin (T8) passes `envExampleIntegrations` over `data/integrations.toml`,
+  ## which is what makes the two files comparable; a caller that wants this
+  ## half's view passes `INTEGRATIONS`.
   var lines: seq[string] = @[
     "# BEGIN GENERATED CONNECTIONS",
     "# Generated by scripts/generate_env_example.py; definitions live in waku/integrations.py",
@@ -704,7 +744,7 @@ proc renderEnvExampleBlock*(providers: seq[Provider]): string =
     "WAKU_PROVIDER=anthropic",
   ]
   var group = ""
-  for integration in envExampleProviders(providers) & INTEGRATIONS:
+  for integration in envExampleProviders(providers) & statics:
     if integration.group != group:
       group = integration.group
       lines.add("")

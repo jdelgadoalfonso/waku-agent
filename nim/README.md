@@ -516,7 +516,11 @@ episode; `settle` waits for the graph to stop growing, not just the episodes.
   dispatch. The closures a row cannot carry as data (`enabled`,
   `normalize`) live in a `BEHAVIOUR` table keyed by row key, and a row for
   this half with no entry — or an entry with no row — is refused by name.
-  No pip-extra check (single binary) and no regional Base URL field.
+  No pip-extra check (single binary). Regional Base URLs are read from the
+  `[[name.endpoints]]` tables and render as the same `CHOICE` field Python
+  offers, because the committed `.env.example` carries them.
+  `test_repo_gates.nim` pins that file against the registry, which is the
+  fact `scripts/generate_env_example.py --check` holds in CI.
 - `tests/test_phase0.nim` tests the env overrides, the `.env` parser and the
   command table offline.
 - `tests/test_tls.nim` pins the conditional TLS contract in BOTH build

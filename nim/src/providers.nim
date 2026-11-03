@@ -13,6 +13,12 @@ import std/strutils
 import std/tables
 
 type
+  Endpoint* = tuple[label, baseUrl: string]
+    ## One `[[name.endpoints]]` table: a regional base URL and the label the
+    ## connections page offers for it. Python carries the same pair on its
+    ## `Endpoint` dataclass; the `.env.example` renderer turns the list into
+    ## one Base URL `CHOICE` field.
+
   Provider* = object
     ## One row of `data/providers.toml`. Empty string means the row sets
     ## nothing and the reader falls back, like the Python dataclass.
@@ -20,6 +26,7 @@ type
     kind*: string            ## wire format: "anthropic" or "openai"
     keyEnv*: string          ## env var holding the key
     baseUrl*: string
+    endpoints*: seq[Endpoint] ## regional base URLs, in file order
     model*: string           ## loop default
     smallModel*: string      ## gate + consolidation default
     catalogUrl*: string
@@ -107,23 +114,50 @@ proc stripInlineComment*(line: string): string =
   return line
 
 proc parseProviders*(text: string): seq[Provider] =
-  ## Parse the registry TOML subset. Unknown keys, `[[array]]` tables and
-  ## non-string values are skipped, never fatal.
+  ## Parse the registry TOML subset. Unknown keys and non-string values are
+  ## skipped, never fatal. `[[name.endpoints]]` tables are the one array
+  ## shape this reader keeps: each one appends an `Endpoint` to the row
+  ## above it, because the committed `.env.example` renders a Base URL
+  ## choice per endpoint.
   var inArray = false
+  var inEndpoints = false
+    ## Inside a `[[name.endpoints]]` table: keys go to the endpoint of the
+    ## row NAMED in that header, not to whichever row came last.
+  var endpointOwner = -1
+    ## Index of the provider row the current endpoint table belongs to.
   for rawLine in text.splitLines():
     let line = stripInlineComment(rawLine.strip())
     if line.len == 0 or line.startsWith("#"):
       continue
     if line.startsWith("["):
-      # Any bracket line skips its section unless it is a valid table
-      # header, so a malformed header can never merge keys into the
-      # previous provider row.
+      # Any bracket line ends the previous table, so a malformed header can
+      # never merge keys into the row above it.
       inArray = true
-      if not line.startsWith("[[") and line.endsWith("]"):
+      inEndpoints = false
+      if line.startsWith("[[") and line.endsWith("]]") and line.len > 4 and
+          line[2 ..< ^2].strip().endsWith(".endpoints"):
+        # `[[minimax.endpoints]]` names the row it belongs to. `tomllib`
+        # reads it as a key of a `minimax` table, so a header with no
+        # `[minimax]` above it still produces that row — with defaults.
+        let inner = line[2 ..< ^2].strip()
+        let owner = inner[0 ..< inner.len - ".endpoints".len]
+        inEndpoints = true
+        endpointOwner = -1
+        for i in countdown(result.high, 0):
+          if result[i].name == owner:
+            endpointOwner = i
+            break
+        if endpointOwner < 0:
+          result.add(defaultProvider(owner))
+          endpointOwner = result.high
+        result[endpointOwner].endpoints.add((label: "", baseUrl: ""))
+      elif not line.startsWith("[[") and line.endsWith("]"):
         inArray = false
         result.add(defaultProvider(line[1 ..< ^1].strip()))
       continue
-    if inArray or result.len == 0:
+    if inArray and not inEndpoints:
+      continue
+    if result.len == 0:
       continue
     let eq = line.find('=')
     if eq <= 0:
@@ -131,6 +165,13 @@ proc parseProviders*(text: string): seq[Provider] =
     let key = line[0 ..< eq].strip()
     let rawValue = line[eq + 1 .. ^1].strip()
     let (ok, value) = unquote(rawValue)
+    if inEndpoints:
+      if ok and endpointOwner >= 0:
+        if key == "label":
+          result[endpointOwner].endpoints[^1].label = value
+        elif key == "base_url":
+          result[endpointOwner].endpoints[^1].baseUrl = value
+      continue
     if ok:
       setStringField(result[^1], key, value)
     elif rawValue == "true" or rawValue == "false":

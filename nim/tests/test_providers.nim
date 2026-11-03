@@ -138,3 +138,51 @@ suite "phase 0b missing-key message":
     assert "https://console.anthropic.com/settings/keys" in msg
     assert "/home/u/proj/.env" in msg
     assert "openai" in msg
+
+suite "nim-first t8 regional endpoints":
+  ## `[[name.endpoints]]` tables, which `parseProviders` used to skip as
+  ## "not registry data". The committed `.env.example` renders one Base URL
+  ## choice row per endpoint (minimax, moonshot, zhipu), so a provider row
+  ## that carries them has to come through the reader.
+  test "a provider row keeps its endpoints in file order":
+    let probed = parseProviders("""
+[minimax]
+kind = "anthropic"
+key_env = "MINIMAX_API_KEY"
+base_url = "https://api.minimaxi.com/anthropic"
+base_url_env = "MINIMAX_BASE_URL"
+
+[[minimax.endpoints]]
+label = "China"
+base_url = "https://api.minimaxi.com/anthropic"
+
+[[minimax.endpoints]]
+label = "Global"
+base_url = "https://api.minimax.io/anthropic"
+""")
+    assert probed.len == 1
+    assert probed[0].endpoints.len == 2
+    assert probed[0].endpoints[0].label == "China"
+    assert probed[0].endpoints[0].baseUrl == "https://api.minimaxi.com/anthropic"
+    assert probed[0].endpoints[1].label == "Global"
+    assert probed[0].endpoints[1].baseUrl == "https://api.minimax.io/anthropic"
+
+  test "a row without endpoints carries none, and a later table starts clean":
+    let probed = parseProviders("""
+[anthropic]
+kind = "anthropic"
+key_env = "ANTHROPIC_API_KEY"
+
+[[minimax.endpoints]]
+label = "China"
+base_url = "https://api.minimaxi.com/anthropic"
+
+[openai]
+kind = "openai"
+key_env = "OPENAI_API_KEY"
+""")
+    assert probed.len == 3
+    assert probed[0].endpoints.len == 0, "anthropic inherited minimax endpoints"
+    assert probed[1].name == "minimax"
+    assert probed[1].endpoints.len == 1
+    assert probed[2].endpoints.len == 0, "openai inherited minimax endpoints"
