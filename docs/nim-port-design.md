@@ -1,8 +1,9 @@
 # Nim port — system design (proposal)
 
-Status: PROPOSED. No Nim code yet. This doc needs a maintainer yes before any
-code lands under `nim/` (conventions §2: new top-level package + loop, memory,
-graph and tool-contract changes).
+Status: LANDED, kept as the record of what was proposed and why. Phases 0-9c
+run from `nim/`, and the binary is the front door and the Python half frozen
+(see [AGENTS.md](../../AGENTS.md)); read the tenses below as the proposal they
+were.
 
 Scope: a full 1:1 port of Waku into Nim, living in `nim/` beside `waku/`,
 distributed as a single binary, fully compatible with existing runtime data.
@@ -15,8 +16,9 @@ startup and lower memory, while reading and writing the same `.waku/`
 directory, `state.db`, `providers.toml` and CLI surface.
 
 Non-goals for v1: no new features, no format migrations, no replacement of
-`waku/` in the wheel. Python stays the source of truth until the Nim binary
-passes the ported deterministic evals phase by phase.
+`waku/` in the wheel. Python stayed the source of truth while the port passed
+the ported deterministic evals phase by phase; that phase is over, and the two
+halves are now free to differ.
 
 ## 2. Where the code goes
 

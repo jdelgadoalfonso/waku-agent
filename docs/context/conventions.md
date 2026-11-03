@@ -39,17 +39,22 @@ the rung above cannot do the job:
    Python, and it costs no context until the model needs it.
 3. **A CLI and a README.** Waku can already run any program on your machine,
    and a command-line tool with docs beside it costs nothing until it is used.
-4. **A tool behind an extra**: `waku/tools/`, with heavy dependencies gated by
-   an extra and off by default.
-5. **A gateway**: one file in `waku/gateway/`. Gateways only move text: in
-   through `waku.respond()` and out again, with no memory, tools or loop logic.
-6. **A new core tool, as a last resort.** It has to earn its place in every
-   prompt.
+4. **A capability behind a build flag**: `nim/src/`, with the heavy dependency
+   or the network path off unless the build turns it on. `make nim-build-tls`
+   is the precedent: the flag is what admits the capability.
+5. **A gateway**: one file beside `nim/src/gateway.nim` (`telegram.nim`,
+   `discord.nim` and `whatsapp.nim` are the precedent). Gateways only move
+   text: in through the runner and out again, with no memory, tools or loop
+   logic.
+6. **A new core tool, as a last resort.** It registers through
+   `nim/src/tools.nim`, and it has to earn its place in every prompt.
 
-The ladder has no rung for a new top-level package (like `waku/graph/`). That
-is an architecture decision and needs a proposal (§2). `hosted/` is a
-deployment of waku, not new capability inside it, so it sits on no rung of
-this ladder either.
+This is the ladder for `nim/`. `waku/` is frozen (nim-first S1): it takes no
+new capability of any rung, and what it does today it keeps doing. `hosted/` is
+a deployment of waku, not new capability inside it, so it sits on no rung of
+this ladder either. The ladder has no rung for a new top-level package
+(`nim/src/graph/` is the one that exists). That is an architecture decision and
+needs a proposal (§2).
 
 ## 4. Testing
 

@@ -16,7 +16,8 @@ never tell the user a fact is there unless a tool's output says so.
 
 Connecting opens the user's browser, so you cannot do it for them. Tell them to
 type `/connect waku-memory` in the dashboard chat, or to run
-`waku connect waku-memory` in a terminal. It needs the MCP extra:
+`waku connect waku-memory` in a terminal. The binary needs nothing installed on
+top; only someone running the frozen Python half needs its MCP extra:
 `pip install 'waku-agent[mcp]'`. After it connects, a restart of Waku loads the
 `waku_memory_*` tools.
 

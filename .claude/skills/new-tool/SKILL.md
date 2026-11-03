@@ -5,8 +5,9 @@ description: Add a new tool to Waku the right way — schema, safe execution, de
 
 ## Procedure
 
-1. One file per tool in `waku/tools/`, exposing `make_tool(...) -> Tool`.
-   Copy the shape of `waku/tools/calendar.py` (the reference implementation).
+1. One file per tool in `nim/src/`, building a `Tool` and handing it to
+   `register(reg, tool)` from `nim/src/tools.nim`. `waku/tools/` is the frozen
+   Python half: it takes no new tool.
 2. The tool function must be:
    - **Idempotent** where repeat calls could occur (check-before-insert, like
      create_event's title+start guard).
@@ -15,11 +16,14 @@ description: Add a new tool to Waku the right way — schema, safe execution, de
      tool doesn't have.
    - **Local-first by default**: write to `.waku/` or state.db; real external
      services go behind env-gated adapters.
-3. Register it in `waku/tools/__init__.py:build_registry`.
-4. Add deterministic eval coverage in `evals/deterministic/`:
-   - offline: scripted client fires the tool → assert the artifact (DB row/file)
-   - a dataset case in `evals/dataset.jsonl` for the live tier
-5. If the tool needs usage guidance, add a rule to DEFAULT_SOUL
-   (`waku/runtime/session.py`) or a skill in `skills/`.
+3. Register it in the registry the binary builds, and check that the tool list
+   the model sees still earns its place: a new core tool is the last resort,
+   and a skill is cheaper.
+4. Add deterministic coverage beside the port: a `nim/tests/test_*.nim` suite
+   that runs offline with a scripted client, fires the tool and asserts the
+   artifact (DB row or file). `evals/deterministic/` guards the frozen half and
+   the repo, not new capability.
+5. If the tool needs usage guidance, add a skill under `skills/` (validated by
+   `scripts/validate_skills.py`) instead of prose in the system prompt.
 6. Check scope first: the repo ships flagship-task tools only. New capabilities
    beyond scheduling/notes/messages should be discussed before building.
