@@ -52,7 +52,9 @@ a plugin that brought its own HTTP client would spend money Waku cannot see.
 
 ### What the plugin exports
 
-Five C functions, all `{.exportc, cdecl.}`.
+Five C functions, all `{.exportc, cdecl, dynlib.}` (`dynlib` is what
+makes the symbol dynamic — without it the name stays local and
+`symAddr` never sees it).
 
 | Export | Signature | Job |
 |---|---|---|
@@ -135,7 +137,7 @@ The producer is ordinary Nim with five exported wrappers:
 
 ```nim
 proc wakuPluginNodeRun*(node, stateJson: cstring, handle: uint64): cstring
-    {.exportc: "waku_plugin_node_run", cdecl.} =
+    {.exportc: "waku_plugin_node_run", cdecl, dynlib.} =
   try:
     result = runNode($node, $stateJson, handle).cstring
   except CatchableError as error:
