@@ -46,6 +46,12 @@
 ## `llmComplete` is metered (`kind: "plugin"`) through the observer the node
 ## call carried, so a model call behind a `.so` still lands in the trace and
 ## the spend ledger.
+##
+## Lifecycle: one handle per run. Every visit — a node AND the router on that
+## node — publishes its entry and retires it in a `finally`, so the live
+## window is begin -> end of that visit. `expireHandle` is the net for a run
+## that stopped between visits; `dashboard.pluginGraphTurn` pulls it after
+## `runGraph`, so a handle can never outlive its turn.
 
 import std/httpclient
 import std/json
@@ -168,6 +174,9 @@ proc beginHostCall*(handle: uint64, state: JsonNode, needs: seq[string],
                     notify: Observer = nil) =
   ## Publish one node call: the snapshot `stateKeys` may read, its declared
   ## capabilities, and the observer a metered model call reports through.
+  ## `notify` is nil where the caller carries no observer — a router's
+  ## `RouteFn` has none — and a nil observer is not an error: `log` then
+  ## keeps its stderr line and every capability call still answers.
   ## A no-op with no scope installed (the null table of step 2 cannot call
   ## back at all), which keeps the loader tests unchanged.
   if activeScope.isNil:
@@ -176,9 +185,26 @@ proc beginHostCall*(handle: uint64, state: JsonNode, needs: seq[string],
                                       notify: notify)
 
 proc endHostCall*(handle: uint64) =
-  ## Retire one node call. Paired with `beginHostCall` by the node wrapper
-  ## in `graph/plugins.nim`; an overlapped call for the same handle would
-  ## overwrite this entry, which is why the host documents one at a time.
+  ## Retire one node call. Paired with `beginHostCall` by the node and router
+  ## wrappers in `graph/plugins.nim`. The window a call is live for is exactly
+  ## begin -> end of one visit: nothing survives a node, so a stale entry can
+  ## only come from a wrapper that never reached its `finally`. An overlapped
+  ## call for the same handle would overwrite this entry, which is why the
+  ## host documents one at a time.
+  if activeScope.isNil:
+    return
+  activeScope.live.del(handle)
+
+proc expireHandle*(handle: uint64) =
+  ## The safety net `beginHostCall`/`endHostCall` cannot close by themselves:
+  ## a run that stopped between two nodes (a `GraphStateCollision`, a step
+  ## limit, an exception out of a router) would leave the last visit's input
+  ## reachable through its handle. One handle lives for one turn, so
+  ## `dashboard.pluginGraphTurn` drops it after `runGraph` — a later turn can
+  ## then never read this one's state, and `noLiveCall` answers every host
+  ## function asked afterwards. Idempotent: retiring an unknown handle is a
+  ## no-op, so the ordinary case (every visit already retired itself) costs
+  ## one lookup.
   if activeScope.isNil:
     return
   activeScope.live.del(handle)
@@ -386,13 +412,31 @@ proc levelName(level: int32): string =
 
 proc hostLog(handle: uint64, level: int32, message: cstring)
     {.cdecl, gcsafe.} =
-  ## Diagnostics on stderr, never stdout: stdout is the CLI's reply surface
-  ## and the gateways' terminal mirror. A nil message is ignored rather
-  ## than crashed on. No envelope — `log` answers nothing.
+  ## A plugin's diagnostics: a stderr line always, plus a `plugin_log` event
+  ## on the run's observer when a call is live for `handle`. The observer is
+  ## the engine's, already tagged with `node=`, so the trace line names the
+  ## node with no bookkeeping here; the waterfall and the receipt are closed
+  ## lists and do not show it. No live call (a plugin logging from `init`)
+  ## means stderr only: there is no run to attach the line to, and no
+  ## observer to call. Never stdout — stdout is the CLI's reply surface.
+  ## A nil message is ignored rather than crashed on. No envelope: `log`
+  ## answers nothing.
+  ##
+  ## `{.cast(gcsafe).}` for the same reason as the capability functions: the
+  ## process-wide `activeScope` lives on a heap only the wiring touches, from
+  ## the thread that installed it.
   if message.isNil:
     return
+  let text = $message
   stderr.writeLine("(plugin " & $handle & ") " & levelName(level) & ": " &
-                   $message)
+                   text)
+  {.cast(gcsafe).}:
+    if activeScope.isNil or not activeScope.live.hasKey(handle):
+      return
+    let notify = activeScope.live[handle].notify
+    if notify.isNil:
+      return
+    notify("plugin_log", %*{"level": levelName(level), "message": text})
 
 # ── the tables ────────────────────────────────────────────────────────
 

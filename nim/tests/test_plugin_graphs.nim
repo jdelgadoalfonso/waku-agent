@@ -1,4 +1,4 @@
-## Step-3 pins: the REAL host table and a graph built from a manifest.
+## Step-3/4 pins: the REAL host table and a graph built from a manifest.
 ##
 ## Offline. `fixture_graph_plugin.nim` is compiled to a temp dir with the
 ## local compiler, the model is a scripted client (the `Script` pattern from
@@ -8,9 +8,12 @@
 ## What is pinned, in order: every host function's envelope; `needs` both as
 ## a narrowed table (nulls) and as a per-call refusal; `stateKeys` per handle;
 ## `buildPluginGraph` end to end through a real `.so` (the second node sees
-## the first's output, the llm node's metered call reaches the observer); a
-## `router` decl refusing the build; fail-open for a graph whose plugin is
-## not loaded; and the registry listing `plugin:chainfx` after registration.
+## the first's output, the llm node's metered call reaches the observer, the
+## router's declarative routes jump, and `log` lands in the trace); every
+## malformed `routes` shape refused at load; a router with no routes refused
+## at build time; a handle retired after the run and expired by the safety
+## net; fail-open for a graph whose plugin is not loaded; and the registry
+## listing `plugin:chainfx` after registration.
 
 import std/json
 import std/os
@@ -89,14 +92,15 @@ proc errorOf(env: JsonNode): string =
   assert not env.jget("ok").getBool(true), "expected ok:false, got " & $env
   env.jget("error").getStr()
 
-proc buildFixture(dir, name: string): string =
+proc buildFixture(dir, name: string, extra = ""): string =
   ## Compile the graph fixture to `dir/name`; fail loudly with the compiler
-  ## output when it does not build.
+  ## output when it does not build. `extra` is the `-d:` switch a manifest
+  ## variant needs (the broken `routes` shapes).
   let nim = findExe("nim")
   assert nim.len > 0, "nim must be on PATH to build the fixture"
   let target = dir / name
-  let cmd = nim & " c --app:lib --panics:off --hints:off -o:" & target &
-    " tests/fixture_graph_plugin.nim"
+  let cmd = nim & " c --app:lib --panics:off --hints:off " & extra &
+    " -o:" & target & " tests/fixture_graph_plugin.nim"
   let (output, code) = execCmdEx(cmd)
   assert code == 0, "fixture build failed: " & output
   return target
@@ -244,18 +248,23 @@ suite "plugin graph from the manifest (step 3)":
     let plugin = loadPlugin(buildFixture(dir, "fixture_graph_plugin.so"),
                             addr table[])
     assert plugin.name == "chainfx"
-    assert plugin.nodes.len == 3
+    assert plugin.nodes.len == 5
     let g = buildPluginGraph(plugin, plugin.nodes, 7)
     assert g.describe()["name"].getStr() == "plugin:chainfx"
-    assert g.describe()["edges"].len == 4  # START->first->second->reply->END
-    var state = %*{"message": "hola"}
+    # Four chained edges (START -> first -> second -> summarize ->
+    # pick_branch, where the router ends the chain) plus the router's two
+    # conditional edges (shout, END).
+    assert g.describe()["edges"].len == 6
+    var state = %*{"message": "hola", "pick": "left"}
     discard runGraph(g, state, record(rec))
     # Node one wrote from its inKeys, node two read that outKey (and asked
     # the host, by handle, for a key it never declared), node three called
-    # the model through the host table.
+    # the model through the host table, and the router's `left` route jumped
+    # to the one branch node.
     assert state.jget("stage1").getStr() == "first:hola"
     assert state.jget("stage2").getStr() == "second:first:hola/hola"
     assert state.jget("reply").getStr() == "resumen"
+    assert state.jget("loud").getStr() == "shout:second:first:hola/hola"
     assert state["errors"].len == 0
     assert script.seen.len == 1
     assert script.seen[0]["messages"][0]["content"].getStr() ==
@@ -267,17 +276,13 @@ suite "plugin graph from the manifest (step 3)":
     assert llm["kind"].getStr() == "plugin"
     assert llm["node"].getStr() == "plugin:chainfx/summarize"
     assert llm["usage"]["in"].getInt() == 7
-
-  test "a router node refuses the graph and points at step 4":
-    let plugin = LoadedPlugin(name: "routed")
-    let decls = @[PluginNodeDecl(name: "choose", kind: "router",
-                                 inKeys: @["pick"], outKey: "", needs: @[])]
-    try:
-      discard buildPluginGraph(plugin, decls)
-      assert false, "a router decl must not build a chain"
-    except CatchableError as exc:
-      assert "router" in exc.msg
-      assert "step 4" in exc.msg
+    # `log` reaches the trace as its own event, inheriting the engine's
+    # `node=` tag, and it does NOT need `needs`: diagnostics are plumbing.
+    let logged = firstEvent(rec, "plugin_log")
+    assert not logged.isNil
+    assert logged["node"].getStr() == "plugin:chainfx/first"
+    assert logged["level"].getStr() == "info"
+    assert logged["message"].getStr() == "first ran"
 
   test "registration lists plugin:chainfx after the builtins":
     let dir = getTempDir() / "waku-plugin-step3-registry"
@@ -293,7 +298,7 @@ suite "plugin graph from the manifest (step 3)":
     assert "plugin:chainfx" in pluginGraphNames()
     let wf = pluginGraph("plugin:chainfx")
     assert not wf.isNil
-    assert wf["edges"].len == 4
+    assert wf["edges"].len == 6  # four chained + the router's two targets
     let workflows = enabledWorkflows(@["triage", "gather"])
     assert workflows.len == 3
     assert workflows[0]["name"].getStr() == "triage"
@@ -305,6 +310,104 @@ suite "plugin graph from the manifest (step 3)":
       getTempDir() / "waku-plugin-step3-nohome", false, @["triage", "gather"])
     assert section["workflows"].len == 3
     assert section["workflows"][2]["name"].getStr() == "plugin:chainfx"
+
+suite "declarative routes in the manifest (step 4)":
+
+  test "a router's routes jump to a manifest node and drain to END":
+    let dir = getTempDir() / "waku-plugin-step4-route"
+    createDir(dir)
+    let script = Script(items: @[textResp("uno"), textResp("dos")])
+    let rec = Recorder()
+    let table = newHostTable(scriptedClient(script), ToolRegistry())
+    let plugin = loadPlugin(buildFixture(dir, "fixture_graph_plugin.so"),
+                            addr table[])
+    let g = buildPluginGraph(plugin, plugin.nodes, 9)
+    # `left -> shout`: the route is a jump, so the branch node runs after the
+    # router, and the event names the graph node it landed on.
+    var left = %*{"message": "hola", "pick": "left"}
+    discard runGraph(g, left, record(rec))
+    assert left["loud"].getStr() == "shout:second:first:hola/hola"
+    assert left["errors"].len == 0
+    let routeEv = firstEvent(rec, "route")
+    assert routeEv["router"].getStr() == "plugin:chainfx/pick_branch"
+    assert routeEv["target"].getStr() == "plugin:chainfx/shout"
+    assert routeEv["reason"].getStr() == "left"
+    # `right -> END`: the run drains, the branch node never runs, and a route
+    # to END is not an unknown label.
+    var right = %*{"message": "hola", "pick": "right"}
+    discard runGraph(g, right)
+    assert not right.hasKey("loud")
+    assert right["errors"].len == 0
+
+  test "a dangling route target is refused at load":
+    let dir = getTempDir() / "waku-plugin-step4-dangling"
+    createDir(dir)
+    var table = newHostTable(scriptedClient(Script()), ToolRegistry())
+    try:
+      discard loadPlugin(buildFixture(dir, "dangling.so",
+                        "-d:routeFx=dangling"), addr table[])
+      assert false, "a route to an unknown node must not load"
+    except CatchableError as exc:
+      assert "unknown node 'nope'" in exc.msg
+
+  test "a duplicate route label is refused at load":
+    let dir = getTempDir() / "waku-plugin-step4-duplabel"
+    createDir(dir)
+    var table = newHostTable(scriptedClient(Script()), ToolRegistry())
+    try:
+      discard loadPlugin(buildFixture(dir, "duplabel.so",
+                        "-d:routeFx=duplabel"), addr table[])
+      assert false, "two routes with one label must not load"
+    except CatchableError as exc:
+      assert "duplicate route label 'left'" in exc.msg
+
+  test "routes that are not label/dst strings are refused at load":
+    let dir = getTempDir() / "waku-plugin-step4-badshape"
+    createDir(dir)
+    var table = newHostTable(scriptedClient(Script()), ToolRegistry())
+    try:
+      discard loadPlugin(buildFixture(dir, "badshape.so",
+                        "-d:routeFx=badshape"), addr table[])
+      assert false, "a non-string label must not load"
+    except CatchableError as exc:
+      assert "non-empty label string" in exc.msg
+
+  test "a router without routes is refused when the graph is built":
+    let dir = getTempDir() / "waku-plugin-step4-noroutes"
+    createDir(dir)
+    var table = newHostTable(scriptedClient(Script()), ToolRegistry())
+    # The loader accepts the manifest (a router with no edges is a valid
+    # manifest shape); the BUILD refuses it, because the chart is the lie.
+    let plugin = loadPlugin(buildFixture(dir, "noroutes.so",
+                             "-d:routeFx=noroutes"), addr table[])
+    try:
+      discard buildPluginGraph(plugin, plugin.nodes)
+      assert false, "a router without routes must not build a graph"
+    except CatchableError as exc:
+      assert "router without routes" in exc.msg
+      assert "step 4" notin exc.msg
+
+  test "a handle is retired after the run and expireHandle closes the net":
+    let dir = getTempDir() / "waku-plugin-step4-handle"
+    createDir(dir)
+    let table = newHostTable(scriptedClient(Script(items: @[textResp("ok")])),
+                             ToolRegistry())
+    let plugin = loadPlugin(buildFixture(dir, "fixture_graph_plugin.so"),
+                            addr table[])
+    # One run, one handle: every node and router call retires its own entry.
+    var state = %*{"message": "hola", "pick": "right"}
+    discard runGraph(buildPluginGraph(plugin, plugin.nodes, 42), state)
+    assert "no live node call" in errorOf(answerOf(table.stringFree,
+      table.stateKeys(42, """["message"]""".cstring)))
+    # A run that stops between nodes is the window the net exists for.
+    beginHostCall(42, %*{"message": "stale"}, @[])
+    assert envelopeValue(answerOf(table.stringFree,
+      table.stateKeys(42, """["message"]""".cstring)))["message"].getStr() ==
+      "stale"
+    expireHandle(42)
+    assert "no live node call" in errorOf(answerOf(table.stringFree,
+      table.stateKeys(42, """["message"]""".cstring)))
+    expireHandle(42)  # idempotent: the ordinary case is one no-op lookup
 
 suite "gateway selection of plugin graphs (step 3)":
 
@@ -321,6 +424,12 @@ suite "gateway selection of plugin graphs (step 3)":
     let client = scriptedClient(Script())
     let binder = proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
       LoopResult(reply: "loop", toolCalls: @[], iterations: 1)
+    # The turn's nodes call through the PROCESS's host table (the ABI gives
+    # them no context), so this test installs the one whose scripted model
+    # holds the answer `summarize` reads — not whichever table an earlier
+    # test happened to leave behind.
+    discard newHostTable(scriptedClient(Script(items: @[textResp("resumen")])),
+                         ToolRegistry())
     let bound = resolveGatewayGraph("plugin:chainfx", client, "mini", "/tmp",
                                     binder)
     assert not bound.isNil

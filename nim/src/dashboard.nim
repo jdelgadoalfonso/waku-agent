@@ -2611,7 +2611,8 @@ proc pluginGraphTurn(plugin: LoadedPlugin): GraphTurn =
   ## Each binding gets its own handle (`nextHostHandle`), so two bindings can
   ## never share a live input; the gateway re-binds every turn, and a binding
   ## reused across turns is still safe because the host writes and removes
-  ## the live entry around each node call (`beginHostCall`).
+  ## the live entry around each node call (`beginHostCall`) and the turn
+  ## expires the handle when the run is over (`expireHandle`).
   ##
   ## The answer contract is the one `triageGraphTurn` uses: a `result`
   ## object or a `reply` string answers, and no answer at all returns
@@ -2619,12 +2620,20 @@ proc pluginGraphTurn(plugin: LoadedPlugin): GraphTurn =
   ## can therefore only ever add a reply, never lose one. `stream` is
   ## accepted and unused on purpose: a plugin node returns one patch, so its
   ## text arrives whole instead of streaming.
+  ##
+  ## One handle lives for one turn: every node and router call retires its own
+  ## live entry (`beginHostCall`/`endHostCall`), and `expireHandle` closes the
+  ## window a run can leave open — a graph that stopped between nodes — so a
+  ## later turn cannot read this turn's input through the same handle.
   let handle = nextHostHandle()
   result = proc(userMessage: string, notify: Observer,
                 stream: bool): tuple[answered: bool, res: LoopResult] =
     var state = %*{"message": userMessage}
-    discard runGraph(buildPluginGraph(plugin, plugin.nodes, handle), state,
-                     notify)
+    try:
+      discard runGraph(buildPluginGraph(plugin, plugin.nodes, handle), state,
+                       notify)
+    finally:
+      expireHandle(handle)
     if state.jget("result").kind == JObject:
       let r = state["result"]
       var calls: seq[JsonNode] = @[]

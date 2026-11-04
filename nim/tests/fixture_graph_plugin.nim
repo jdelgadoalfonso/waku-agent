@@ -1,22 +1,32 @@
-## Graph fixture plugin for the step-3 eval — NOT a test suite.
+## Graph fixture plugin for the step-3/step-4 eval — NOT a test suite.
 ##
 ## Named `fixture_*` (not `test_*`) so `nimble test` never executes it. The
 ## eval compiles this file with
 ## `nim c --app:lib --panics:off -o:<tmp>/fixture_graph_plugin.so` and drives
 ## the result through the REAL host table (`graph/hostfns.nim`), so the whole
 ## step-3 surface is exercised with a real dynamic library and zero network:
-## two chained tool nodes, and an `llm` node that calls `host.llmComplete`
-## for its text.
+## a chain of tool nodes, an `llm` node that calls `host.llmComplete` for its
+## text, and a `router` whose declarative `routes` jump to a branch.
 ##
 ## What each node proves:
 ## - `first` writes `stage1` from its declared `inKeys` — the chain works,
-##   and the host merges the patch before the next node runs.
+##   and the host merges the patch before the next node runs. It also calls
+##   `host.log`, which is how the eval pins the `plugin_log` trace event.
 ## - `second` reads `stage1` (the first node's outKey, so the chain is real)
 ##   and asks the host for `message` through `stateKeys`, a key it did NOT
 ##   declare: the live input indexed by the run's handle is reachable.
 ## - `summarize` declares `needs: ["llm"]`, builds a Messages request and
 ##   calls `host.llmComplete`, then merges the text out of the FULL response
 ##   object (`value.content`), which is what the host promises to hand over.
+## - `pick_branch` is the declared router: it answers the state's `pick` as
+##   its `route` label, and the manifest's `routes` translate that label into
+##   `shout` (`left`) or `END` (`right`).
+## - `shout` is the branch a `left` route jumps to; it writes `loud`, a key
+##   nothing else writes, so the eval can tell the branch really ran.
+##
+## `-d:routeFx=dangling|duplabel|noroutes|badshape` swaps the manifest's
+## `routes` for one broken shape, so the eval can pin each load-time refusal
+## with a real library. Empty is the good manifest the graph runs on.
 ##
 ## Two runtimes in one process, so this file mirrors the contract by hand
 ## instead of importing `graph/hostfns.nim` (importing it would drag the
@@ -29,6 +39,10 @@
 ## copied onto this heap BEFORE `host.stringFree` frees it.
 
 import std/json
+
+const routeFx {.strdefine.} = ""
+  ## The manifest variant: `""` is the good one, anything else breaks
+  ## `pick_branch`'s `routes` the way its name says.
 
 var runtimeStarted = false
 var hostTable: pointer
@@ -80,6 +94,10 @@ proc runNode(name: string, state: JsonNode, handle: uint64): cstring =
     return errEnvelope("plugin was never given a host table")
   case name
   of "first":
+    # `log` is plumbing, not a capability: always in the table. The eval
+    # pins the `plugin_log` trace event this line produces.
+    if not h.log.isNil:
+      h.log(handle, 1, "first ran".cstring)
     return okPatch(%*{"stage1": "first:" & state{"message"}.getStr("")})
   of "second":
     # The live input, one key this node never declared: what `stateKeys`
@@ -109,6 +127,13 @@ proc runNode(name: string, state: JsonNode, handle: uint64): cstring =
     # `reply` is the key every graph door in the port answers from
     # (`triageGraphTurn` reads it), so a plugin graph's last node writes it.
     return okPatch(%*{"reply": text})
+  of "pick_branch":
+    # The label the manifest's routes translate. Read from the node's
+    # declared input, which is what the host serialized for it.
+    let pick = state{"pick"}.getStr("")
+    return retText("{\"ok\": true, \"route\": " & escapeJson(pick) & "}")
+  of "shout":
+    return okPatch(%*{"loud": "shout:" & state{"stage2"}.getStr("")})
   else:
     return errEnvelope("unknown node '" & name & "'")
 
@@ -128,16 +153,50 @@ proc waku_plugin_init(table: pointer): int32
     return 2
   return 0
 
-proc waku_plugin_describe(): cstring
-    {.exportc: "waku_plugin_describe", cdecl, dynlib.} =
-  retText("""{"name": "chainfx", "abi": 1, "nodes": [
+const goodManifest = """{"name": "chainfx", "abi": 1, "nodes": [
     {"name": "first", "kind": "tool",
      "inKeys": ["message"], "outKey": "stage1", "needs": []},
     {"name": "second", "kind": "tool",
      "inKeys": ["stage1"], "outKey": "stage2", "needs": []},
     {"name": "summarize", "kind": "llm",
-     "inKeys": ["stage2"], "outKey": "reply", "needs": ["llm"]}
-  ]}""")
+     "inKeys": ["stage2"], "outKey": "reply", "needs": ["llm"]},
+    {"name": "pick_branch", "kind": "router",
+     "inKeys": ["pick"], "outKey": "", "needs": [],
+     "routes": [{"label": "left", "dst": "shout"},
+                {"label": "right", "dst": "END"}]},
+    {"name": "shout", "kind": "tool",
+     "inKeys": ["stage2"], "outKey": "loud", "needs": []}
+  ]}"""
+
+proc describeText(): string =
+  ## The good manifest, with the one field a `-d:routeFx=` variant breaks.
+  ## Derived rather than copied five times: one literal stays the sample a
+  ## plugin author reads.
+  when routeFx == "":
+    return goodManifest
+  var m = parseJson(goodManifest)
+  var pick: JsonNode
+  for n in m["nodes"]:
+    if n["name"].getStr() == "pick_branch":
+      pick = n
+  doAssert not pick.isNil
+  when routeFx == "dangling":
+    pick["routes"] = %*[{"label": "left", "dst": "shout"},
+                        {"label": "right", "dst": "nope"}]
+  elif routeFx == "duplabel":
+    pick["routes"] = %*[{"label": "left", "dst": "shout"},
+                        {"label": "left", "dst": "END"}]
+  elif routeFx == "noroutes":
+    pick.delete("routes")
+  elif routeFx == "badshape":
+    pick["routes"] = %*[{"label": 5, "dst": "shout"}]
+  else:
+    doAssert false, "unknown -d:routeFx=" & routeFx
+  return $m
+
+proc waku_plugin_describe(): cstring
+    {.exportc: "waku_plugin_describe", cdecl, dynlib.} =
+  retText(describeText())
 
 proc waku_plugin_node_run(node, stateJson: cstring,
                           handle: uint64): cstring

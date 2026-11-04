@@ -4,6 +4,14 @@
 ## manifest (`buildPluginGraph`), registered as `plugin:<name>` so the
 ## gateway can bind it and the dashboard lists it from the registry.
 ##
+## Step 4 gives the manifest edges. A `router` decl carries `routes`
+## (`label -> dst`, `dst` either `END` or a node of the SAME manifest) and
+## `buildPluginGraph` builds it as a real engine router instead of refusing
+## it; a router without routes is refused there, because an edge-less router
+## is a chart that cannot happen. Every call — node or router — publishes and
+## retires the live host entry around itself, so `log` lines and capability
+## calls reach the run's observer.
+##
 ## `loadPlugin` opens one library, gates its ABI version, runs its init
 ## (which calls `NimMain` once on the plugin side), reads its manifest,
 ## and returns a `LoadedPlugin` whose `pluginNode`/`pluginRouter`
@@ -63,6 +71,12 @@ type
     inKeys*: seq[string]
     outKey*: string
     needs*: seq[string]
+    routes*: seq[tuple[label, dst: string]]
+      ## The declarative edges of a `router` entry, in declaration order:
+      ## `route(state)` answers a label and the engine jumps to that label's
+      ## `dst` (`END` included). Validated against the nodes of the same
+      ## manifest; only a router's routes reach the engine, and a router with
+      ## none is refused by `buildPluginGraph`.
 
   LoadedPlugin* = ref object
     name*: string
@@ -95,6 +109,49 @@ proc strSeq(node: JsonNode, key: string): seq[string] =
       raise newException(CatchableError,
         "plugin manifest key '" & key & "' must be an array of strings")
     result.add(item.getStr())
+
+proc routeList(def: JsonNode, pluginName: string,
+               names: openArray[string]): seq[tuple[label, dst: string]] =
+  ## The `routes` array of one decl, or @[] when absent. Parsed like
+  ## `strSeq`: an array of objects, each with non-empty `label` and `dst`
+  ## strings, labels unique within the router, and `dst` either `END` or a
+  ## node of THIS manifest — a manifest never names the host's builtin
+  ## nodes, which it does not own. Anything else fails the load instead of
+  ## building a chart the engine would silently drop.
+  let nodeName = def.jget("name").getStr()
+  let arr = def.jget("routes")
+  if arr.kind == JNull:
+    return @[]
+  if arr.kind != JArray:
+    raise newException(CatchableError,
+      "plugin " & pluginName & " node '" & nodeName &
+      "': routes must be an array of {label, dst} objects")
+  for item in items(arr):
+    if item.kind != JObject:
+      raise newException(CatchableError,
+        "plugin " & pluginName & " node '" & nodeName &
+        "': every route must be an object with label and dst")
+    let label = item.jget("label")
+    let dst = item.jget("dst")
+    if label.kind != JString or label.getStr().len == 0:
+      raise newException(CatchableError,
+        "plugin " & pluginName & " node '" & nodeName &
+        "': every route needs a non-empty label string")
+    if dst.kind != JString or dst.getStr().len == 0:
+      raise newException(CatchableError,
+        "plugin " & pluginName & " node '" & nodeName &
+        "': route '" & label.getStr() & "' needs a non-empty dst string")
+    if dst.getStr() != END and dst.getStr() notin names:
+      raise newException(CatchableError,
+        "plugin " & pluginName & " node '" & nodeName &
+        "': route '" & label.getStr() & "' names unknown node '" &
+        dst.getStr() & "'")
+    for seen in result:
+      if seen.label == label.getStr():
+        raise newException(CatchableError,
+          "plugin " & pluginName & " node '" & nodeName &
+          "': duplicate route label '" & label.getStr() & "'")
+    result.add((label: label.getStr(), dst: dst.getStr()))
 
 proc loadPlugin*(path: string, host: ptr HostFns): LoadedPlugin =
   ## Open, gate, init, describe, validate. Raises (never nil) on any
@@ -150,6 +207,7 @@ proc loadPlugin*(path: string, host: ptr HostFns): LoadedPlugin =
     raise newException(CatchableError,
       "plugin " & path & " manifest needs a nodes array")
   var nodes: seq[PluginNodeDecl] = @[]
+  var names: seq[string] = @[]
   for def in items(defs):
     let n = def.jget("name").getStr()
     let k = def.jget("kind").getStr()
@@ -164,7 +222,18 @@ proc loadPlugin*(path: string, host: ptr HostFns): LoadedPlugin =
     nodes.add(PluginNodeDecl(name: n, kind: k, inKeys: strSeq(def, "inKeys"),
                              outKey: def.jget("outKey").getStr(),
                              needs: strSeq(def, "needs")))
-  LoadedPlugin(name: manifest["name"].getStr(), path: path, lib: lib,
+    names.add(n)
+  # Routes come second on purpose: a `dst` may name a node declared LATER in
+  # the manifest (the diamond shape does exactly that), so every name has to
+  # be known before the first edge is checked.
+  let pluginName = manifest["name"].getStr()
+  for i in 0 ..< nodes.len:
+    try:
+      nodes[i].routes = routeList(defs[i], pluginName, names)
+    except CatchableError:
+      unloadLib(lib)  # a refused manifest unloads what it opened
+      raise
+  LoadedPlugin(name: pluginName, path: path, lib: lib,
                nodeRun: nodeRunFn, stringFree: freeFn, nodes: nodes)
 
 proc callPlugin*(plugin: LoadedPlugin, nodeName: string, input: JsonNode,
@@ -190,6 +259,20 @@ proc callPlugin*(plugin: LoadedPlugin, nodeName: string, input: JsonNode,
       env.jget("error").getStr("plugin " & plugin.name & " failed"))
   return env
 
+const pluginGraphPrefix* = "plugin:"
+  ## The name a plugin's graph — and each of its nodes — is registered
+  ## under: `plugin:pr_review`, `plugin:pr_review/summarize_diff`.
+
+proc pluginNodeName*(plugin: LoadedPlugin, nodeName: string): string =
+  ## The name a manifest entry is registered under, `plugin:<plugin>/<node>`:
+  ## the one spelling `pluginNode`, `findPluginNode` and `buildPluginGraph`
+  ## all agree on.
+  pluginGraphPrefix & plugin.name & "/" & nodeName
+
+proc pluginNodeName*(plugin: LoadedPlugin, decl: PluginNodeDecl): string =
+  ## `pluginNodeName` for a decl (its manifest name).
+  pluginNodeName(plugin, decl.name)
+
 proc pluginNode*(plugin: LoadedPlugin, decl: PluginNodeDecl,
                  handle: uint64 = 0, maxVisits = 1,
                  onError = ""): Node =
@@ -197,7 +280,7 @@ proc pluginNode*(plugin: LoadedPlugin, decl: PluginNodeDecl,
   ## declared `inKeys`, merges only the returned `patch` (private
   ## `_`-keys never merge, like `runOne`). A `router` entry does not
   ## belong here — use `pluginRouter`.
-  let fullName = "plugin:" & plugin.name & "/" & decl.name
+  let fullName = pluginNodeName(plugin, decl)
   let keys = decl.inKeys
   let kind = decl.kind
   let needs = decl.needs
@@ -230,11 +313,35 @@ proc pluginRouter*(plugin: LoadedPlugin, decl: PluginNodeDecl,
                    default: string, handle: uint64 = 0): RouteFn =
   ## A manifest `router` entry as a `RouteFn`: reads the returned
   ## `route` label, falling back to `default` exactly like `keyRouter`.
+  ##
+  ## The call publishes the same per-handle live entry `pluginNode` does
+  ## (input snapshot + declared `needs`) and retires it in a `finally`, so a
+  ## router can reach `stateKeys`, the model, the tools and `fetch` instead
+  ## of getting `no live node call`. Three consequences, all accepted:
+  ##
+  ## - The engine calls the node fn AND then the router fn for one router
+  ##   visit, so `waku_plugin_node_run` runs twice. Routers are stateless and
+  ##   `_`-prefixed keys never merge, so the second call cannot read the
+  ##   first one's answer: the label is asked for again, never handed over
+  ##   through the state.
+  ## - A `RouteFn` carries no observer (the engine's signature), so this live
+  ##   entry's observer is nil: a model or tool call made from a router is
+  ##   not metered in the trace, and a plugin `log` line from a router stays
+  ##   on stderr. A node's call — where the observer rides — has neither
+  ##   limit.
+  ## - The window a router's entry is live for is begin -> end of its call,
+  ##   exactly the node's.
+  let needs = decl.needs
   result = proc(state: JsonNode): string =
     var input = newJObject()
     for k in decl.inKeys:
       input[k] = state.jget(k)
-    let env = callPlugin(plugin, decl.name, input, handle)
+    beginHostCall(handle, state, needs)
+    var env: JsonNode
+    try:
+      env = callPlugin(plugin, decl.name, input, handle)
+    finally:
+      endHostCall(handle)
     let route = env.jget("route")
     if route.kind == JString and route.getStr().len > 0:
       return route.getStr()
@@ -271,15 +378,11 @@ proc findPluginNode*(plugins: seq[LoadedPlugin],
   ## Look up `plugin:<plugin>/<node>` across loaded plugins.
   for p in plugins:
     for d in p.nodes:
-      if "plugin:" & p.name & "/" & d.name == fullName:
+      if pluginNodeName(p, d) == fullName:
         return (true, p, d)
   return (false, nil, PluginNodeDecl())
 
-# ── one graph per manifest (step 3) ────────────────────────────────────
-
-const pluginGraphPrefix* = "plugin:"
-  ## The name a plugin's graph — and each of its nodes — is registered
-  ## under: `plugin:pr_review`, `plugin:pr_review/summarize_diff`.
+# ── one graph per manifest (steps 3 and 4) ──────────────────────────────────
 
 proc pluginDir*(home: string): string =
   ## Where discovery looks: `<home>/plugins` is `.waku/plugins` with the
@@ -288,31 +391,51 @@ proc pluginDir*(home: string): string =
 
 proc buildPluginGraph*(plugin: LoadedPlugin, decls: seq[PluginNodeDecl],
                        handle: uint64 = 0): Graph =
-  ## The graph a manifest implies: START → node1 → … → nodeK → END, one
-  ## `pluginNode` per declared `tool`/`llm`/`agent` entry.
+  ## The graph a manifest implies. The chain is the only topology a plain
+  ## manifest can describe — it lists nodes, never edges, and an ordered list
+  ## has exactly one shape: START → node1 → … → nodeK → END.
   ##
-  ## The chain is the only topology a manifest can describe: it lists nodes,
-  ## never edges, and an ordered list has exactly one shape. A branched or
-  ## conditional shape needs the declarative DSL and its edge syntax, which
-  ## is why a `router` entry FAILS the build here instead of being guessed
-  ## at — routed plugin graphs are step 4, and a wrong chart is worse than
-  ## a refused one.
+  ## A `router` entry adds the edges the manifest can now declare (step 4).
+  ## It ends the chain: the edge INTO the router is kept (`previous →
+  ## router`), the router's `routes` become its targets (manifest node names
+  ## widened to `plugin:<name>/<node>`, `END` passed through), and every decl
+  ## AFTER it is jump-only — a target, never a chained node, because a route
+  ## is a jump and not a dependency. An edge out of a router would draw a line
+  ## the engine never follows, which is the lie this build refuses to chart.
+  ##
+  ## A router with no routes is refused here: a router the engine cannot jump
+  ## from is a chart that cannot happen, and a wrong chart is worse than a
+  ## refused one. The failure is per plugin and fail-open (`loadPluginGraphs`
+  ## logs it and the rest keep working); a plugin whose graph refuses is never
+  ## registered, so the gateway fails open to the loop.
   ##
   ## `handle` is the run the nodes report under (`stateKeys`, `needs`). One
   ## graph per run means one handle per run, so the gateway rebuilds the
   ## graph with a fresh handle per turn (`nextHostHandle`).
   result = Graph(name: pluginGraphPrefix & plugin.name)
-  var previous = START
+  for decl in decls:  # every node first: a route may target a later decl
+    result.addNode(pluginNode(plugin, decl, handle))
+  var previous = START  # the last node the chain reached
+  var chained = true    # false once a router ends the linear prefix
   for decl in decls:
+    let name = pluginNodeName(plugin, decl)
+    if chained:
+      result.addEdge(previous, name)
     if decl.kind == "router":
-      raise newException(CatchableError,
-        "plugin " & plugin.name & " node '" & decl.name &
-        "' is a router: routed plugin graphs arrive in step 4")
-    let n = pluginNode(plugin, decl, handle)
-    result.addNode(n)
-    result.addEdge(previous, n.name)
-    previous = n.name
-  result.addEdge(previous, END)
+      if decl.routes.len == 0:
+        raise newException(CatchableError,
+          "plugin " & plugin.name & " node '" & decl.name &
+          "' is a router without routes: a router must declare its edges")
+      var targets: seq[tuple[label, dst: string]] = @[]
+      for r in decl.routes:
+        targets.add((label: r.label,
+          dst: (if r.dst == END: END else: pluginNodeName(plugin, r.dst))))
+      result.addRouter(name, pluginRouter(plugin, decl, END, handle), targets)
+      chained = false
+    else:
+      previous = name
+  if chained:
+    result.addEdge(previous, END)
 
 var loaded: seq[LoadedPlugin]
   ## Every library this process loaded, in load order. Process lifetime:
@@ -353,9 +476,10 @@ proc loadPluginGraphs*(dir: string, host: ptr HostFns): seq[LoadedPlugin] =
   ## dashboard change — and the plugin in this module's process registry,
   ## which is what lets `resolveGatewayGraph` bind it.
   ##
-  ## Fail-open is the point: a file that does not load, and a manifest with
-  ## a `router` (step 4), are one line on stderr and the rest keep working.
-  ## No plugin, no graph, no stderr line — exactly today's behaviour.
+  ## Fail-open is the point: a file that does not load, and a manifest whose
+  ## graph cannot be built (a router without routes), are one line on stderr
+  ## and the rest keep working. No plugin, no graph, no stderr line — exactly
+  ## today's behaviour.
   for path in discoverPluginPaths(dir):
     let already = findLoadedPath(path)
     if not already.isNil:
