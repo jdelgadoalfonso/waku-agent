@@ -2585,6 +2585,30 @@ type
       ## environment is not mutated by a save). Empty means `os.getenv`,
       ## which is what a browser chat has always used.
 
+proc graphSelectorFor*(source: string, env: Table[string, string]): string =
+  ## Per-source graph selector read live every turn: `WAKU_GRAPH_<SOURCE>`
+  ## (e.g. `WAKU_GRAPH_TELEGRAM`) wins, else the global `WAKU_GRAPH_WORKFLOWS`
+  ## flag. Empty means loop. Hot-swap without rebuild or restart.
+  let perSource = env.getOrDefault("WAKU_GRAPH_" & source.toUpperAscii(), "")
+  if perSource.len > 0:
+    return perSource
+  env.getOrDefault("WAKU_GRAPH_WORKFLOWS", "")
+
+proc resolveGatewayGraph*(name: string, client: LlmClient, smallModel, home: string,
+    full: proc(state: JsonNode, notify: Observer,
+               stream: bool): LoopResult {.closure.}): GraphTurn =
+  ## Name to GraphTurn. `off`/`loop`/empty/false/0/no is nil (plain loop).
+  ## `triage` (and legacy truthy `1`/`true`/`yes`/`on`) binds triage.
+  ## Unknown names are nil so respond fails open to the loop.
+  let sel = name.strip().toLowerAscii()
+  case sel
+  of "", "off", "loop", "0", "false", "no":
+    nil
+  of "triage", "1", "true", "yes", "on":
+    triageGraphTurn(client, smallModel, home, full)
+  else:
+    nil
+
 proc ensureWaku*(box: WakuBox) =
   ## Build the shared agent once: settings → providers → client → db,
   ## with the triage graph door when enabled (the `buildCliApp` shape,
@@ -3864,6 +3888,12 @@ proc gatewayAgents*(providers: seq[Provider], settings: Settings,
       box.ensureWaku()
       if box.buildError.len > 0:
         raise newException(CatchableError, box.buildError)
+      let liveEnv = envOf()
+      let sel = graphSelectorFor(source, liveEnv)
+      box.waku.graphTurn = resolveGatewayGraph(sel, box.waku.client,
+        box.waku.settings.smallModel, box.waku.settings.home,
+        proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
+          box.waku.runFullTurn(st.jget("message").getStr(), n, strm))
       box.waku.respond(text, cli.liveObserver, source, false).reply
 
 proc liveGatewayHooks*(providers: seq[Provider], settings: Settings,

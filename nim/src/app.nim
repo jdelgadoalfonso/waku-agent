@@ -343,12 +343,14 @@ proc respond*(w: var Waku, userMessage: string, observer: Observer = nil,
   w.tracer.turn(userMessage)
 
   # The graph front door is optional and can NEVER make Waku worse:
-  # seam unset → exactly the old code path; set → the triage graph
-  # decides quick vs full, and any failure anywhere falls open to the
+  # seam unset → exactly the old code path; set → the graph decides
+  # quick vs full, and any failure anywhere falls open to the
   # plain loop below (same fail-open rule as the retrieval gate).
+  # The gate reads the seam, not the frozen settings flag, so a gateway
+  # turn can hot-swap graphs without rebuild or restart.
   var res: LoopResult
   var answered = false
-  if w.settings.graphWorkflows and not w.graphTurn.isNil:
+  if not w.graphTurn.isNil:
     try:
       (answered, res) = w.graphTurn(userMessage, notify, stream)
     except CatchableError as exc:
