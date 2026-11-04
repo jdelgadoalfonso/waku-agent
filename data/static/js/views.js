@@ -312,6 +312,31 @@ function connectionStatusDisplay(status){
   return {label:"not configured", className:"not-configured"};
 }
 
+function graphModeField(item){
+  const f = (item.fields || []).find(field => field.name.indexOf("WAKU_GRAPH_") === 0);
+  if (!f) return "";
+  const cur = (f.value || "loop");
+  const workflows = (((D && D.graph) || {}).workflows || []).map(w => w.name || w.workflow).filter(Boolean);
+  const names = workflows.length ? ["loop", ...workflows] : (f.options || ["loop", "triage"]);
+  const labelOf = n => n === "triage" ? "Grafo triage" : n === "gather" ? "Grafo gather" : "Bucle del agente";
+  const badge = uiBadge(labelOf(cur), cur === "loop" ? "neutral" : "live", "Message handling");
+  const opts = names.map(o => `<option value="${esc(o)}" ${o === cur ? "selected" : ""}>${labelOf(o)}</option>`).join("");
+  return `<div class="conngraph">${badge}<label class="fld conngraph-sel"><span>Message handling</span><select data-graph-key="${esc(item.key)}" data-graph-field="${esc(f.name)}" onchange="saveGraphMode('${esc(item.key)}', this.value, this)" aria-label="Message handling de ${esc(item.name)}">${opts}</select></label></div>`;
+}
+async function saveGraphMode(key, value, el){
+  const sel = el && el.dataset && el.dataset.graphField ? el : document.querySelector(`[data-graph-key="${key}"]`);
+  const field = sel ? sel.dataset.graphField : null;
+  if (!field) return;
+  const prev = sel.value;
+  sel.disabled = true;
+  const r = await postJSON("/api/connections", {key, values: {[field]: value}, clear: [], force: true});
+  if (!r.ok) {
+    sel.value = prev;
+    sel.disabled = false;
+    return;
+  }
+  await refresh();
+}
 function connectionCard(item){
   const display = connectionStatusDisplay(item.status);
   const action = item.status && item.status.state !== "not_configured" ? "Edit" : "Configure";
@@ -328,6 +353,7 @@ function connectionCard(item){
     <div class="connstatus ${display.className}"><span class="conndot"></span>${esc(display.label)}</div>
     ${why}
     <div class="conndesc">${esc(item.what)}</div>
+    ${graphModeField(item)}
     <div class="provactions connactions">
       ${uiButton(action, {level: "secondary", onclick: `openConnectionModal('${esc(item.key)}')`})}
     </div>`, {title: esc(item.name), cls: "provcard conncard"});

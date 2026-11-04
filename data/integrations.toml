@@ -65,7 +65,7 @@ name = "WAKU_GRAPH_TELEGRAM"
 label = "Message handling"
 kind = "choice"
 default = "loop"
-options = ["loop", "triage"]
+options = ["loop", "triage", "gather"]
 
 [discord]
 halves = ["python", "nim"]
@@ -109,7 +109,7 @@ name = "WAKU_GRAPH_DISCORD"
 label = "Message handling"
 kind = "choice"
 default = "loop"
-options = ["loop", "triage"]
+options = ["loop", "triage", "gather"]
 
 [whatsapp]
 halves = ["python", "nim"]
@@ -154,7 +154,7 @@ name = "WAKU_GRAPH_WHATSAPP"
 label = "Message handling"
 kind = "choice"
 default = "loop"
-options = ["loop", "triage"]
+options = ["loop", "triage", "gather"]
 
 [google_calendar]
 halves = ["python", "nim"]

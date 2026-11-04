@@ -2606,6 +2606,11 @@ proc resolveGatewayGraph*(name: string, client: LlmClient, smallModel, home: str
     nil
   of "triage", "1", "true", "yes", "on":
     triageGraphTurn(client, smallModel, home, full)
+  of "gather":
+    # Gather is on-demand (Run gather, /gather), not a per-message turn:
+    # listed so every registered graph appears, but routed to fail-open
+    # loop until it grows a GraphTurn seam.
+    nil
   else:
     nil
 

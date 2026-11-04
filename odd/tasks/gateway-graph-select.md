@@ -18,6 +18,7 @@ Estado al 2026-11-04. Documento creado desde el mapa de dos explorers. Base `nim
 | T1 | Resolver nombre de graph a GraphTurn (registry por nombre + `off`) | S1, S2 | P |
 | T2 | Releer selector por turno en `gatewayAgents` + relajar gate en `app.nim` | S1, S3 | P |
 | T3 | Pin determinista en `nim/tests/` + verificación + commit | S4 | P |
+| T4 | Vista de canales 03 en `connectionsGrid` (badge + select inline, save directo) | S1, S4 | P |
 
 ## Log
 
@@ -25,3 +26,6 @@ Estado al 2026-11-04. Documento creado desde el mapa de dos explorers. Base `nim
 - **L2** (diseño): sin registry por nombre, solo `triageGraphTurn`; el selector es `WAKU_GRAPH_<SOURCE>` con fallback a `WAKU_GRAPH_WORKFLOWS`; `off`/`loop`/desconocido es nil (fail-open). Seam: releer `envOf()` por turno en `gatewayAgents` y relajar el gate de `app.nim:351` a `not w.graphTurn.isNil`.
 - **L3** (evidencia): `nim check` app + dashboard SuccessX; `test_gateway_graph_select` 3 OK; `test_app` 41 OK; `test_dashboard` 137 OK, exit 0.
 - **L4** (UI): selects en Connections vía `data/integrations.toml` (`WAKU_GRAPH_TELEGRAM/DISCORD/WHATSAPP`, choice loop/triage, default loop). Render y save automáticos por `connectionField`/`applyIntegration`; entran al fingerprint gateway y reconcilian. `.env.example` regenerado con `--write` (`--check` exit 0). Pin Nim `telegram.env.len` 2→3 + asserts del choice; `test_integration_rows` 24 OK, `test_integrations.py` 27 passed.
+- **L5** (diseño): `design/graph-routing/` con 01-inline-select, 02-segmented y 03-channels-overview (ver `design.json`). Sincronizado el system del proyecto.
+- **L6** (handoff 03): elegida `03-channels-overview.html` (vista de canales). Implementada en `data/static/js/views.js`: `graphModeField` (badge + select inline por tarjeta) + `saveGraphMode` (POST solo el campo a `/api/connections` con `force:true`, luego `refresh()`). Verificado: `test_static_js_parses` 18 passed, `node --check` exit 0. Sin commit (el handoff no commitea).
+- **L7** (todos los grafos): registrados en Nim hay exactamente dos, `triage` (router por mensaje, con seam `GraphTurn`) y `gather` (procedimiento bajo demanda, sin seam). UI: `WAKU_GRAPH_*` ahora acepta `loop/triage/gather`; `graphModeField` arma opciones desde `D.graph.workflows` (loop + registrados) con fallback a `f.options`; `gather` rutea a fail-open loop hasta tener seam. Verificado: `--check` exit 0, `test_integrations` + `test_static_js_parses` 45 passed, `test_integration_rows` verde, `test_gateway_graph_select` 3 OK.

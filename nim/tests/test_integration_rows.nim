@@ -140,7 +140,7 @@ suite "T4c-2 the registry file":
     check telegram.env[1].required == false
     check telegram.env[2].name == "WAKU_GRAPH_TELEGRAM"
     check telegram.env[2].kind == choiceField
-    check telegram.env[2].options == @["loop", "triage"]
+    check telegram.env[2].options == @["loop", "triage", "gather"]
     check telegram.env[2].default == "loop"
 
   test "reads the choice and bool env fields":
