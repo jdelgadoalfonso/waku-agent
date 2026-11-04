@@ -53,6 +53,7 @@ import ./brain
 import ./config
 import ./episodes
 import ./factstore
+import ./graph/hostfns
 import ./langmem
 import ./mem0
 import ./mcp
@@ -104,6 +105,15 @@ type
     tracer*: Tracer
     graphTurn*: GraphTurn
     afterTurn*: AfterTurn
+    hostFns*: ref HostFns
+      ## The host capability table every loaded plugin calls back into
+      ## (step 3, `graph/hostfns.nim`). A heap cell, not a field the plugin
+      ## could hold an address INTO: `init` keeps the pointer for the
+      ## process's lifetime and a `Waku` returned by value moves. Built
+      ## once, after the tool registry exists, by `buildCliApp` and by the
+      ## dashboard's `ensureWaku` — so the CLI, the dashboard and every
+      ## gateway reach the same model, the same tools and the same ledger.
+      ## nil when nothing wired plugins (a bare `newWaku` in a test).
     reportCell*: ref string
       ## The research report THIS turn saved (spec 009 B), as a cell:
       ## `respond` writes it and the consolidation seam (a closure over a

@@ -1,4 +1,8 @@
 ## Plugin loader — step 2: load real `.so` plugins over the JSON ABI v1.
+## Step 3 adds the two things the loader was missing: the REAL host table
+## (`graph/hostfns.nim`: model, tools, state, fetch, log) and a graph per
+## manifest (`buildPluginGraph`), registered as `plugin:<name>` so the
+## gateway can bind it and the dashboard lists it from the registry.
 ##
 ## `loadPlugin` opens one library, gates its ABI version, runs its init
 ## (which calls `NimMain` once on the plugin side), reads its manifest,
@@ -17,8 +21,10 @@
 ## Concurrency assumption (unverified against dashboard HTTP turns):
 ## one plugin call at a time. The engine runs waves sequentially, so a
 ## single `runGraph` never re-enters a plugin; two concurrent turns
-## could. Until that is measured, treat concurrent turns over one
-## plugin as unsupported — a mutex belongs to step 3 if needed.
+## could. Step 3 kept this documented instead of adding a mutex: the
+## host's live entry is keyed by the run's handle and written/removed
+## around each node call (`hostfns.beginHostCall`), which is what makes
+## two sequential turns safe and two overlapping ones unsupported.
 ##
 ## Failure rule learned the hard way (step 2): never call into a
 ## library after `unloadLib` — not even to format an error message.
@@ -30,12 +36,17 @@ import std/os
 import std/strutils  # strip/split: manifest string fields; startsWith below
 
 import ./engine
-import ./registry  # isKnownPluginKind only (one direction: registry never imports here)
+import ./hostfns  # HostFns, nullHostFns, the six real functions (re-exported)
+import ./registry  # isKnownPluginKind, registerPluginGraph (one direction:
+                   # registry NEVER imports this module, so no cycle)
 import ../wire
 
-const pluginAbiVersion* = 1'u32
-  ## The only ABI version this host speaks. `waku_plugin_abi_version`
-  ## must answer exactly this or the library is refused at load.
+## `HostFns` lives in `graph/hostfns.nim` so `app.nim` can hold one without
+## importing this module (which pulls `graph/registry`, which pulls
+## `gather`, which pulls `app`). Everything a caller used to read from here
+## — the type, `nullHostFns`, the ABI version — still resolves through this
+## module.
+export hostfns
 
 type
   AbiVersionFn* = proc(): uint32 {.cdecl, gcsafe.}
@@ -44,26 +55,6 @@ type
   NodeRunFn* = proc(node, stateJson: cstring,
                     handle: uint64): cstring {.cdecl, gcsafe.}
   StringFreeFn* = proc(s: cstring) {.cdecl, gcsafe.}
-
-  HostFns* = object
-    ## Mirror of the contract (docs/graph-plugins-design.md): the table
-    ## handed to `waku_plugin_init`. A null pointer means the person did
-    ## not enable that capability. Step 2 passes a table of nulls (good
-    ## enough for `tool` nodes with no `needs`); step 3 fills the real
-    ## fns where client and tools live. The table must outlive every
-    ## plugin (process lifetime) — the plugin stores this pointer.
-    abiVersion*: uint32
-    llmComplete*: proc(handle: uint64,
-                       requestJson: cstring): cstring {.cdecl, gcsafe.}
-    toolCall*: proc(handle: uint64, name,
-                    argsJson: cstring): cstring {.cdecl, gcsafe.}
-    stateKeys*: proc(handle: uint64,
-                     keysJson: cstring): cstring {.cdecl, gcsafe.}
-    fetch*: proc(handle: uint64,
-                 requestJson: cstring): cstring {.cdecl, gcsafe.}
-    stringFree*: proc(value: cstring) {.cdecl, gcsafe.}
-    log*: proc(handle: uint64, level: int32,
-               message: cstring) {.cdecl, gcsafe.}
 
   PluginNodeDecl* = object
     ## One validated manifest entry.
@@ -80,12 +71,6 @@ type
     nodeRun*: NodeRunFn
     stringFree*: StringFreeFn
     nodes*: seq[PluginNodeDecl]
-
-proc nullHostFns*(): HostFns =
-  ## Step-2 host table: version set, every capability null. A plugin
-  ## that needs a capability finds a null pointer and must answer
-  ## `ok:false` instead of calling it.
-  HostFns(abiVersion: pluginAbiVersion)
 
 proc symOrRaise(lib: LibHandle, path, sym: string): pointer =
   ## `symAddr`, but a missing symbol fails the load with its name —
@@ -215,11 +200,22 @@ proc pluginNode*(plugin: LoadedPlugin, decl: PluginNodeDecl,
   let fullName = "plugin:" & plugin.name & "/" & decl.name
   let keys = decl.inKeys
   let kind = decl.kind
+  let needs = decl.needs
   proc run(state: JsonNode, notify: Observer): JsonNode =
     var input = newJObject()
     for k in keys:
       input[k] = state.jget(k)  # missing keys read as JNull
-    let env = callPlugin(plugin, decl.name, input, handle)
+    # Publish this call's input and declared capabilities for the host
+    # table: `stateKeys` reads the snapshot, and `needs` gates the model,
+    # the tools and `fetch`. Paired in a `finally` so a plugin that raises
+    # cannot leave a stale entry behind (one call at a time, the entry is
+    # per handle and the run's handle is never reused).
+    beginHostCall(handle, state, needs, notify)
+    var env: JsonNode
+    try:
+      env = callPlugin(plugin, decl.name, input, handle)
+    finally:
+      endHostCall(handle)
     var outp = newJObject()
     let patch = env.jget("patch")
     if patch.kind == JObject:
@@ -256,8 +252,9 @@ proc loadDiscovered*(dir: string, host: ptr HostFns): seq[LoadedPlugin] =
   ## Load everything `discoverPluginPaths` finds, in order. One bad
   ## library does not poison the rest: its error is raised to the
   ## caller only when it is the ONLY plugin — otherwise it is skipped.
-  ## (Step 2 keeps this honest and simple: production wiring in step 3
-  ## decides the surface policy; the eval pins all-good and one-bad.)
+  ## The step-2 surface (its eval pins all-good and one-bad); step 3's
+  ## production wiring uses `loadPluginGraphs`, which also registers each
+  ## plugin's graph and reports every failure instead of raising.
   var failures: seq[string] = @[]
   for path in discoverPluginPaths(dir):
     try:
@@ -277,3 +274,100 @@ proc findPluginNode*(plugins: seq[LoadedPlugin],
       if "plugin:" & p.name & "/" & d.name == fullName:
         return (true, p, d)
   return (false, nil, PluginNodeDecl())
+
+# ── one graph per manifest (step 3) ────────────────────────────────────
+
+const pluginGraphPrefix* = "plugin:"
+  ## The name a plugin's graph — and each of its nodes — is registered
+  ## under: `plugin:pr_review`, `plugin:pr_review/summarize_diff`.
+
+proc pluginDir*(home: string): string =
+  ## Where discovery looks: `<home>/plugins` is `.waku/plugins` with the
+  ## default home, the directory step 2 chose.
+  home / "plugins"
+
+proc buildPluginGraph*(plugin: LoadedPlugin, decls: seq[PluginNodeDecl],
+                       handle: uint64 = 0): Graph =
+  ## The graph a manifest implies: START → node1 → … → nodeK → END, one
+  ## `pluginNode` per declared `tool`/`llm`/`agent` entry.
+  ##
+  ## The chain is the only topology a manifest can describe: it lists nodes,
+  ## never edges, and an ordered list has exactly one shape. A branched or
+  ## conditional shape needs the declarative DSL and its edge syntax, which
+  ## is why a `router` entry FAILS the build here instead of being guessed
+  ## at — routed plugin graphs are step 4, and a wrong chart is worse than
+  ## a refused one.
+  ##
+  ## `handle` is the run the nodes report under (`stateKeys`, `needs`). One
+  ## graph per run means one handle per run, so the gateway rebuilds the
+  ## graph with a fresh handle per turn (`nextHostHandle`).
+  result = Graph(name: pluginGraphPrefix & plugin.name)
+  var previous = START
+  for decl in decls:
+    if decl.kind == "router":
+      raise newException(CatchableError,
+        "plugin " & plugin.name & " node '" & decl.name &
+        "' is a router: routed plugin graphs arrive in step 4")
+    let n = pluginNode(plugin, decl, handle)
+    result.addNode(n)
+    result.addEdge(previous, n.name)
+    previous = n.name
+  result.addEdge(previous, END)
+
+var loaded: seq[LoadedPlugin]
+  ## Every library this process loaded, in load order. Process lifetime:
+  ## a successful load is never unloaded, so no entry ever leaves; the
+  ## name is the manifest name, matched case-insensitively because the
+  ## gateway selector lowercases what it is given.
+
+proc registerLoadedPlugin*(plugin: LoadedPlugin) =
+  ## Add (or replace) one loaded plugin. One entry per manifest name: the
+  ## gateway looks a plugin up by name, so a newer file for the same plugin
+  ## replaces the old one instead of shadowing it. (`loadPluginGraphs`
+  ## separately checks the path, which is what keeps the same library from
+  ## being initialized twice — a plugin keeps the table pointer it got.)
+  for i in 0 ..< loaded.len:
+    if loaded[i].path == plugin.path or
+        loaded[i].name.toLowerAscii() == plugin.name.toLowerAscii():
+      loaded[i] = plugin
+      return
+  loaded.add(plugin)
+
+proc findLoadedPlugin*(name: string): LoadedPlugin =
+  ## The plugin whose manifest name is `name`, case-insensitively. nil when
+  ## absent — which the gateway turns into "no graph, run the plain loop".
+  for p in loaded:
+    if p.name.toLowerAscii() == name.toLowerAscii():
+      return p
+
+proc findLoadedPath(path: string): LoadedPlugin =
+  ## The plugin already loaded from `path`, nil when the file is new.
+  for p in loaded:
+    if p.path == path:
+      return p
+
+proc loadPluginGraphs*(dir: string, host: ptr HostFns): seq[LoadedPlugin] =
+  ## Discovery + registration in one place: every `.so` under `dir` (the
+  ## `.waku/plugins/*.so` of step 2), its graph as `plugin:<name>` in
+  ## `graph/registry` — which is what makes the dashboard list it with no
+  ## dashboard change — and the plugin in this module's process registry,
+  ## which is what lets `resolveGatewayGraph` bind it.
+  ##
+  ## Fail-open is the point: a file that does not load, and a manifest with
+  ## a `router` (step 4), are one line on stderr and the rest keep working.
+  ## No plugin, no graph, no stderr line — exactly today's behaviour.
+  for path in discoverPluginPaths(dir):
+    let already = findLoadedPath(path)
+    if not already.isNil:
+      result.add(already)
+      registerPluginGraph(pluginGraphPrefix & already.name,
+                          buildPluginGraph(already, already.nodes).describe())
+      continue
+    try:
+      let plugin = loadPlugin(path, host)
+      registerPluginGraph(pluginGraphPrefix & plugin.name,
+                          buildPluginGraph(plugin, plugin.nodes).describe())
+      registerLoadedPlugin(plugin)
+      result.add(plugin)
+    except CatchableError as exc:
+      stderr.writeLine("(plugins) " & exc.msg)

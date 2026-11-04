@@ -44,6 +44,8 @@ import ./experimental
 import ./gather
 import ./gateway
 import ./github
+import ./graph/hostfns
+import ./graph/plugins
 import ./http
 import ./integrations
 import ./key_locations
@@ -231,6 +233,14 @@ proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
     liveAppleSeams(), w.facts, w.episodes,
     mcpRegistryTools(settings.home, processEnv(),
       getTime().toUnix(), liveStdioFactory(), liveHttpPostFn()))
+  # Step 3: the host table a plugin calls back into, built where the live
+  # client and the tool registry exist (never on this stack frame — a
+  # plugin keeps its address for the process's lifetime), then every
+  # `.waku/plugins/*.so` loaded and registered as `plugin:<name>`.
+  # `loadPluginGraphs` never raises: a bad library is one stderr line and
+  # the CLI runs exactly as it does without it.
+  w.hostFns = newHostTable(client, w.tools)
+  discard loadPluginGraphs(pluginDir(settings.home), addr w.hostFns[])
   wireMemory(w, settings, db, client, bundledSkillDirs())
   if settings.graphWorkflows:
     w.graphTurn = triageGraphTurn(client, settings.smallModel,

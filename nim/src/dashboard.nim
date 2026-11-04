@@ -105,6 +105,9 @@ import ./pricing
 import ./providers
 import ./registry
 from ./graph/registry import enabledWorkflows, defaultPlugins, parsePluginList
+import ./graph/hostfns
+import ./graph/plugins
+from ./graph/engine import runGraph
 import ./search
 import ./session
 import ./skills except FetchFn
@@ -2602,6 +2605,40 @@ proc graphSelectorFor*(source: string, env: Table[string, string]): string =
     return perSource
   env.getOrDefault("WAKU_GRAPH_WORKFLOWS", "")
 
+proc pluginGraphTurn(plugin: LoadedPlugin): GraphTurn =
+  ## One `plugin:<name>` graph as a `Waku.graphTurn`.
+  ##
+  ## Each binding gets its own handle (`nextHostHandle`), so two bindings can
+  ## never share a live input; the gateway re-binds every turn, and a binding
+  ## reused across turns is still safe because the host writes and removes
+  ## the live entry around each node call (`beginHostCall`).
+  ##
+  ## The answer contract is the one `triageGraphTurn` uses: a `result`
+  ## object or a `reply` string answers, and no answer at all returns
+  ## `(false, …)` so `respond` falls open to the plain loop. A plugin graph
+  ## can therefore only ever add a reply, never lose one. `stream` is
+  ## accepted and unused on purpose: a plugin node returns one patch, so its
+  ## text arrives whole instead of streaming.
+  let handle = nextHostHandle()
+  result = proc(userMessage: string, notify: Observer,
+                stream: bool): tuple[answered: bool, res: LoopResult] =
+    var state = %*{"message": userMessage}
+    discard runGraph(buildPluginGraph(plugin, plugin.nodes, handle), state,
+                     notify)
+    if state.jget("result").kind == JObject:
+      let r = state["result"]
+      var calls: seq[JsonNode] = @[]
+      if r.jget("tool_calls").kind == JArray:
+        for c in items(r["tool_calls"]):
+          calls.add(c)
+      return (true, LoopResult(reply: r.jget("reply").getStr(),
+                               toolCalls: calls,
+                               iterations: r.jget("iterations").getInt(1)))
+    if state.jget("reply").kind == JString:
+      return (true, LoopResult(reply: state["reply"].getStr(),
+                               toolCalls: @[], iterations: 1))
+    return (false, LoopResult())
+
 proc resolveGatewayGraph*(name: string, client: LlmClient, smallModel, home: string,
     full: proc(state: JsonNode, notify: Observer,
                stream: bool): LoopResult {.closure.}, gatherTurn: GraphTurn = nil): GraphTurn =
@@ -2609,17 +2646,24 @@ proc resolveGatewayGraph*(name: string, client: LlmClient, smallModel, home: str
   ## `triage` (and legacy truthy `1`/`true`/`yes`/`on`) binds triage.
   ## `gather` binds the caller-provided gather turn; nil when the caller
   ## did not bind one, so respond fails open to the loop.
+  ## `plugin:<name>` binds the graph the plugin's manifest declared — nil
+  ## when that plugin is not loaded (fail open to the loop, the same answer
+  ## every unknown name gets).
   ## Unknown names are nil so respond fails open to the loop.
   let sel = name.strip().toLowerAscii()
+  result = nil
   case sel
   of "", "off", "loop", "0", "false", "no":
-    nil
+    discard
   of "triage", "1", "true", "yes", "on":
-    triageGraphTurn(client, smallModel, home, full)
+    result = triageGraphTurn(client, smallModel, home, full)
   of "gather":
-    gatherTurn
+    result = gatherTurn
   else:
-    nil
+    if sel.startsWith(pluginGraphPrefix):
+      let plugin = findLoadedPlugin(sel[pluginGraphPrefix.len .. ^1])
+      if not plugin.isNil:
+        result = pluginGraphTurn(plugin)
 
 proc ensureWaku*(box: WakuBox) =
   ## Build the shared agent once: settings → providers → client → db,
@@ -2644,6 +2688,11 @@ proc ensureWaku*(box: WakuBox) =
       liveAppleSeams(), box.waku.facts, box.waku.episodes,
       mcpRegistryTools(s.home, liveEnv,
         getTime().toUnix(), liveStdioFactory(), liveHttpPostFn()))
+    # Step 3: the host table plugins call back into, then every
+    # `.waku/plugins/*.so` registered as `plugin:<name>` — the same wiring
+    # `buildCliApp` does, so a gateway reusing this box gets it too.
+    box.waku.hostFns = newHostTable(client, box.waku.tools)
+    discard loadPluginGraphs(pluginDir(s.home), addr box.waku.hostFns[])
     wireMemory(box.waku, s, db, client, bundledSkillDirs())
     if s.graphWorkflows:
       box.waku.graphTurn = triageGraphTurn(client, s.smallModel, s.home,
