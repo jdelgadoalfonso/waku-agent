@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Waku system board</title>
+<style>
+:root{--surface-bg:#E1E1D9;--text-ink:#161614;--surface-paper:#d4d4cc;--surface-raised:#c9c9c1;--rule:#b9b9ae;--rule-hard:#8a8a7e;--text-muted:#3a3a35;--text-faint:#62625a;--accent:#E1AE05;--accent-fg:#735903;--accent-ink:#161614;--ok:#2B7754;--warn:#8C5617;--bad:#AA2E11;--radius:2px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:24px;--space-8:32px}
+*{box-sizing:border-box}body{margin:0;background:var(--surface-bg);color:var(--text-ink);font-family:"Helvetica Neue",Arial,sans-serif;padding:32px;line-height:1.55}
+h1{font-size:27px;margin:0 0 4px}p.sub{color:var(--text-muted);margin:0 0 24px}section{background:var(--surface-paper);border:1px solid var(--rule);border-radius:var(--radius);padding:24px;margin-bottom:24px;max-width:880px}
+h2{font-size:15px;text-transform:uppercase;letter-spacing:.16em;font-family:ui-monospace,Menlo,monospace;font-size:12px;color:var(--text-faint);margin:0 0 16px}
+.swatches{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px}.sw{border:1px solid var(--rule);border-radius:var(--radius);overflow:hidden}.sw i{display:block;height:56px}.sw span{display:block;padding:8px 10px;font-family:ui-monospace,Menlo,monospace;font-size:12px}
+.row{display:flex;gap:12px;flex-wrap:wrap}.ctl{font:inherit;padding:10px 20px;border:1px solid var(--rule-hard);border-radius:var(--radius);background:var(--surface-raised)}select.ctl,input.ctl{background:var(--surface-paper)}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<main>
+<h1>System board</h1>
+<p class="sub">Tokens medidos de data/static/design. Sin URLs externas.</p>
+<section aria-label="Colores"><h2>Colores</h2><div class="swatches">
+<div class="sw"><i style="background:#E1E1D9"></i><span>--surface-bg</span></div>
+<div class="sw"><i style="background:#161614"></i><span>--text-ink</span></div>
+<div class="sw"><i style="background:#E1AE05"></i><span>--accent</span></div>
+<div class="sw"><i style="background:#735903"></i><span>--accent-fg</span></div>
+<div class="sw"><i style="background:#2B7754"></i><span>--ok</span></div>
+<div class="sw"><i style="background:#8C5617"></i><span>--warn</span></div>
+<div class="sw"><i style="background:#AA2E11"></i><span>--bad</span></div>
+</div></section>
+<section aria-label="Controles"><h2>Controles</h2><div class="row">
+<button class="ctl" type="button">Guardar</button>
+<select class="ctl" aria-label="Ejemplo"><option>Bucle</option><option>Grafo triage</option></select>
+<input class="ctl" value="Telegram" aria-label="Ejemplo">
+</div></section>
+<section aria-label="Tipo"><h2>Tipo</h2><p style="font-size:36px;margin:0">Conexiones 36</p><p style="font-size:20px;margin:0">Manejo de mensajes 20</p><p style="font-size:15px">Cuerpo 15 — el turno siguiente ya usa el nuevo valor.</p><p style="font-family:ui-monospace,Menlo,monospace;font-size:12px;letter-spacing:.16em;color:var(--text-faint)">ETIQUETA 12 MONO</p></section>
+</main>
+</body>
+</html>

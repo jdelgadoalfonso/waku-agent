@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "chosen": "03-channels-overview.html",
+  "handoffs": {
+    "03-channels-overview.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-11-04T13:41:41.702Z",
+      "startedAt": "2026-11-04T13:41:45.635Z",
+      "implementedAt": "2026-11-04T13:42:58.270Z",
+      "feature": "odd/tasks/gateway-graph-select.md"
+    }
+  }
+}

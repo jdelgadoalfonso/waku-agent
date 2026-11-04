@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Telegram — control segmentado</title>
+<style>
+:root{--bg:#E1E1D9;--paper:#d8d8d0;--ink:#161614;--muted:#3a3a35;--faint:#62625a;--rule:#b9b9ae;--hard:#8a8a7e;--accent:#E1AE05;--r:2px}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:"Helvetica Neue",Arial,sans-serif;padding:32px;line-height:1.55}
+.scrim{position:fixed;inset:0;background:rgb(0 0 0/.4);display:grid;place-items:center;padding:24px}
+.dialog{background:var(--paper);border:1px solid var(--hard);border-radius:var(--r);width:min(560px,100%);padding:24px}
+.eyebrow{font-family:ui-monospace,Menlo,monospace;font-size:12px;letter-spacing:.16em;color:var(--faint);margin:0 0 8px}
+h1{font-size:20px;margin:0 0 4px}p.desc{color:var(--muted);font-size:15px;margin:0 0 20px}
+.seg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--hard);border-radius:var(--r);overflow:hidden}
+.seg button{font:inherit;padding:10px 12px;border:0;background:transparent;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
+label.fl{font-size:13px;display:block;margin:16px 0 6px}input{font:inherit;width:100%;padding:10px 16px;border:1px solid var(--hard);border-radius:var(--r);background:#e6e6de}
+.hint{font-size:13px;color:var(--muted)}.row{display:flex;gap:10px;justify-content:flex-end;margin-top:24px}
+.row button{font:inherit;padding:10px 20px;border:1px solid var(--hard);border-radius:var(--r);background:var(--paper)}.row .primary{background:var(--accent);border-color:var(--accent)}:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.note{max-width:560px;margin:24px auto 0;font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="scrim"><section class="dialog" role="dialog" aria-modal="true" aria-labelledby="t">
+<p class="eyebrow">CONNECTIONS · TELEGRAM</p>
+<h1 id="t">Telegram</h1>
+<p class="desc">Un toque para cambiar el manejo, sin abrir un desplegable.</p>
+<label class="fl" id="h">Message handling</label>
+<div class="seg" role="group" aria-labelledby="h">
+<button type="button" aria-pressed="false">Bucle</button>
+<button type="button" aria-pressed="true">Grafo triage</button>
+</div>
+<p class="hint">El próximo turno ya usa el nuevo valor, sin restart.</p>
+<label class="fl" for="tok">Bot token</label><input id="tok" type="password" value="••••••••" autocomplete="off">
+<div class="row"><button type="button">Cancelar</button><button class="primary" type="button">Guardar</button></div>
+</section></div>
+<p class="note">Dirección B — segmentado de dos opciones. Tradeoff: más visible y rápido; escala peor si mañana hay 5 grafos.</p>
+</body>
+</html>

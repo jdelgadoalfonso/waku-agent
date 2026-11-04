@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="es" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Telegram — Message handling (select inline)</title>
+<style>
+:root{--bg:#E1E1D9;--paper:#d8d8d0;--ink:#161614;--muted:#3a3a35;--faint:#62625a;--rule:#b9b9ae;--hard:#8a8a7e;--accent:#E1AE05;--accent-fg:#735903;--r:2px}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:"Helvetica Neue",Arial,sans-serif;padding:32px;line-height:1.55}
+.scrim{position:fixed;inset:0;background:rgb(0 0 0/.4);display:grid;place-items:center;padding:24px}
+.dialog{background:var(--paper);border:1px solid var(--hard);border-radius:var(--r);width:min(560px,100%);padding:24px}
+.eyebrow{font-family:ui-monospace,Menlo,monospace;font-size:12px;letter-spacing:.16em;color:var(--faint);margin:0 0 8px}
+h1{font-size:20px;margin:0 0 4px}p.desc{color:var(--muted);font-size:15px;margin:0 0 20px}
+label{display:block;font-size:13px;margin:16px 0 6px}input,select{font:inherit;width:100%;padding:10px 16px;border:1px solid var(--hard);border-radius:var(--r);background:#e6e6de;color:var(--ink)}
+.hint{font-size:13px;color:var(--muted);margin:6px 0 0}.row{display:flex;gap:10px;justify-content:flex-end;margin-top:24px}
+button{font:inherit;padding:10px 20px;border:1px solid var(--hard);border-radius:var(--r);background:var(--paper)}button.primary{background:var(--accent);border-color:var(--accent)}:focus-visible{outline:2px solid var(--accent-fg);outline-offset:2px}@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+.note{max-width:560px;margin:24px auto 0;font-size:13px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="scrim"><section class="dialog" role="dialog" aria-modal="true" aria-labelledby="t">
+<p class="eyebrow">CONNECTIONS · TELEGRAM</p>
+<h1 id="t">Telegram</h1>
+<p class="desc">Recibe y responde mensajes de Telegram. El próximo turno ya usa lo que guardes.</p>
+<label for="tok">Bot token</label><input id="tok" type="password" value="••••••••" autocomplete="off">
+<label for="user">Allowed user</label><input id="user" value="@tu_usuario">
+<label for="handling">Message handling</label>
+<select id="handling"><option value="loop">Bucle del agente</option><option value="triage" selected>Grafo triage</option></select>
+<p class="hint">Triage decide entre respuesta rápida y bucle completo. Bucle va directo al agente.</p>
+<div class="row"><button type="button">Cancelar</button><button class="primary" type="button">Guardar</button></div>
+</section></div>
+<p class="note">Dirección A — select inline dentro del modal existente, cero UI nueva. Tradeoff: denso y directo; el fallback global queda invisible aquí.</p>
+</body>
+</html>
