@@ -49,3 +49,24 @@ suite "gateway graph selector":
       LoopResult(reply: "loop", toolCalls: @[], iterations: 1)
     assert not resolveGatewayGraph("triage", client, "mini", "/tmp", binder).isNil
     assert not resolveGatewayGraph("1", client, "mini", "/tmp", binder).isNil
+
+  test "gather without a bound turn stays nil (fail open to loop)":
+    let script = Script(items: @[textResp("x")])
+    let client = scriptedClient(script)
+    let binder = proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
+      LoopResult(reply: "loop", toolCalls: @[], iterations: 1)
+    assert resolveGatewayGraph("gather", client, "mini", "/tmp", binder).isNil
+
+  test "gather with a bound turn resolves to it":
+    let script = Script(items: @[textResp("x")])
+    let client = scriptedClient(script)
+    let binder = proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
+      LoopResult(reply: "loop", toolCalls: @[], iterations: 1)
+    let gatherTurn: GraphTurn = proc(userMessage: string, notify: Observer,
+        stream: bool): tuple[answered: bool, res: LoopResult] =
+      (true, LoopResult(reply: "briefing", toolCalls: @[], iterations: 1))
+    let bound = resolveGatewayGraph("gather", client, "mini", "/tmp", binder, gatherTurn)
+    assert not bound.isNil
+    let (answered, res) = bound("hola", nil, false)
+    assert answered
+    assert res.reply == "briefing"

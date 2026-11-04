@@ -2596,9 +2596,11 @@ proc graphSelectorFor*(source: string, env: Table[string, string]): string =
 
 proc resolveGatewayGraph*(name: string, client: LlmClient, smallModel, home: string,
     full: proc(state: JsonNode, notify: Observer,
-               stream: bool): LoopResult {.closure.}): GraphTurn =
+               stream: bool): LoopResult {.closure.}, gatherTurn: GraphTurn = nil): GraphTurn =
   ## Name to GraphTurn. `off`/`loop`/empty/false/0/no is nil (plain loop).
   ## `triage` (and legacy truthy `1`/`true`/`yes`/`on`) binds triage.
+  ## `gather` binds the caller-provided gather turn; nil when the caller
+  ## did not bind one, so respond fails open to the loop.
   ## Unknown names are nil so respond fails open to the loop.
   let sel = name.strip().toLowerAscii()
   case sel
@@ -2607,10 +2609,7 @@ proc resolveGatewayGraph*(name: string, client: LlmClient, smallModel, home: str
   of "triage", "1", "true", "yes", "on":
     triageGraphTurn(client, smallModel, home, full)
   of "gather":
-    # Gather is on-demand (Run gather, /gather), not a per-message turn:
-    # listed so every registered graph appears, but routed to fail-open
-    # loop until it grows a GraphTurn seam.
-    nil
+    gatherTurn
   else:
     nil
 
@@ -3898,7 +3897,8 @@ proc gatewayAgents*(providers: seq[Provider], settings: Settings,
       box.waku.graphTurn = resolveGatewayGraph(sel, box.waku.client,
         box.waku.settings.smallModel, box.waku.settings.home,
         proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
-          box.waku.runFullTurn(st.jget("message").getStr(), n, strm))
+          box.waku.runFullTurn(st.jget("message").getStr(), n, strm),
+        gatherGraphTurn(box.waku))
       box.waku.respond(text, cli.liveObserver, source, false).reply
 
 proc liveGatewayHooks*(providers: seq[Provider], settings: Settings,

@@ -264,3 +264,21 @@ proc runGather*(w: var Waku, observer: Observer = nil): JsonNode =
   var state = newJObject()
   discard runGraph(buildBoundGraph(w), state, notify)
   return state
+
+proc gatherGraphTurn*(w: Waku): GraphTurn =
+  ## Gather as a `Waku.graphTurn` seam: one message triggers the morning
+  ## briefing. `userMessage` and `stream` are ignored — the digest prompt
+  ## is a fixed shape over the four scans. Returns `(false, _)` when no
+  ## digest was produced, so `respond` fails open to the plain loop.
+  result = proc(userMessage: string, notify: Observer,
+                stream: bool): tuple[answered: bool, res: LoopResult] =
+    var cw = w
+    let state = runGather(cw, notify)
+    let digest = state.jget("digest").getStr()
+    if digest.len == 0:
+      return (false, LoopResult())
+    var reply = digest
+    let draft = state.jget("draft_path").getStr()
+    if draft.len > 0:
+      reply = reply & "\n\n*saved to " & draft & "*"
+    return (true, LoopResult(reply: reply, toolCalls: @[], iterations: 1))
