@@ -60,6 +60,13 @@ secret = true
 name = "TELEGRAM_ALLOWED_USER"
 label = "Allowed user"
 
+[[telegram.env]]
+name = "WAKU_GRAPH_TELEGRAM"
+label = "Message handling"
+kind = "choice"
+default = "loop"
+options = ["loop", "triage"]
+
 [discord]
 halves = ["python", "nim"]
 group = "Channels"
@@ -96,6 +103,13 @@ label = "Max turns per hour"
 [[discord.env]]
 name = "DISCORD_HOME"
 label = "Workspace directory"
+
+[[discord.env]]
+name = "WAKU_GRAPH_DISCORD"
+label = "Message handling"
+kind = "choice"
+default = "loop"
+options = ["loop", "triage"]
 
 [whatsapp]
 halves = ["python", "nim"]
@@ -134,6 +148,13 @@ secret = true
 name = "WHATSAPP_ALLOWED_PHONE"
 label = "Allowed phone"
 help = "Without '+' prefix. Empty = answer anyone."
+
+[[whatsapp.env]]
+name = "WAKU_GRAPH_WHATSAPP"
+label = "Message handling"
+kind = "choice"
+default = "loop"
+options = ["loop", "triage"]
 
 [google_calendar]
 halves = ["python", "nim"]

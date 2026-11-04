@@ -132,12 +132,16 @@ suite "T4c-2 the registry file":
     check telegram.importName == "telegram"
     check telegram.setupUrl == "https://t.me/BotFather"
     check telegram.reload == gateway
-    check telegram.env.len == 2
+    check telegram.env.len == 3
     check telegram.env[0].name == "TELEGRAM_BOT_TOKEN"
     check telegram.env[0].label == "Bot token"
     check telegram.env[0].required
     check telegram.env[0].secret
     check telegram.env[1].required == false
+    check telegram.env[2].name == "WAKU_GRAPH_TELEGRAM"
+    check telegram.env[2].kind == choiceField
+    check telegram.env[2].options == @["loop", "triage"]
+    check telegram.env[2].default == "loop"
 
   test "reads the choice and bool env fields":
     let rows = parseIntegrationRows(readFile(findIntegrationsToml()))
