@@ -104,6 +104,7 @@ import ./memory_live
 import ./pricing
 import ./providers
 import ./registry
+from ./graph/registry import enabledWorkflows, defaultPlugins, parsePluginList
 import ./search
 import ./session
 import ./skills except FetchFn
@@ -704,9 +705,10 @@ proc turnSection*(home, provider, model: string,
     inc n
   result = (served, stats)
 
-proc graphSection*(home: string, enabled: bool): JsonNode =
+proc graphSection*(home: string, enabled: bool,
+                    plugins: seq[string] = defaultPlugins): JsonNode =
   ## Port of the `"graph"` block in Python `collect()`: topologies
-  ## straight from the engine (never hand-drawn, so the picture cannot
+  ## straight from the registry (never hand-drawn, so the picture cannot
   ## drift) plus the quick/full split and the last runs from the trace
   ## events. A page load never builds an agent — this only reads the
   ## trace files, skipping bad lines like every other reader here.
@@ -751,7 +753,7 @@ proc graphSection*(home: string, enabled: bool): JsonNode =
                  "path": path,
                  "error": e.jget("error")})
   result = %*{"enabled": enabled,
-               "workflows": [triageTopology(), gatherTopology()],
+               "workflows": enabledWorkflows(plugins),
                "runs": runs,
                "stats": {"quick": quick, "full": full}}
 
@@ -1357,6 +1359,12 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
   # load shows the flag the next turn will actually run under.
   let graphOn = d.env.getOrDefault("WAKU_GRAPH_WORKFLOWS", "") in
     ["1", "true", "yes"]
+  # The registry enable list: env-read like `loadSettings` (the deps
+  # carry no Settings object, only the injected env table). Blank or
+  # absent keeps both builtins; unknown names are skipped downstream.
+  let graphPlugins = block:
+    let parsed = parsePluginList(d.env.getOrDefault("WAKU_PLUGINS", ""))
+    if parsed.len == 0: defaultPlugins else: parsed
   let (turns, stats) = turnSection(d.home, d.provider, d.model,
     d.providers)
   let pageDb = connectDb(d.home)
@@ -1395,7 +1403,7 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
     "connections": conns,
     "mcp_connections": %*[tregCard(d.home)],
     "trace": traceInfo,
-    "graph": graphSection(d.home, graphOn),
+    "graph": graphSection(d.home, graphOn, graphPlugins),
     "turns": turns,
     "stats": stats,
     "facts": state["facts"],

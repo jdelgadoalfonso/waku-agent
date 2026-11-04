@@ -81,6 +81,14 @@ type
     graphWorkflows*: bool
       ## `WAKU_GRAPH_WORKFLOWS`: route messages through the triage graph
       ## first (fail-open to the plain loop, so never worse).
+    plugins*: seq[string]
+      ## `WAKU_PLUGINS`: comma-separated enable list for the graph
+      ## registry (`nim/src/graph/registry.nim`). Default triage+gather
+      ## (a mirror of `graph/registry.defaultPlugins` — config cannot
+      ## import the registry: triage -> app -> config would cycle).
+      ## Unset or blank keeps the default; unknown names are skipped
+      ## by `enabledWorkflows`, so a future third graph needs no
+      ## config change to be recognized, only to be enabled.
     consolidateEvery*: int
       ## `WAKU_CONSOLIDATE_EVERY` (default 6): exchanges between memory
       ## consolidations; the dashboard shows it and doubles it as the
@@ -121,7 +129,8 @@ proc defaultSettings*(): Settings =
            smallModel: "", baseUrl: "",
            maxIterations: defaultMaxIterations,
            maxTokens: defaultMaxTokens, historyTurns: defaultHistoryTurns,
-           graphWorkflows: false, consolidateEvery: 6, retrievalTopK: 4,
+           graphWorkflows: false, plugins: @["triage", "gather"],
+           consolidateEvery: 6, retrievalTopK: 4,
            experimental: false, appleTools: false, ghTool: false,
            ghRepo: "", gmail: false, gmailSend: false, semanticStore: "sqlite", mem0UserId: "waku",
            zepUserId: "waku", episodicStore: "sqlite", obsidianVault: "",
@@ -172,6 +181,15 @@ proc loadFromEnv*(s: var Settings) =
   s.gmail = getEnv("WAKU_GMAIL") in ["1", "true", "yes"]
   s.gmailSend = getEnv("WAKU_GMAIL_SEND") in ["1", "true", "yes"]
   s.graphWorkflows = getEnv("WAKU_GRAPH_WORKFLOWS") in ["1", "true", "yes"]
+  let rawPlugins = getEnv("WAKU_PLUGINS").strip()
+  if rawPlugins.len > 0:
+    var seen: seq[string] = @[]
+    for part in rawPlugins.split(','):
+      let name = part.strip()
+      if name.len > 0 and name notin seen:
+        seen.add(name)
+    if seen.len > 0:
+      s.plugins = seen
   s.consolidateEvery = envInt("WAKU_CONSOLIDATE_EVERY", 6)
   s.otelEndpoint = getEnv("OTEL_EXPORTER_OTLP_ENDPOINT")
   s.semanticStore = getEnv("WAKU_SEMANTIC_STORE", "sqlite")
