@@ -333,9 +333,10 @@ def test_the_judge_writes_one_score_event_with_cost_and_model(judged_home):
     assert event["value"] == 0.3 and event["source"] == "judge" and event["check"] == "answer_grounded"
     assert event["judge"] == "claude-haiku-4-5-20251001"
     assert event["cost_usd"] == obs.llm_cost("anthropic", "claude-haiku-4-5-20251001", {"in": 1200, "out": 60})
-    lines = [json.loads(x) for p in (judged_home / "traces").glob("*.jsonl")
+    lines = [json.loads(x) for p in sorted((judged_home / "traces").glob("*.jsonl"))
              for x in p.read_text().splitlines()]
-    assert [e for e in lines if e["type"] == "score"] == [{**event, "ts": lines[-1]["ts"]}]
+    scores = [e for e in lines if e["type"] == "score"]
+    assert scores == [{**event, "ts": scores[0]["ts"]}]
     ledger = [json.loads(x) for x in (judged_home / "usage.jsonl").read_text().splitlines()]
     assert ledger[0]["kind"] == "judge" and ledger[0]["in"] == 1200
     # the page shows the judge's chip, with the model named in its note
