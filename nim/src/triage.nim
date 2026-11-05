@@ -54,6 +54,34 @@ type
   FullFn* = proc(state: JsonNode, notify: Observer): LoopResult {.closure.}
   DelegateFn* = proc(state: JsonNode, notify: Observer): JsonNode {.closure.}
 
+proc agentRoutesIn(allowedRoutes: seq[string]): seq[string] =
+  ## The agent routes an allow-list enables, in order and deduped.
+  ## `quick`/`full` are the gate's own paths, never agents, so a name that
+  ## collides with one is dropped instead of forking the same label onto a
+  ## quick reply AND a delegate.
+  for route in allowedRoutes:
+    if route.len > 0 and route notin ["quick", "full"] and
+        route notin result:
+      result.add(route)
+
+proc triagePromptFor*(allowedRoutes: seq[string] = @[]): string =
+  ## The gate's prompt. With no enabled agent it IS `triagePrompt`, byte
+  ## for byte — the quick/full wording is never rebuilt here. Every
+  ## enabled agent route joins the JSON route line and a short legend, so
+  ## a small model that only echoes what it reads can emit that route.
+  let agents = agentRoutesIn(allowedRoutes)
+  if agents.len == 0:
+    return triagePrompt
+  var routes = "\"quick\" or \"full\""
+  for agent in agents:
+    routes.add(" or \"" & agent & "\"")
+  let legend = "\n" & agents.join(", ") & " — enrolled agent routes. Hand the\n" &
+    "        message to the agent whose job it clearly is: it runs its own\n" &
+    "        turn and answers.\n"
+  result = triagePrompt.replace("\"quick\" or \"full\"", routes)
+  result = result.replace("\n\nUser message: {message}",
+    "\n" & legend & "\nUser message: {message}")
+
 proc classifyMessage*(client: LlmClient, smallModel,
                       message: string,
                       notify: Observer = nil,
@@ -61,14 +89,17 @@ proc classifyMessage*(client: LlmClient, smallModel,
                         "full"]): tuple[route, reason: string] =
   ## `(route, reason)`, failing open to "full": a broken triage must cost
   ## latency, never capability. `allowedRoutes` is the model's answer
-  ## domain — quick/full plus every enrolled agent the caller enables.
+  ## domain — quick/full plus every enrolled agent the caller enables —
+  ## and it is also what the prompt offers the model, so the answer domain
+  ## and the question can never disagree.
   ## Anything outside it fails open with the reason saying why.
   ## `text.index("{")` → `text.rindex("}")`; anything unparseable fails
   ## open with the reason saying why.
   try:
     let req = %*{"model": smallModel, "max_tokens": 600,
                  "messages": @[%*{"role": "user", "content":
-                   formatTemplate(triagePrompt, %*{"message": message})}]}
+                   formatTemplate(triagePromptFor(allowedRoutes),
+                     %*{"message": message})}]}
     let text = textOf(meteredClient(client, "triage", smallModel,
       notify).create(req)["content"])
     let a = text.find('{')
@@ -115,9 +146,13 @@ proc buildTriageGraph*(classifyFn: ClassifyFn, calendarFn: CalendarFn,
   ## stubs just to describe(), and the app binder below binds the real
   ## client/loop. The router waits on BOTH parallel branches (via the
   ## `gather` join) before deciding. `agentRoutes` adds one
-  ## `delegate_agent` node the router can reach per enabled agent; the
-  ## router stays fail-open because its default is still "full", so an
-  ## agent route with no delegate entry lands on the loop, never nowhere.
+  ## `delegate_agent` node the router can reach per enabled agent, and
+  ## only when a `delegateFn` is bound: with no delegate there is nothing
+  ## to spread a route over, so the graph is the plain five-node
+  ## quick|full one. (`keyRouter`'s default covers only a missing or empty
+  ## route key; an unknown label is recorded as a router error instead, so
+  ## a caller must never offer a route the graph cannot reach — the binder
+  ## below keeps its answer domain equal to what it builds.)
   var g = Graph(name: "triage")
 
   proc classify(state: JsonNode, notify: Observer): JsonNode =
@@ -183,21 +218,40 @@ proc quickReply*(client: LlmClient, smallModel: string,
 
 proc triageGraphTurn*(client: LlmClient, smallModel, home: string,
     full: proc(state: JsonNode, notify: Observer,
-               stream: bool): LoopResult {.closure.}): GraphTurn =
+               stream: bool): LoopResult {.closure.},
+    agents: seq[string] = @[],
+    delegateFn: DelegateFn = nil): GraphTurn =
   ## The app binder: triage as a `Waku.graphTurn` seam. `stream` rides
   ## per call (like Python's closure over `respond`'s flag), not per
   ## bind. Returns `(answered, result)`; `(false, _)` whenever the graph
   ## produced no answer, so `respond` falls open to the plain loop.
+  ##
+  ## `agents` is the enabled agent list (`Settings.agents`) and
+  ## `delegateFn` is the seam that will run one. Both default empty/nil,
+  ## so every existing caller binds exactly the quick|full graph it binds
+  ## today: no agents, no delegate node. Threading the delegate seam is
+  ## plumbing only — no worker is spawned here yet.
+  ##
+  ## A route is offered to the model only when something can receive it,
+  ## so with no `delegateFn` the gate keeps today's quick|full answer
+  ## domain: enabling `WAKU_AGENTS` before the delegate is wired changes
+  ## nothing (the model's agent route fails open to full), and the gate can
+  ## never ask the graph for a label the router has no target for.
+  let agentRoutes = if delegateFn.isNil: newSeq[string]()
+                    else: agentRoutesIn(agents)
   result = proc(userMessage: string, notify: Observer,
                 stream: bool): tuple[answered: bool, res: LoopResult] =
     let g = buildTriageGraph(
       classifyFn = proc(m: string): tuple[route, reason: string] =
-        classifyMessage(client, smallModel, m, notify),
+        classifyMessage(client, smallModel, m, notify,
+                        @["quick", "full"] & agentRoutes),
       calendarFn = proc(): string = todaysEvents(home),
       quickFn = proc(s: JsonNode): string =
         quickReply(client, smallModel, s, notify),
       fullFn = proc(s: JsonNode, n: Observer): LoopResult =
-        full(s, n, stream))
+        full(s, n, stream),
+      agentRoutes = agentRoutes,
+      delegateFn = delegateFn)
     var state = %*{"message": userMessage}
     discard runGraph(g, state, notify)
     if state.jget("result").kind == JObject:

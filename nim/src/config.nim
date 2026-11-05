@@ -89,6 +89,13 @@ type
       ## Unset or blank keeps the default; unknown names are skipped
       ## by `enabledWorkflows`, so a future third graph needs no
       ## config change to be recognized, only to be enabled.
+    agents*: seq[string]
+      ## `WAKU_AGENTS`: comma-separated enable list of the agents the
+      ## triage gate may route to (`nim/src/graph/agents.nim`), trimmed
+      ## and deduped like `plugins`. Empty is the default and means the
+      ## old behavior: a gate whose only routes are quick and full.
+      ## `quick`/`full` are the gate's own paths, so a name that collides
+      ## with one is ignored by the router, not turned into an agent.
     consolidateEvery*: int
       ## `WAKU_CONSOLIDATE_EVERY` (default 6): exchanges between memory
       ## consolidations; the dashboard shows it and doubles it as the
@@ -130,6 +137,7 @@ proc defaultSettings*(): Settings =
            maxIterations: defaultMaxIterations,
            maxTokens: defaultMaxTokens, historyTurns: defaultHistoryTurns,
            graphWorkflows: false, plugins: @["triage", "gather"],
+           agents: @[],
            consolidateEvery: 6, retrievalTopK: 4,
            experimental: false, appleTools: false, ghTool: false,
            ghRepo: "", gmail: false, gmailSend: false, semanticStore: "sqlite", mem0UserId: "waku",
@@ -146,6 +154,17 @@ proc envInt(name: string, default: int): int =
     return parseInt(raw)
   except ValueError:
     return default
+
+proc envList(name: string): seq[string] =
+  ## `WAKU_AGENTS="brief, gather"` -> @["brief", "gather"]: trims, drops
+  ## empties, keeps the first occurrence. Empty input means "no names"
+  ## and returns @[] — the same parse `parsePluginList` does for
+  ## `WAKU_PLUGINS`, spelled here because config cannot import the
+  ## registries (registry -> triage -> app -> config would cycle).
+  for part in getEnv(name).split(','):
+    let item = part.strip()
+    if item.len > 0 and item notin result:
+      result.add(item)
 
 proc envOrDefault*(name, fallback: string): string =
   ## `os.getenv(name)` that treats an EMPTY value as absent, the port of
@@ -190,6 +209,7 @@ proc loadFromEnv*(s: var Settings) =
         seen.add(name)
     if seen.len > 0:
       s.plugins = seen
+  s.agents = envList("WAKU_AGENTS")
   s.consolidateEvery = envInt("WAKU_CONSOLIDATE_EVERY", 6)
   s.otelEndpoint = getEnv("OTEL_EXPORTER_OTLP_ENDPOINT")
   s.semanticStore = getEnv("WAKU_SEMANTIC_STORE", "sqlite")
