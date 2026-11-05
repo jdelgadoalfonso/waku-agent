@@ -495,6 +495,9 @@ const VIEWS = {
   overview(d){
     const s = d.stats;
     const u = d.usage || {total_cost:0};
+    const mode = d.overview_mode || ((d.turns.length && d.turns[0].graph && d.turns[0].graph.route) ? "graph" : "loop");
+    const loopOpen = mode === "graph" ? "" : " open";
+    const graphOpen = mode === "graph" ? " open" : "";
     return `${uiStatBand([
         {label:"spent", value:money(u.total_cost), sub:"all-time", tone:"ok"},
         {label:"avg turn", value:secs(s.latency_avg)},
@@ -502,10 +505,10 @@ const VIEWS = {
         {label:"facts", value:d.facts.length}, {label:"events", value:d.calendar.length},
       ])}
     <h2>Retrieval gate — the hero decision</h2>${gateSplit(s)}
-    <h2 style="margin-top:var(--space-6)">Architecture — click any box <span class="arch-status"></span></h2>
-    ${archSVG(d)}
-    <h2>Graph workflows — when a turn needs shape</h2>
-    ${graphPanel(d)}
+    <details${loopOpen} data-overview="loop"><summary><h2 style="margin-top:var(--space-6)">Architecture — click any box <span class="arch-status"></span></h2></summary>
+    ${archSVG(d)}</details>
+    <details${graphOpen} data-overview="graph"><summary><h2>Graph workflows — when a turn needs shape</h2></summary>
+    ${graphPanel(d)}</details>
     <h2>Latest turn</h2>${d.turns.length?turnCard(d.turns[0]):uiCard('<span class="empty">no turns yet — talk to Waku first</span>')}`;
   },
   loop(d){

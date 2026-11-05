@@ -579,6 +579,18 @@ proc safeInt(n: JsonNode): int =
   of JFloat: int(n.getFloat())
   else: 0
 
+proc overviewMode*(turns: JsonNode): string =
+  ## Lot 3 T3.1: Overview dual mode from the newest turn's `graph.route`.
+  ## `"graph"` when the last turn carries a non-empty route, else `"loop"`.
+  ## Pure and offline, so the dashboard can expand `archSVG` for loop turns
+  ## and `graphPanel` for graph-plugin turns. Missing/null shapes read loop.
+  if turns.kind != JArray or turns.len == 0:
+    return "loop"
+  let g = turns[0].jget("graph")
+  if g.kind == JObject and g.jget("route").getStr().len > 0:
+    return "graph"
+  return "loop"
+
 proc turnSection*(home, provider, model: string,
                   providers: seq[Provider]): (JsonNode, JsonNode) =
   ## `(turns, stats)` from the trace events — port of the turns-grouping
@@ -1431,6 +1443,7 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
     "trace": traceInfo,
     "graph": graphSection(d.home, graphOn, graphPlugins),
     "turns": turns,
+    "overview_mode": %overviewMode(turns),
     "stats": stats,
     "facts": state["facts"],
     "episodes": state["episodes"],
