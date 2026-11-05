@@ -291,6 +291,7 @@ NETWORK_CALLERS = {
     ("util.js", "postJSON"): "primitive",
     ("views.js", "runQuery"): "user",
     ("views.js", "saveConnection"): "user",
+    ("views.js", "saveGraphMode"): "user",
     ("views.js", "testConnection"): "user",
     ("views.js", "saveProvider"): "user",
 }

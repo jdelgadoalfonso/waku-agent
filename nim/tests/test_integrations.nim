@@ -54,21 +54,29 @@ suite "phase 5d1 static registry":
       ("otel", "Search & Observability"),
     ]
 
-  test "whatsapp has 5 fields, 4 of them required":
+  test "whatsapp has 6 fields, 4 of them required":
     let row = findRow(INTEGRATIONS, "whatsapp")
-    assert row.env.len == 5
+    assert row.env.len == 6
     assert row.env.filterIt(it.required).len == 4
     assert row.env[4].name == "WHATSAPP_ALLOWED_PHONE"
     assert not row.env[4].required
     assert row.env[4].help == "Without '+' prefix. Empty = answer anyone."
+    assert row.env[5].name == "WAKU_GRAPH_WHATSAPP"
+    assert row.env[5].kind == choiceField
+    assert row.env[5].default == "loop"
+    assert not row.env[5].required
 
   test "discord field kinds and normalize marker":
     let row = findRow(INTEGRATIONS, "discord")
-    assert row.env.len == 6
+    assert row.env.len == 7
     assert row.env[3].name == "DISCORD_REQUIRE_MENTION"
     assert row.env[3].kind == boolField
     for i in [0, 1, 2, 4, 5]:
       assert row.env[i].kind == textField
+    assert row.env[6].name == "WAKU_GRAPH_DISCORD"
+    assert row.env[6].kind == choiceField
+    assert row.env[6].default == "loop"
+    assert not row.env[6].required
     assert row.normalize != nil
 
   test "obsidian choice options, defaults and no normalize hook":
@@ -270,6 +278,8 @@ WAKU_PROVIDER=anthropic
 # Setup: https://t.me/BotFather
 # TELEGRAM_BOT_TOKEN=
 # TELEGRAM_ALLOWED_USER=
+# Choices: loop, triage, gather.
+# WAKU_GRAPH_TELEGRAM=loop
 
 # ── Discord ──
 # Lets Waku answer in a Discord server.
@@ -281,6 +291,8 @@ WAKU_PROVIDER=anthropic
 # DISCORD_REQUIRE_MENTION=
 # DISCORD_MAX_TURNS_PER_HOUR=
 # DISCORD_HOME=
+# Choices: loop, triage, gather.
+# WAKU_GRAPH_DISCORD=loop
 
 # ── WhatsApp ──
 # Lets Waku answer WhatsApp messages via the Meta Cloud API.
@@ -292,6 +304,8 @@ WAKU_PROVIDER=anthropic
 # WHATSAPP_VERIFY_TOKEN=
 # Without '+' prefix. Empty = answer anyone.
 # WHATSAPP_ALLOWED_PHONE=
+# Choices: loop, triage, gather.
+# WAKU_GRAPH_WHATSAPP=loop
 
 # ── Calendar & Productivity ──
 
