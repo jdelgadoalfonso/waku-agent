@@ -181,14 +181,15 @@ suite "phase 7d2 supervisor env fields":
     let fields = gatewayEnvFields()
     check fields.len == 3
     check fields[0] == ("telegram", @["TELEGRAM_BOT_TOKEN",
-      "TELEGRAM_ALLOWED_USER"])
+      "TELEGRAM_ALLOWED_USER", "WAKU_GRAPH_TELEGRAM"])
     check fields[1] == ("discord", @["DISCORD_BOT_TOKEN",
       "DISCORD_ALLOWED_USER", "DISCORD_ALLOWED_CHANNEL",
       "DISCORD_REQUIRE_MENTION", "DISCORD_MAX_TURNS_PER_HOUR",
-      "DISCORD_HOME"])
+      "DISCORD_HOME", "WAKU_GRAPH_DISCORD"])
     check fields[2] == ("whatsapp", @["WHATSAPP_TOKEN",
       "WHATSAPP_PHONE_NUMBER_ID", "WHATSAPP_APP_SECRET",
-      "WHATSAPP_VERIFY_TOKEN", "WHATSAPP_ALLOWED_PHONE"])
+      "WHATSAPP_VERIFY_TOKEN", "WHATSAPP_ALLOWED_PHONE",
+      "WAKU_GRAPH_WHATSAPP"])
 
   test "the first field of each row is the token isConfigured reads":
     # `isConfigured` declares "token present" as the FIRST field, so a
