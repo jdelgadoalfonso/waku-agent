@@ -1,0 +1,27 @@
+# Orchestrator instances
+
+Thin orchestrator of same-binary role processes with single dashboard and dual Overview.
+
+## Specs
+
+- S1: "quiero transformar waku-agent en un orquestador de waku-agents que puedan delegar en grafos o en loops"
+- S2: "los subagentes serían instancias" / "había pensado procesos del mismo binario con rol distinto"
+- S3: "tambien quiero mantener que siempre tengan un dashboard pero quiero modificar drasticamente ese dashboard"
+- S4: "quiero mantener overview, gateway, loop, memory, tools, database, observability, evals y el resto de cosas. Pero el Overview quiero que se muestre el arnés en caso de funcionar como un agente o el grafo en caso de usar un plugin de grafo. Y que se muestren las mismas animaciones que se ven ahora mismo además de tener la observabilidad y la trazabilidad."
+- S5: "lo del dashboard único en el orquestador me parece genial, pero tenemos que seguir teniendo la trazabilidad y la observabilidad completa, no solo del orquestador, sino también de los subagentes que se ejecuten."
+- S6: "ok, vamos a abrir la propuesta con los tres lotes"
+- S7: "también tendriamos que tener en el dashboard la posibilidad de ver los subagentes con su tipo y la comunicación entre si"
+- S8: "y que se vea en tiempo real como pasan los mensajes en el grafo"
+
+## Tasks
+
+- T1 (S1,S2,S6): Lot 1 — process model, stdio JSON, trace_id + fail-open contract — route: proposal only — commit: -
+- T2 (S1,S2,S6): Lot 2 — agent registry in nim/src/graph/registry.nim, model-writes-key router — route: proposal only — commit: -
+- T3 (S3,S4,S5,S6,S7,S8): Lot 3 — single dashboard, dual Overview, agents panel with kind loop|graph, inter-agent edges, real-time message waves, same animations, per-agent observability — route: proposal only — commit: -
+- T4 (S1-S6): Maintainer yes on docs/orchestrator-instances-design.md before any code — route: proposal gate — commit: -
+
+## Log
+
+- L1 (verbatim): "quiero transformar waku-agent en un orquestador de waku-agents que puedan delegar en grafos o en loops / los subagentes serían instancias / había pensado procesos del mismo binario con rol distinto / si, tambien quiero mantener que siempre tengan un dashboard pero quiero modificar drasticamente ese dashboard / quiero mantener overview, gateway, loop, memory, tools, database, observability, evals y el resto de cosas. Pero el Overview quiero que se muestre el arnés en caso de funcionar como un agente o el grafo en caso de usar un plugin de grafo. Y que se muestren las mismas animaciones que se ven ahora mismo además de tener la observabilidad y la trazabilidad. / lo del dashboard único en el orquestador me parece genial, pero tenemos que seguir teniendo la trazabilidad y la observabilidad completa, no solo del orquestador, sino también de los subagentes que se ejecuten. / ok, vamos a abrir la propuesta con los tres lotes"
+- L2 (verbatim): "también tendriamos que tener en el dashboard la posibilidad de ver los subagentes con su tipo y la comunicación entre si"
+- L3 (verbatim): "y que se vea en tiempo real como pasan los mensajes en el grafo"
