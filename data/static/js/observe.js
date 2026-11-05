@@ -213,6 +213,20 @@ function obsTurnHead(t, key){
     uiButton("Close all", {level: "tertiary", size: "sm", onclick: `obsAllLoops('${key}',${t.loops},false)`})}</span>` : "";
   return story + obsTurnBadges(t, key) + errors + `<div class="wf-meta"><span class="meta">${graph}${where}${obsWhen(t.ts)}</span>${tools}</div>`;
 }
+// ---------- Per agent (lot 3 T3.4): one row per worker the trace names,
+// from the payload's `agents` — turns it ran, what its own events cost, and
+// the last route the orchestrator sent it to. Older traces read no agents,
+// and then this draws nothing rather than an empty table.
+function obsAgents(d){
+  const rows = d.agents || [];
+  if (!rows.length) return "";
+  return `<h2>Per agent</h2>
+    <div class="obs-cap">Every worker the trace names: the turns it ran, what its own events cost, and the last route the orchestrator sent it to. Agents are enrolled with <code>WAKU_AGENTS</code>.</div>`
+    + table(["agent", "turns", "cost", "last route"], rows.map(a =>
+      `<tr><td><code>${esc(a.agent)}</code></td><td class="meta">${obsNum(a.turns)}</td>
+        <td class="meta">${obsUsd(a.cost)}</td>
+        <td class="meta">${a.last_route ? `<code>${esc(a.last_route)}</code>` : "—"}</td></tr>`));
+}
 function obsTurns(d){
   const turns = d.turns || [];
   let h = obsCap("turns");
@@ -220,6 +234,7 @@ function obsTurns(d){
     h += d.trace_errors.map(e => uiNotice("failed", `${uiBadge("trace encoding error", "bad")}
       <code>${esc(e.file)}</code>: ${esc(e.error)}`)).join("");
   }
+  h += obsAgents(d);
   if (!turns.length) return h + uiCard(`<span class="empty">no turns traced yet. Send Waku a message and it appears here.</span>`);
   h += turns.map((t, i) => {
     const key = obsTurnKey(t, i);

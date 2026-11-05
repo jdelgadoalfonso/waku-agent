@@ -194,6 +194,94 @@ proc groupTurns*(events: seq[JsonNode]): seq[JsonNode] =
   return result
 
 const
+  orchestratorAgent* = "orchestrator"
+    ## The router's own name in `aggregate.delegationEvent`: it delegates,
+    ## it is never a worker row, or every message would open one.
+
+proc agentName(ev: JsonNode): string =
+  ## The worker one event names, or "" when it names none: the child stamp
+  ## `agent` first, then a delegation edge's worker (`workflow`, the
+  ## `toAgent` of `delegationEvent`), then a message's worker end. The
+  ## router side of a message (`from` when the orchestrator sent it) is
+  ## skipped so orchestration traffic never reads as an agent of its own.
+  ## A kind whitelist would be the wrong seam: every child line is stamped
+  ## `agent`, so a worker's `node_end` or `research` counts exactly as its
+  ## `worker_done` does.
+  result = ev.jget("agent").getStr()
+  if result.len > 0:
+    return
+  case ev.jget("type").getStr()
+  of "delegation":
+    result = ev.jget("workflow").getStr()
+  of "message":
+    let sender = ev.jget("from").getStr()
+    result = if sender.len > 0 and sender != orchestratorAgent: sender
+             else: ev.jget("to").getStr()
+  else:
+    discard
+
+proc eventCost(ev: JsonNode): float =
+  ## One event's dollars. `cost_usd` wins when both keys are numeric: they
+  ## name the same charge, so adding both would bill one event twice.
+  ## A non-numeric value (`"free"`) is ignored, so a hand-edited line costs
+  ## a row 0, never an error.
+  for key in ["cost_usd", "cost"]:
+    let n = ev.jget(key)
+    case n.kind
+    of JFloat: return n.getFloat()
+    of JInt: return float(n.getBiggestInt())
+    else: discard
+
+proc eventRoute(ev: JsonNode): string =
+  ## One event's route: its own `route`, else the delegation `target`.
+  ## Empty when it names neither, so `last_route` keeps the previous one.
+  result = ev.jget("route").getStr()
+  if result.len == 0:
+    result = ev.jget("target").getStr()
+
+proc rowIndex(names: openArray[string], name: string): int =
+  ## Position of `name` in `names`, or -1. A plain scan keeps the rows in
+  ## first-appearance order, which is stable across reads of one trace.
+  for i in 0 ..< names.len:
+    if names[i] == name:
+      return i
+  return -1
+
+proc agentsSummary*(events: seq[JsonNode]): JsonNode =
+  ## Lot 3 T3.4: per-agent observability from the same trace events, in
+  ## first-appearance (oldest first) order. One row per worker
+  ## `{agent, turns, cost, last_route}`: `turns` counts distinct `turn_id`,
+  ## `cost` sums each event's one dollar value (`cost_usd`, else `cost`), and
+  ## `last_route` keeps the newest `route`/`target` seen. Pure and offline, so
+  ## `/api/observability` aggregates per agent from the one trace read it
+  ## already does — no new polling loop. A trace with no worker events reads
+  ## `[]`, and unknown shapes are skipped, never an error.
+  result = newJArray()
+  var names: seq[string] = @[]
+  var turnIds: seq[seq[string]] = @[]
+  for ev in events:
+    if ev.kind != JObject:
+      continue
+    let name = agentName(ev)
+    if name.len == 0:
+      continue
+    var idx = rowIndex(names, name)
+    if idx < 0:
+      names.add(name)
+      turnIds.add(@[])
+      result.add(%*{"agent": name, "turns": 0, "cost": 0.0,
+        "last_route": ""})
+      idx = names.len - 1
+    let turnId = ev.jget("turn_id").getStr()
+    if turnId.len > 0 and turnId notin turnIds[idx]:
+      turnIds[idx].add(turnId)
+      result[idx]["turns"] = %turnIds[idx].len
+    let route = eventRoute(ev)
+    if route.len > 0:
+      result[idx]["last_route"] = %route
+    result[idx]["cost"] = %(result[idx]["cost"].getFloat() + eventCost(ev))
+
+const
   outputChars* = 200
     ## What a waterfall row keeps of a tool's answer.
 
@@ -1524,7 +1612,9 @@ proc payload*(home: string, provider: string = "", model: string = "",
   ## judge model every turn's `judge_offer` reads null; with one it names
   ## the model and its estimated cost (`turn_evals.judge_offer`).
   ## `generatedAt` overrides the stamp for deterministic pins; ""
-  ## computes it, like `nowIso`.
+  ## computes it, like `nowIso`. `agents` (T3.4) is the per-worker roll-up
+  ## from those same events — additive, so nothing a reader already
+  ## expects is renamed or removed.
   let win = validWindow(window)
   let (events, errors, files) = readEvents(home)
   let grouped = groupTurns(events)
@@ -1558,7 +1648,7 @@ proc payload*(home: string, provider: string = "", model: string = "",
       %files[^1] else: newJNull()),
     "trace_errors": %errors,
     "turns": %turnsArr, "tools": tools, "memory": %memArr,
-    "spend": spend, "evals": evals}
+    "spend": spend, "evals": evals, "agents": agentsSummary(events)}
 
 proc turnsReport*(home: string, window: string = "7d",
     nowMs: int64 = 0): string =
