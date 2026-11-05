@@ -70,3 +70,20 @@ suite "gateway graph selector":
     let (answered, res) = bound("hola", nil, false)
     assert answered
     assert res.reply == "briefing"
+
+  test "dashboard and cli sources read their own keys, then the global":
+    var env = initTable[string, string]()
+    env["WAKU_GRAPH_WORKFLOWS"] = "triage"
+    env["WAKU_GRAPH_DASHBOARD"] = "off"
+    env["WAKU_GRAPH_CLI"] = "gather"
+    assert graphSelectorFor("dashboard", env) == "off"
+    assert graphSelectorFor("cli", env) == "gather"
+    assert graphSelectorFor("telegram", env) == "triage"
+
+  test "plugin miss and unknown names stay nil (fail open to loop)":
+    let script = Script(items: @[textResp("x")])
+    let client = scriptedClient(script)
+    let binder = proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
+      LoopResult(reply: "loop", toolCalls: @[], iterations: 1)
+    assert resolveGatewayGraph("plugin:missing", client, "mini", "/tmp",
+      binder).isNil

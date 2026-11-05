@@ -239,7 +239,7 @@ proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
   # `.waku/plugins/*.so` loaded and registered as `plugin:<name>`.
   # `loadPluginGraphs` never raises: a bad library is one stderr line and
   # the CLI runs exactly as it does without it.
-  w.hostFns = newHostTable(client, w.tools)
+  w.hostFns = newHostTable(client, w.tools, settings.model)
   discard loadPluginGraphs(pluginDir(settings.home), addr w.hostFns[])
   wireMemory(w, settings, db, client, bundledSkillDirs())
   if settings.graphWorkflows:
@@ -257,10 +257,17 @@ proc runChat*(dotenvStart = ""): int =
   except ClientConfigError as exc:
     stderr.writeLine(exc.msg)
     return 1
+  # The graph is re-resolved on the live agent every turn, exactly like the
+  # browser's chat seam: `WAKU_GRAPH_CLI` wins, the global
+  # `WAKU_GRAPH_WORKFLOWS` is the fallback, and the selector is re-read
+  # before each `respond` — so a graph change needs no restart. The startup
+  # seam `buildCliApp` bound (the triage door) stays as the initial value.
+  proc reselect(w: var Waku) {.closure.} =
+    reselectGraphTurn(w, "cli", processEnv())
   when defined(wakuStyle):
-    runRepl(w, terminalRenderer(terminalWidth()))
+    runRepl(w, terminalRenderer(terminalWidth()), reselect)
   else:
-    runRepl(w)
+    runRepl(w, graphReselect = reselect)
   return 0
 
 proc runBriefCmd*(dotenvStart = ""): int =

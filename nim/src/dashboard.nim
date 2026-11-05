@@ -266,6 +266,25 @@ type
     ## looks up the same keys) and its exact bytes. Built by the
     ## compile-time walk in the embed section.
 
+  WakuBox* = ref object
+    ## Everything a live turn needs, plus the agent once built.
+    providers*: seq[Provider]
+    dotenvPath*: string
+    settings*: Settings
+    waku*: Waku
+    built*: bool
+    buildError*: string
+    sessionId*: string
+      ## The conversation thread this box owns, when it is not the
+      ## dashboard's: a supervised gateway answers as its own gateway
+      ## (`session_id="telegram"`, Python's `GatewayAgentRunner` pair).
+      ## Empty means the `dashboard-<stamp>` thread of a browser chat.
+    apiKey*: string
+      ## `WAKU_API_KEY` out of the dashboard's own env table, so a
+      ## gateway turn reads the same key the panel saves (the process
+      ## environment is not mutated by a save). Empty means `os.getenv`,
+      ## which is what a browser chat has always used.
+
   DashboardDeps* = object
     ## Everything the handlers read, injected so tests stay offline.
     home*: string
@@ -294,6 +313,10 @@ type
       ## The `.env` file settings/connections persist to; "" skips disk.
     hostOs*: string
       ## Platform for the reveal fallback; "" means the build host.
+    box*: WakuBox
+      ## The lazy browser agent behind the chat seams. Set by
+      ## `buildDashboardDeps`; `serveDashboardCmd` rebinds the chat
+      ## seams against the server's live env table through it.
     chatFn*: ChatFn
     chatStreamFn*: ChatStreamFn
     graphStreamFn*: GraphStreamFn
@@ -2576,25 +2599,7 @@ proc runDashboardCmd*(srv: var DashboardServer,
 # by the `WakuBox` — never a process global — so a failed build (no
 # keys) surfaces as a chat error while the page itself keeps serving.
 
-type
-  WakuBox* = ref object
-    ## Everything a live turn needs, plus the agent once built.
-    providers*: seq[Provider]
-    dotenvPath*: string
-    settings*: Settings
-    waku*: Waku
-    built*: bool
-    buildError*: string
-    sessionId*: string
-      ## The conversation thread this box owns, when it is not the
-      ## dashboard's: a supervised gateway answers as its own gateway
-      ## (`session_id="telegram"`, Python's `GatewayAgentRunner` pair).
-      ## Empty means the `dashboard-<stamp>` thread of a browser chat.
-    apiKey*: string
-      ## `WAKU_API_KEY` out of the dashboard's own env table, so a
-      ## gateway turn reads the same key the panel saves (the process
-      ## environment is not mutated by a save). Empty means `os.getenv`,
-      ## which is what a browser chat has always used.
+# `WakuBox` is declared above `DashboardDeps`, which owns one (see above).
 
 proc graphSelectorFor*(source: string, env: Table[string, string]): string =
   ## Per-source graph selector read live every turn: `WAKU_GRAPH_<SOURCE>`
@@ -2674,6 +2679,38 @@ proc resolveGatewayGraph*(name: string, client: LlmClient, smallModel, home: str
       if not plugin.isNil:
         result = pluginGraphTurn(plugin)
 
+proc liveProcessEnv*(): Table[string, string] =
+  ## The process environment as a table: the selector input when no
+  ## server table exists (in-process dashboard checks, tests).
+  result = initTable[string, string]()
+  for k, v in envPairs():
+    result[k] = v
+
+proc reselectGraphTurn*(w: var Waku, source: string,
+                        env: Table[string, string]) =
+  ## Bind this turn's graph on the live agent: `graphSelectorFor` names
+  ## it, `resolveGatewayGraph` builds it. Shared by the browser seam
+  ## (`liveChatStreamFn`, source "dashboard") and the CLI (`runRepl`
+  ## hook, source "cli") — the same per-turn pattern `gatewayAgents`
+  ## uses for telegram/discord/whatsapp. Never raises: anything odd
+  ## leaves the loop seam (nil), so the turn fails open to the loop.
+  ##
+  ## The full-turn closure needs the live agent, and Nim cannot capture a
+  ## `var` parameter in a closure ("would violate memory safety"), so it
+  ## captures the address instead. Safe by construction: the closure is
+  ## stored in `w.graphTurn` — inside the very object it points at — so it
+  ## cannot outlive it, and both callers keep the agent put (a `WakuBox`
+  ## field, the REPL's own `Waku`).
+  let agent = addr w
+  try:
+    w.graphTurn = resolveGatewayGraph(graphSelectorFor(source, env),
+      w.client, w.settings.smallModel, w.settings.home,
+      proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
+        agent[].runFullTurn(st.jget("message").getStr(), n, strm),
+      gatherGraphTurn(w))
+  except CatchableError:
+    w.graphTurn = nil
+
 proc ensureWaku*(box: WakuBox) =
   ## Build the shared agent once: settings → providers → client → db,
   ## with the triage graph door when enabled (the `buildCliApp` shape,
@@ -2700,7 +2737,7 @@ proc ensureWaku*(box: WakuBox) =
     # Step 3: the host table plugins call back into, then every
     # `.waku/plugins/*.so` registered as `plugin:<name>` — the same wiring
     # `buildCliApp` does, so a gateway reusing this box gets it too.
-    box.waku.hostFns = newHostTable(client, box.waku.tools)
+    box.waku.hostFns = newHostTable(client, box.waku.tools, s.model)
     discard loadPluginGraphs(pluginDir(s.home), addr box.waku.hostFns[])
     wireMemory(box.waku, s, db, client, bundledSkillDirs())
     if s.graphWorkflows:
@@ -3012,9 +3049,18 @@ proc liveGraphStream*(box: WakuBox, payload: JsonNode,
   except CatchableError as exc:
     emit("done", %*{"error": errorText(exc)})
 
-proc liveChatStreamFn*(box: WakuBox): ChatStreamFn =
+proc liveChatStreamFn*(box: WakuBox,
+    envOf: proc(): Table[string, string] {.closure.} = nil): ChatStreamFn =
   ## `chat_stream` against the live agent: gate/tool/text events as they
   ## happen (the browser lights the diagram from these), then done.
+  ##
+  ## The graph is re-resolved EVERY turn, once the agent exists and before
+  ## `respond` reads the seam: `WAKU_GRAPH_DASHBOARD` names it (fallback
+  ## `WAKU_GRAPH_WORKFLOWS`), so a graph change needs no rebuild and no
+  ## restart — the `gatewayAgents` pattern, for the browser.
+  ## `envOf` is the env table that selector reads: the server's live table
+  ## when one exists (a Connections save applies to the next turn), the
+  ## process environment otherwise (in-process `checkDashboardCmd`, tests).
   result = proc(message: string, emit: SseEmit) {.closure.} =
     if runSlashCommand(message, box, emit):
       return
@@ -3022,6 +3068,8 @@ proc liveChatStreamFn*(box: WakuBox): ChatStreamFn =
     if box.buildError.len > 0:
       emit("done", %*{"error": box.buildError})
       return
+    reselectGraphTurn(box.waku, "dashboard",
+      if envOf.isNil: liveProcessEnv() else: envOf())
     var gate: JsonNode = newJNull()
     var cons: JsonNode = newJNull()
     var route: JsonNode = newJNull()
@@ -3044,10 +3092,13 @@ proc liveChatStreamFn*(box: WakuBox): ChatStreamFn =
     except CatchableError as exc:
       emit("done", %*{"error": errorText(exc)})
 
-proc liveChatFn*(box: WakuBox): ChatFn =
+proc liveChatFn*(box: WakuBox,
+    envOf: proc(): Table[string, string] {.closure.} = nil): ChatFn =
   ## `chat` against the live agent: drive the streaming turn, keep done.
   ## A leading `/command` is answered by the slash table inside the
   ## stream (node events pass through, only `done` is kept).
+  ## `envOf` is the same selector table the stream re-resolves against
+  ## each turn.
   result = proc(message: string): JsonNode {.closure.} =
     # No eager `ensureWaku` here: the stream answers `/command` without
     # an agent, and builds it (or its error) only when a turn needs one
@@ -3056,7 +3107,7 @@ proc liveChatFn*(box: WakuBox): ChatFn =
     proc collect(kind: string, ev: JsonNode) =
       if kind == "done":
         final = ev
-    liveChatStreamFn(box)(message, collect)
+    liveChatStreamFn(box, envOf)(message, collect)
     return final
 
 proc liveSessionFn*(box: WakuBox): SessionFn =
@@ -3143,7 +3194,7 @@ proc buildDashboardDeps*(providers: seq[Provider], settings: Settings,
   let box = WakuBox(providers: providers, dotenvPath: dotenvPath,
     settings: settings)
   let staticDir = findStaticDir()
-  DashboardDeps(home: settings.home, staticDir: staticDir,
+  DashboardDeps(home: settings.home, staticDir: staticDir, box: box,
     provider: settings.provider, model: settings.model,
     smallModel: settings.smallModel, baseUrl: settings.baseUrl,
     apiKey: settings.apiKey, providers: providers, env: env,
@@ -4022,6 +4073,13 @@ proc serveDashboardCmd*(providers: seq[Provider], settings: Settings,
     # rather than the local one the server was copied from — see
     # `GatewayHooks.envOf` for why that distinction is load-bearing.
     proc envLive(): Table[string, string] = srv.deps.env
+    # The browser seams were bound to the pre-server box in
+    # `buildDashboardDeps`; rebind them against the server's live env
+    # table so a Connections save applies to the next browser turn,
+    # exactly like it does to the next gateway turn.
+    if not srv.deps.box.isNil:
+      srv.deps.chatFn = liveChatFn(srv.deps.box, envLive)
+      srv.deps.chatStreamFn = liveChatStreamFn(srv.deps.box, envLive)
     let rig = newGatewayRig(
       liveGatewayHooks(providers, settings, dotenvPath, envLive))
     srv.deps.gatewayStatus = rig.gatewayStatusFn()

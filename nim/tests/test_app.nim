@@ -5,6 +5,7 @@ import std/json
 import std/os
 import std/sequtils
 import std/strutils
+import std/tables
 import std/unicode
 import std/times
 import std/unittest
@@ -13,6 +14,7 @@ import db_connector/db_sqlite
 
 import ../src/app
 import ../src/brain
+import ../src/dashboard
 import ../src/db
 import ../src/factstore
 import ../src/jsondump
@@ -298,6 +300,21 @@ suite "phase 4c graph door":
       if e["type"].getStr() == "graph_end" and e["error"].kind != JNull:
         found = true
     assert found
+    db.close()
+    removeDir(home)
+
+  test "reselectGraphTurn rebinds the seam between turns":
+    let home = freshHome("waku-app-reselect")
+    let db = connectDb(home)
+    let script = Script(items: @[textResp("x")])
+    var w = newWaku(testSettings(home), scriptedClient(script), db)
+    var env = initTable[string, string]()
+    env["WAKU_GRAPH_DASHBOARD"] = "triage"
+    reselectGraphTurn(w, "dashboard", env)
+    assert not w.graphTurn.isNil
+    env["WAKU_GRAPH_DASHBOARD"] = "off"
+    reselectGraphTurn(w, "dashboard", env)
+    assert w.graphTurn.isNil
     db.close()
     removeDir(home)
 

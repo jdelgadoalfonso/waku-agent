@@ -90,10 +90,17 @@ proc makeLiveObserver*(r: Renderer): Observer =
       echo line
   observe
 
-proc runRepl*(w: var Waku, renderer: Renderer = plainRenderer()) =
+proc runRepl*(w: var Waku, renderer: Renderer = plainRenderer(),
+              graphReselect: proc(w: var Waku) {.closure.} = nil) =
   ## The chat loop: read, respond, print. `/memory` shows the snapshot,
   ## `/quit` (or Ctrl-D) leaves. Memory stays in state.db either way.
   ## The renderer is a parameter so tests can pin the plain output.
+  ##
+  ## `graphReselect` is the per-turn graph hook, called just before each
+  ## `respond` so the turn's graph is the one the selector names NOW (the
+  ## browser's `liveChatStreamFn` does the same with source "dashboard").
+  ## Nil keeps the startup seam `buildCliApp` bound — the hook can only
+  ## ever re-bind it, never leave the loop without one.
   w.session.sessionId = "terminal"  # its own thread in the inbox
   echo renderer.panel("", renderer.bold("Waku — local, yours, transparent.") &
     "\n" & "home: " & absolutePath(w.settings.home) &
@@ -115,6 +122,8 @@ proc runRepl*(w: var Waku, renderer: Renderer = plainRenderer()) =
     if userMessage == "/memory":
       echo renderer.panel("Memory snapshot", memorySnapshot(w.db))
       continue
+    if not graphReselect.isNil:
+      graphReselect(w)
     let res = w.respond(userMessage, observer = observer, source = "cli")
     echo renderer.boldGreen("waku › ") & res.reply & "\n"
   echo renderer.dim("bye — your memory stays in state.db")
