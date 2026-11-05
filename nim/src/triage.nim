@@ -52,12 +52,17 @@ type
   CalendarFn* = proc(): string {.closure.}
   QuickFn* = proc(state: JsonNode): string {.closure.}
   FullFn* = proc(state: JsonNode, notify: Observer): LoopResult {.closure.}
+  DelegateFn* = proc(state: JsonNode, notify: Observer): JsonNode {.closure.}
 
 proc classifyMessage*(client: LlmClient, smallModel,
                       message: string,
-                      notify: Observer = nil): tuple[route, reason: string] =
+                      notify: Observer = nil,
+                      allowedRoutes: seq[string] = @["quick",
+                        "full"]): tuple[route, reason: string] =
   ## `(route, reason)`, failing open to "full": a broken triage must cost
-  ## latency, never capability. The `{...}` slice mirrors Python's
+  ## latency, never capability. `allowedRoutes` is the model's answer
+  ## domain — quick/full plus every enrolled agent the caller enables.
+  ## Anything outside it fails open with the reason saying why.
   ## `text.index("{")` → `text.rindex("}")`; anything unparseable fails
   ## open with the reason saying why.
   try:
@@ -78,7 +83,7 @@ proc classifyMessage*(client: LlmClient, smallModel,
       return ("full", "no JSON — failing open")
     let decision = parseJson(text[a .. b])
     let route = decision.jget("route").getStr()
-    if route != "quick" and route != "full":
+    if route notin allowedRoutes:
       return ("full", "bad route '" & route & "' — failing open")
     return (route, decision.jget("reason").getStr())
   except CatchableError as exc:
@@ -103,11 +108,16 @@ proc todaysEvents*(home: string): string =
   if lines.len == 0: "(nothing today)" else: lines.join("; ")
 
 proc buildTriageGraph*(classifyFn: ClassifyFn, calendarFn: CalendarFn,
-                       quickFn: QuickFn, fullFn: FullFn): Graph =
+                       quickFn: QuickFn, fullFn: FullFn,
+                       agentRoutes: seq[string] = @[],
+                       delegateFn: DelegateFn = nil): Graph =
   ## Callables injected so evals script them, the dashboard builds it with
   ## stubs just to describe(), and the app binder below binds the real
   ## client/loop. The router waits on BOTH parallel branches (via the
-  ## `gather` join) before deciding.
+  ## `gather` join) before deciding. `agentRoutes` adds one
+  ## `delegate_agent` node the router can reach per enabled agent; the
+  ## router stays fail-open because its default is still "full", so an
+  ## agent route with no delegate entry lands on the loop, never nowhere.
   var g = Graph(name: "triage")
 
   proc classify(state: JsonNode, notify: Observer): JsonNode =
@@ -137,9 +147,16 @@ proc buildTriageGraph*(classifyFn: ClassifyFn, calendarFn: CalendarFn,
   g.addEdge(START, "check_calendar")
   g.addEdge("classify", "gather")
   g.addEdge("check_calendar", "gather")
-  g.addRouter("gather", keyRouter("route", "full"),
-              @[(label: "quick", dst: "quick_reply"),
-                (label: "full", dst: "full_agent")])
+  var routes = @[(label: "quick", dst: "quick_reply"),
+    (label: "full", dst: "full_agent")]
+  if agentRoutes.len > 0 and not delegateFn.isNil:
+    g.addNode(newNode("delegate_agent",
+      proc(s: JsonNode, n: Observer): JsonNode =
+        %*{"delegation": delegateFn(s, n)}, kind = "agent"))
+    for agent in agentRoutes:
+      routes.add((label: agent, dst: "delegate_agent"))
+    g.addEdge("delegate_agent", END)
+  g.addRouter("gather", keyRouter("route", "full"), routes)
   g.addEdge("quick_reply", END)
   g.addEdge("full_agent", END)
   return g
