@@ -1,6 +1,6 @@
 # Orchestrator of waku-agents: same binary, role processes
 
-Status: proposal (needs maintainer yes before code).
+Status: approved — maintainer yes total 2026-11-05 (T4). Code may proceed in T3.1-T3.5 slices.
 Tier: Proposal per `docs/context/conventions.md` section 2 — touches loop, graph engine, tool-call contract surface, and adds a top-level orchestration concept.
 
 ## Goal
