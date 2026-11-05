@@ -111,6 +111,10 @@ type
     ## pointer described in the header.
     client*: LlmClient
     tools*: ToolRegistry
+    defaultModel*: string
+      ## The agent's own model: what `llmComplete` uses when a plugin's
+      ## request names no model ("" or "default"), so a plugin stays
+      ## portable across provider registries.
     live*: Table[uint64, HostCall]
 
 var activeScope: HostScope
@@ -247,8 +251,16 @@ proc hostLlmComplete(handle: uint64, requestJson: cstring): cstring
         return envelopeErr("llmComplete request is not JSON: " & exc.msg)
       if req.kind != JObject:
         return envelopeErr("llmComplete request must be a JSON object")
+      # Portability over precision: a plugin cannot know the host's
+      # registry, so an unnamed model ("", or the literal "default")
+      # means the agent's own model. An explicit id keeps working, and
+      # the provider is still the one who refuses an unknown one.
+      var model = req.jget("model").getStr("").strip()
+      if model.len == 0 or model == "default":
+        model = activeScope.defaultModel
+        req["model"] = %model
       let metered = meteredClient(activeScope.client, "plugin",
-                                  req.jget("model").getStr(""), call.notify)
+                                  model, call.notify)
       return envelopeOk(metered.create(req))
     except CatchableError as exc:
       return envelopeErr(errorText(exc))
@@ -440,9 +452,11 @@ proc hostLog(handle: uint64, level: int32, message: cstring)
 
 # ── the tables ────────────────────────────────────────────────────────
 
-proc newHostScope*(client: LlmClient, tools: ToolRegistry): HostScope =
-  ## The live host: the client and the tools every plugin call reaches.
-  HostScope(client: client, tools: tools,
+proc newHostScope*(client: LlmClient, tools: ToolRegistry,
+                  defaultModel = ""): HostScope =
+  ## The live host: the client and the tools every plugin call reaches,
+  ## plus the agent's model for requests that name none.
+  HostScope(client: client, tools: tools, defaultModel: defaultModel,
             live: initTable[uint64, HostCall]())
 
 proc installHostScope*(scope: HostScope) =
@@ -475,13 +489,14 @@ var keptTables: seq[ref HostFns]
   ## otherwise free the table a live library still points at. One or two
   ## cells per process, never freed — the same rule as the libraries.
 
-proc newHostTable*(client: LlmClient, tools: ToolRegistry): ref HostFns =
+proc newHostTable*(client: LlmClient, tools: ToolRegistry,
+                  defaultModel = ""): ref HostFns =
   ## The heap cell a `Waku` keeps: a plugin stores the address of
   ## `table[]` in its `init` and reads it until the process exits, so the
   ## table is kept alive here as well as by its owner — ownership by the
   ## `Waku` is what makes it reachable, this list is what makes it safe.
   new(result)
-  result[] = hostFns(newHostScope(client, tools))
+  result[] = hostFns(newHostScope(client, tools, defaultModel))
   keptTables.add(result)
 
 proc hostFnsFor*(base: HostFns, needs: seq[string]): HostFns =

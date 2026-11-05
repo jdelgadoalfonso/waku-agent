@@ -39,6 +39,7 @@
 ## copied onto this heap BEFORE `host.stringFree` frees it.
 
 import std/json
+import std/strutils
 
 const routeFx {.strdefine.} = ""
   ## The manifest variant: `""` is the good one, anything else breaks
@@ -120,10 +121,15 @@ proc runNode(name: string, state: JsonNode, handle: uint64): cstring =
     let answer = readEnvelope(h.llmComplete(handle, ($request).cstring))
     if not answer{"ok"}.getBool(false):
       return errEnvelope(answer{"error"}.getStr("llmComplete failed"))
+    # Any block carrying text counts, not just `type == "text"` (a
+    # reasoning model may answer with `reasoning` blocks only — taking
+    # only `text` would merge an empty reply and answer silence).
     var text = ""
     for part in answer{"value"}{"content"}:
-      if part{"type"}.getStr("") == "text":
+      if part{"text"}.kind == JString:
         text.add(part{"text"}.getStr(""))
+    if text.strip().len == 0:
+      return errEnvelope("summarize got no text from the model")
     # `reply` is the key every graph door in the port answers from
     # (`triageGraphTurn` reads it), so a plugin graph's last node writes it.
     return okPatch(%*{"reply": text})

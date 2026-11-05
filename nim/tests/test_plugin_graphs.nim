@@ -147,6 +147,18 @@ suite "plugin host functions (step 3)":
     assert rec.events[0]["model"].getStr() == "script-model"
     assert rec.events[0]["usage"]["in"].getInt() == 7
 
+  test "llmComplete without a model uses the agent's default":
+    let script = Script(items: @[textResp("hola")])
+    let table = hostFns(newHostScope(scriptedClient(script),
+      ToolRegistry(), "agent-model"))
+    beginHostCall(14, %*{"message": "hi"}, @["llm"])
+    let env = answerOf(table.stringFree, table.llmComplete(14,
+      """{"messages": []}""".cstring))
+    endHostCall(14)
+    assert envelopeValue(env)["content"][0]["text"].getStr() == "hola"
+    # The host filled in the agent's model before the call crossed.
+    assert script.seen[0]["model"].getStr() == "agent-model"
+
   test "needs narrows the table to nulls and refuses an undeclared call":
     let script = Script(items: @[textResp("x")])
     let table = hostFns(newHostScope(scriptedClient(script), ToolRegistry()))
@@ -283,6 +295,23 @@ suite "plugin graph from the manifest (step 3)":
     assert logged["node"].getStr() == "plugin:chainfx/first"
     assert logged["level"].getStr() == "info"
     assert logged["message"].getStr() == "first ran"
+
+  test "a reasoning-only answer still summarizes instead of replying empty":
+    proc reasoningResp(text: string): JsonNode =
+      %*{"stop_reason": "end_turn", "usage": {"in": 7, "out": 3},
+         "content": [{"type": "reasoning", "text": text}]}
+    let dir = getTempDir() / "waku-plugin-step3-reasoning"
+    createDir(dir)
+    let script = Script(items: @[reasoningResp("razonado")])
+    let rec = Recorder()
+    let table = newHostTable(scriptedClient(script), ToolRegistry())
+    let plugin = loadPlugin(buildFixture(dir, "fixture_graph_plugin.so"),
+                            addr table[])
+    let g = buildPluginGraph(plugin, plugin.nodes, 8)
+    var state = %*{"message": "hola", "pick": "right"}
+    discard runGraph(g, state, record(rec))
+    assert state.jget("reply").getStr() == "razonado"
+    assert state["errors"].len == 0
 
   test "registration lists plugin:chainfx after the builtins":
     let dir = getTempDir() / "waku-plugin-step3-registry"

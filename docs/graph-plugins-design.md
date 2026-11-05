@@ -96,7 +96,10 @@ type HostFns* = object
 ```
 
 Every host function answers a JSON envelope, so the plugin reads one shape:
-`{"ok": true, "value": ...}` or `{"ok": false, "error": "..."}`. A `fetch`
+`{"ok": true, "value": ...}` or `{"ok": false, "error": "..."}`. An
+`llmComplete` request carries the model, `max_tokens` and `messages`; an
+empty model (`""` or `"default"`) means the agent's own model, so a plugin
+stays portable across provider registries. A `fetch`
 request carries the method, the URL, the headers and the body, and the answer
 carries the status, the headers and the body.
 
