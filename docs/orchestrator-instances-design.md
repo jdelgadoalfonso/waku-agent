@@ -29,12 +29,13 @@ Today `Waku.respond()` already routes `quick | full` with fail-open to the loop 
 - Trace rule: orchestrator mints `trace_id` per user turn and passes it down. Only the orchestrator writes to `.waku/traces/<date>.jsonl`, `usage.jsonl`, and DB. Workers never write runtime data directly (hard rule 1).
 - Event envelope reused: `triage, route, graph_start, node_start, node_end, graph_end, llm, tool, gate` plus `delegation:{agent, pid, route, reason, path}` aggregated by the orchestrator into the turn `meta`.
 
-## Lot 2 — Agent registry in Nim
+## Lot 2 — Agent registry in Nim (as built: T2.1-T2.3)
 
-- Extend `nim/src/graph/registry.nim` (`registerPluginGraph`, `pluginGraphNames`) into an agent registry: each entry declares `{name, kind: loop|graph, when_to_use, inputs, cost, effects}`.
-- Router stays model-writes-key, code-reads-key (`waku/graph/nodes.py:66-67` precedent): small-model triage writes `{"route": "<agent>"}`, code does `keyRouter("route", default="full")`.
-- New capability lives in `nim/` behind existing build flags; no new top-level package without a follow-up architecture decision (ladder section 3).
-- Deterministic eval per new route (0/1, offline) in `nim/tests/test_*.nim`, plus one case proving previous behavior still holds for every touched command.
+- New `nim/src/graph/agents.nim` beside `graph/registry.nim` (registry untouched): `enrollAgent` (replace-by-name, ignores nameless/non-object), `enrollAgentChecked` (kind gate `loop|graph`), `agentCard/agentNames/agentKind` (builtins triage/gather report `graph`), `enabledAgents` (enrollment order). Pure, offline, pinned by `nim/tests/test_agents.nim`.
+- Router stays model-writes-key, code-reads-key (`waku/graph/nodes.py:66-67` precedent): `classifyMessage` takes `allowedRoutes` (default `@["quick","full"]`, old callers unchanged); anything outside fails open to `full` with the reason. `buildTriageGraph` takes `agentRoutes` + `DelegateFn` and adds one `delegate_agent` node with router entries; with none enabled the topology is byte-identical (5 nodes, pinned). Offer-only-when-receivable: the prompt offers an agent route only when a delegate is bound, because an unmapped label is a router error, not a `full` fallback.
+- Plumbing (T2.3): `Settings.agents` + `WAKU_AGENTS` (comma-separated, trim, dedupe, default empty = today's behavior) in `nim/src/config.nim`; `triagePromptFor` renders the gate prompt (byte-identical to `triagePrompt` with no agent enabled); `triageGraphTurn(..., agents = @[], delegateFn = nil)` threads allow-list and delegate seam. No supervisor spawn, no `app.respond` change, no dashboard change: execution wiring is a deferred follow-up, and a delegated route with no execution binding answers `(false, _)` so the plain loop answers.
+- New capability lives in `nim/`; no new top-level package (ladder section 3).
+- Deterministic evals in `nim/tests/test_agents.nim` (5), `test_router_agents.nim` (3), `test_agent_plumbing.nim` (10); regressions pinned by `test_workflows.nim` (28) and `test_plugin_registry.nim` (7). `.env.example`/user-docs mention of `WAKU_AGENTS` deferred (sensitive path, needs an explicit plan).
 
 ## Lot 3 — Single dashboard, dual Overview
 

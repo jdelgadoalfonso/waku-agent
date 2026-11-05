@@ -15,8 +15,8 @@ Thin orchestrator of same-binary role processes with single dashboard and dual O
 
 ## Tasks
 
-- T1 (S1,S2,S6): Lot 1 — process model, stdio JSON, trace_id + fail-open contract — route: nim/ offline — commit: 1acf693,c7b08fb,c40f24e,59d753f (T1.1 contract, T1.2 supervisor, T1.3 aggregate, T1.4 gather worker; T1.5 evals+docs in progress)
-- T2 (S1,S2,S6): Lot 2 — agent registry (T2.1 enrollment API), generalized router (T2.2), CLI/env plumbing (T2.3), evals+docs (T2.4) — route: nim/ offline — commit: - (in progress)
+- T1 (S1,S2,S6): Lot 1 — done: T1.1 contract 1acf693, T1.2 supervisor c7b08fb, T1.3 aggregate c40f24e, T1.4 gather worker 59d753f, T1.5 evals+tracking 59daade
+- T2 (S1,S2,S6): Lot 2 — done T2.1 registry 82f0734, T2.2 router 419a986, T2.3 plumbing def1430; T2.4 evals+docs in progress (53/53 focused green; .env.example mention deferred)
 - T3 (S3,S4,S5,S6,S7,S8): Lot 3 — single dashboard, dual Overview, agents panel with kind loop|graph, inter-agent edges, real-time message waves, same animations, per-agent observability — route: proposal only — commit: -
 - T4 (S1-S6): Maintainer yes on docs/orchestrator-instances-design.md before any code — route: proposal gate — commit: -
 
