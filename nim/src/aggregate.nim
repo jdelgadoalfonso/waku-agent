@@ -74,3 +74,53 @@ proc messageEvent*(fromAgent, toAgent, traceId, turnId,
   ## across processes with no new polling loop.
   %*{"from": fromAgent, "to": toAgent, "trace_id": traceId,
       "turn_id": turnId, "kind": kind}
+
+proc doneAgents*(delegations, completions: seq[JsonNode]): JsonNode =
+  ## Lot 4: SSE `done` agents per delegation, in delegation order.
+  ## One row `{agent, route, reason, path, cost}` per delegation edge:
+  ## `agent` is the delegated `workflow`, `route` its `target`, `reason`
+  ## its reason; the matching `worker_done` (same agent+turn) fills
+  ## `path` and `cost` (numeric `cost`/`cost_usd`, one charge wins).
+  ## Pure and offline; no delegation reads empty, never an error.
+  result = newJArray()
+  for d in delegations:
+    if d.kind != JObject:
+      continue
+    let agent = d.jget("workflow").getStr()
+    if agent.len == 0:
+      continue
+    var route = d.jget("target").getStr()
+    var reason = d.jget("reason").getStr()
+    var path = newJArray()
+    var cost = 0.0
+    for c in completions:
+      if c.kind != JObject:
+        continue
+      if c.jget("agent").getStr() != agent:
+        continue
+      if d.jget("turn_id").getStr().len > 0 and
+         c.jget("turn_id").getStr().len > 0 and
+         c.jget("turn_id").getStr() != d.jget("turn_id").getStr():
+        continue
+      if c.jget("route").getStr().len > 0:
+        route = c.jget("route").getStr()
+      elif c.jget("target").getStr().len > 0:
+        route = c.jget("target").getStr()
+      if c.jget("reason").getStr().len > 0:
+        reason = c.jget("reason").getStr()
+      let p = c.jget("path")
+      if p.kind == JArray:
+        path = copy(p)
+      let v = c.jget("cost_usd")
+      let w = c.jget("cost")
+      if v.kind == JFloat:
+        cost = v.getFloat()
+      elif v.kind == JInt:
+        cost = float(v.getBiggestInt())
+      elif w.kind == JFloat:
+        cost = w.getFloat()
+      elif w.kind == JInt:
+        cost = float(w.getBiggestInt())
+      break
+    result.add(%*{"agent": agent, "route": route, "reason": reason,
+                   "path": path, "cost": cost})

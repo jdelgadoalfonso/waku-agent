@@ -80,6 +80,7 @@ import ./catalog
 import ./cli
 import ./client
 import ./commands
+import ./aggregate
 import ./connect
 import ./config
 import ./db
@@ -612,7 +613,7 @@ proc agentsOverview*(enabled: seq[string]): JsonNode =
                    "last_route": ""})
 
 proc turnSection*(home, provider, model: string,
-                  providers: seq[Provider]): (JsonNode, JsonNode) =
+                  providers: seq[Provider]): (JsonNode, JsonNode, JsonNode) =
   ## `(turns, stats)` from the trace events — port of the turns-grouping
   ## + stats block in Python `collect()`: events between `turn_start` and
   ## `turn_end` become one turn (gate, llm calls, tools, graph route,
@@ -761,7 +762,7 @@ proc turnSection*(home, provider, model: string,
       break
     served.add(turns[i])
     inc n
-  result = (served, stats)
+  result = (served, stats, agentsSummary(events))
 
 proc graphSection*(home: string, enabled: bool,
                     plugins: seq[string] = defaultPlugins): JsonNode =
@@ -1430,8 +1431,23 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
       if item.len > 0 and item notin names:
         names.add(item)
     names
-  let (turns, stats) = turnSection(d.home, d.provider, d.model,
+  let (turns, stats, liveAgents) = turnSection(d.home, d.provider, d.model,
     d.providers)
+  let liveByName = block:
+    var t = initTable[string, JsonNode]()
+    for r in liveAgents:
+      if r.kind == JObject:
+        t[r.jget("agent").getStr()] = r
+    t
+  let agents = block:
+    var rows = agentsOverview(agentsEnabled)
+    for row in rows.mitems:
+      let live = liveByName.getOrDefault(row.jget("name").getStr(), nil)
+      if not live.isNil:
+        row["cost"] = copy(live.jget("cost"))
+        if live.jget("last_route").getStr().len > 0:
+          row["last_route"] = copy(live.jget("last_route"))
+    rows
   let pageDb = connectDb(d.home)
   let pageStore = factsFor(d, pageDb).store
   let pageEpisodes = episodesFor(d, pageDb)
@@ -1471,7 +1487,7 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
     "graph": graphSection(d.home, graphOn, graphPlugins),
     "turns": turns,
     "overview_mode": %overviewMode(turns),
-    "agents": agentsOverview(agentsEnabled),
+    "agents": agents,
     "stats": stats,
     "facts": state["facts"],
     "episodes": state["episodes"],
@@ -2792,7 +2808,8 @@ proc ensureWaku*(box: WakuBox) =
     box.buildError = errorText(exc)
 
 proc donePayload*(box: WakuBox, res: LoopResult, gate, cons, route,
-                  triageEv: JsonNode, latencyMs: int): JsonNode =
+                  triageEv: JsonNode, latencyMs: int,
+                  agents: JsonNode = nil): JsonNode =
   ## The terminal `done` event both chat doors share (the non-streaming
   ## `chat` keeps the final one — the one-implementation rule from
   ## Python). Tool outputs classify ok/error (the `warn` middle state
@@ -2823,6 +2840,7 @@ proc donePayload*(box: WakuBox, res: LoopResult, gate, cons, route,
     consObj = %*{"new_facts": cons.jget("new_facts")}
   %*{"reply": res.reply, "gate": gateObj, "graph": graphObj,
      "tools": tools, "consolidation": consObj,
+     "agents": (if agents != nil: agents else: newJArray()),
      "iterations": res.iterations, "latency_ms": latencyMs,
      "model": (if quick: box.waku.settings.smallModel
                  else: box.waku.settings.model),
@@ -3115,6 +3133,8 @@ proc liveChatStreamFn*(box: WakuBox,
     var cons: JsonNode = newJNull()
     var route: JsonNode = newJNull()
     var triageEv: JsonNode = newJNull()
+    var delegations: seq[JsonNode] = @[]
+    var completions: seq[JsonNode] = @[]
     proc observer(kind: string, ev: JsonNode) =
       if kind == "gate":
         gate = ev
@@ -3124,12 +3144,17 @@ proc liveChatStreamFn*(box: WakuBox,
         route = ev
       elif kind == "triage":
         triageEv = ev
+      elif kind == "delegation":
+        delegations.add(copy(ev))
+      elif kind == "worker_done" or kind == "worker_error":
+        completions.add(copy(ev))
       emit(kind, ev)
     let t0 = now()
     try:
       let res = box.waku.respond(message, observer, "dashboard", true)
       emit("done", donePayload(box, res, gate, cons, route, triageEv,
-        int((now() - t0).inMilliseconds)))
+        int((now() - t0).inMilliseconds),
+        doneAgents(delegations, completions)))
     except CatchableError as exc:
       emit("done", %*{"error": errorText(exc)})
 
