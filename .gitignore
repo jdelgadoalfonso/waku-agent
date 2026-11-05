@@ -66,3 +66,6 @@ waku/_c1_context_probe/
 
 # the compiled fixture binary lives beside its source
 nim/tests/factstore_fakes
+
+# local JSON-vs-msgpack benchmark reference: deliberately uncommitted
+nim/measure_state_sizes.nim
