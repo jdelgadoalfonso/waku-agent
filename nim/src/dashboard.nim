@@ -105,6 +105,7 @@ import ./pricing
 import ./providers
 import ./registry
 from ./graph/registry import enabledWorkflows, defaultPlugins, parsePluginList
+from ./graph/agents import agentKind
 import ./graph/hostfns
 import ./graph/plugins
 from ./graph/engine import runGraph
@@ -590,6 +591,25 @@ proc overviewMode*(turns: JsonNode): string =
   if g.kind == JObject and g.jget("route").getStr().len > 0:
     return "graph"
   return "loop"
+
+proc agentsOverview*(enabled: seq[string]): JsonNode =
+  ## Lot 3 T3.2: agents panel payload from the registry describe.
+  ## One row per enabled agent `{name, kind, pid, state, cost, last_route}`.
+  ## Live fields default to idle/empty: the supervisor trace aggregation
+  ## (T3.3/T3.4) fills pid/state/cost/last_route, this slice only lists
+  ## who is enabled and their shape. Unknown names are skipped, so an
+  ## empty enable list reads as an empty panel, never as an error.
+  result = newJArray()
+  for name in enabled:
+    let kind = agentKind(name)
+    if kind.len == 0:
+      continue
+    result.add(%*{"name": name,
+                   "kind": kind,
+                   "pid": newJNull(),
+                   "state": "idle",
+                   "cost": 0,
+                   "last_route": ""})
 
 proc turnSection*(home, provider, model: string,
                   providers: seq[Provider]): (JsonNode, JsonNode) =
@@ -1403,6 +1423,13 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
   let graphPlugins = block:
     let parsed = parsePluginList(d.env.getOrDefault("WAKU_PLUGINS", ""))
     if parsed.len == 0: defaultPlugins else: parsed
+  let agentsEnabled = block:
+    var names: seq[string] = @[]
+    for part in d.env.getOrDefault("WAKU_AGENTS", "").split(','):
+      let item = part.strip()
+      if item.len > 0 and item notin names:
+        names.add(item)
+    names
   let (turns, stats) = turnSection(d.home, d.provider, d.model,
     d.providers)
   let pageDb = connectDb(d.home)
@@ -1444,6 +1471,7 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
     "graph": graphSection(d.home, graphOn, graphPlugins),
     "turns": turns,
     "overview_mode": %overviewMode(turns),
+    "agents": agentsOverview(agentsEnabled),
     "stats": stats,
     "facts": state["facts"],
     "episodes": state["episodes"],

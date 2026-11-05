@@ -461,6 +461,15 @@ function connectionModalKeydown(event){
   if (event.key === "Escape") closeConnectionModal();
 }
 
+function agentsPanel(d){
+  const agents = d.agents || [];
+  if (!agents.length)
+    return uiCard('<span class="empty">no agents enrolled — set WAKU_AGENTS to list workers</span>');
+  return agents.map(a => uiRow(uiBadge(esc(a.kind || "loop"), "neutral"),
+    `${esc(a.name)} <span class="meta">· ${esc(a.state || "idle")}</span>`,
+    `${a.pid ? `pid ${esc(String(a.pid))} · ` : ""}${a.last_route ? `last ${esc(a.last_route)} · ` : ""}cost ${esc(String(a.cost ?? 0))}`)).join("");
+}
+
 const VIEWS = {
   models(d){
     // The shortlist first (what the chat switcher shows, across every
@@ -509,6 +518,8 @@ const VIEWS = {
     ${archSVG(d)}</details>
     <details${graphOpen} data-overview="graph"><summary><h2>Graph workflows — when a turn needs shape</h2></summary>
     ${graphPanel(d)}</details>
+    <h2>Agents — workers with kind loop|graph</h2>
+    ${agentsPanel(d)}
     <h2>Latest turn</h2>${d.turns.length?turnCard(d.turns[0]):uiCard('<span class="empty">no turns yet — talk to Waku first</span>')}`;
   },
   loop(d){
