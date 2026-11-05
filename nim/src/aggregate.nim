@@ -64,3 +64,13 @@ proc delegationEvent*(fromAgent, toAgent, traceId, turnId, route,
   ## it with the same code path.
   %*{"workflow": toAgent, "router": fromAgent, "target": route,
       "trace_id": traceId, "turn_id": turnId, "reason": reason}
+
+proc messageEvent*(fromAgent, toAgent, traceId, turnId,
+    kind: string): JsonNode =
+  ## One live wave worker <-> orchestrator for the existing tickers.
+  ## `kind` is the closed set `task|partial|done|error`; anything else
+  ## is stored as-is and the dashboard treats unknown kinds as `partial`.
+  ## Same `trace_id`/`turn_id` stamp as `delegationEvent` so a turn reads
+  ## across processes with no new polling loop.
+  %*{"from": fromAgent, "to": toAgent, "trace_id": traceId,
+      "turn_id": turnId, "kind": kind}

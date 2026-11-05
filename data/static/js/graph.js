@@ -133,7 +133,7 @@ function graphPanel(d){
 
 // --- live animation: same machinery as the loop's STAGE map. hot() lights
 // every copy on the page, so the Overview panel and the Graph tab glow together.
-const GRAPH_KINDS = new Set(["graph_start", "node_start", "node_end", "route", "graph_end"]);
+const GRAPH_KINDS = new Set(["graph_start", "node_start", "node_end", "route", "graph_end", "delegation", "message"]);
 function animateGraphStage(ev){
   if (!document.querySelector(".graphchart")) return;
   const status = t => document.querySelectorAll(".arch-status").forEach(
@@ -166,6 +166,16 @@ function animateGraphStage(ev){
     status(`route → ${ev.target}`);
     hot(`[data-edge="g-${w}-${ev.router}-${ev.target}"]`, "live", 1400);
     hot(`[data-node="g-${w}-${ev.target}"]`, "hot", 1400);
+  }
+  else if (ev.type === "delegation"){
+    status(`${ev.router} → ${ev.workflow}`);
+    hot(`[data-edge="g-${ev.workflow}-${ev.router}-${ev.target}"]`, "live", 1400);
+    hot(`[data-node="g-${ev.workflow}-${ev.target}"]`, "hot", 1400);
+  }
+  else if (ev.type === "message"){
+    const k = ev.kind || "partial";
+    status(`${ev.from} → ${ev.to} · ${k}`);
+    hot(`[data-node="g-${w}-${ev.to}"]`, "live", 800);
   }
   else if (ev.type === "graph_end"){
     hot(`[data-node="g-${w}-END"]`, "hot", 1000);
