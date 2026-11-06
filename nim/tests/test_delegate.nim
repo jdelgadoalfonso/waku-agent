@@ -61,6 +61,21 @@ suite "delegate slice 1":
     assert pairs[0].ev["pid"].getInt() == 4321
     assert pairs[0].ev["trace_id"].getStr() == "t_1"
 
+  test "slice 10: a cost child rides the trace pairs before done":
+    let lines = @[
+      makeChildLine("cost", "t_1", "t_2", "gather", 0,
+        %*{"kind": "gather", "model": "m", "in": 7, "out": 3}),
+      makeChildLine("done", "t_1", "t_2", "gather", 0,
+        %*{"reply": "ok"}),
+    ]
+    let pairs = delegateTracePairs(lines)
+    assert pairs.len == 2
+    assert pairs[0].kind == "cost"
+    assert pairs[0].ev["agent"].getStr() == "gather"
+    assert pairs[0].ev["trace_id"].getStr() == "t_1"
+    assert pairs[0].ev["turn_id"].getStr() == "t_2"
+    assert pairs[1].kind == "worker_done"
+
   test "edge is shaped like the engine route event":
     let ev = delegateEdge("orchestrator", "gather", "t_1", "t_2",
       "gather", "nightly")
@@ -86,6 +101,31 @@ suite "delegate slice 2a":
     assert ans["iterations"].getInt() == 1
     assert "delegation" in kinds
     assert "worker_done" in kinds
+
+  test "slice 10: a worker cost line reaches the observer before done":
+    # End to end through the binder: the parent re-emits the child's
+    # cost line with the observed pid and the worker identity, in
+    # order, so the tracer (and the dashboard) see it on the turn.
+    let costLine = makeChildLine("cost", "t_1", "t_2", "gather", 0,
+        %*{"kind": "gather", "model": "m", "in": 7, "out": 3})
+    let doneLine = makeChildLine("done", "t_1", "t_2", "gather", 0,
+        %*{"reply": "delegated reply"})
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      (res: ProcResult(timedOut: false, code: 0,
+        stdout: $costLine & "\n" & $doneLine & "\n", stderr: ""), pid: 4321)
+    var seen: seq[tuple[kind: string, ev: JsonNode]] = @[]
+    let fn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake)
+    discard fn(%*{"message": "gather news", "route": "gather"},
+      proc(kind: string, ev: JsonNode) = seen.add((kind, copy(ev))))
+    assert seen.len == 3
+    assert seen[0].kind == "delegation"
+    assert seen[1].kind == "cost"
+    assert seen[1].ev["agent"].getStr() == "gather"
+    assert seen[1].ev["pid"].getInt() == 4321
+    assert seen[1].ev["trace_id"].getStr() == "t_1"
+    assert seen[1].ev["in"].getInt() == 7
+    assert seen[2].kind == "worker_done"
 
   test "timeout fails open with a marker and still emits the edge":
     let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,

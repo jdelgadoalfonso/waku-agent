@@ -211,9 +211,14 @@ proc memoryBinder*(home: string): MemFn =
       if not conn.isNil:
         conn.close()
 
-proc synthBinder*(client: LlmClient, model: string): SynthFn =
+proc synthBinder*(client: LlmClient, model: string,
+                  usage: ref JsonNode = nil): SynthFn =
   ## One model call, NO tools parameter. That absence is the
-  ## propose-never-act guarantee.
+  ## propose-never-act guarantee. When `usage` is given, the response's
+  ## token counts land there as the flat `{kind, model, in, out}` a
+  ## worker's `cost` child line carries (slice 10): the worker's tracer
+  ## is silent, so this sink is the only way the orchestrator learns
+  ## what the synthesis cost.
   result = proc(state: JsonNode): string =
     let prompt = formatTemplate(digestPrompt, %*{
       "gh_text": state.jget("gh_text").getStr(),
@@ -222,7 +227,12 @@ proc synthBinder*(client: LlmClient, model: string): SynthFn =
       "mem_text": state.jget("mem_text").getStr()})
     let req = %*{"model": model, "max_tokens": 1500,
                  "messages": @[%*{"role": "user", "content": prompt}]}
-    textOf(client.create(req)["content"])
+    let response = client.create(req)
+    if not usage.isNil:
+      let u = response.jget("usage")
+      usage[] = %*{"kind": "gather", "model": model,
+                   "in": usageNum(u, "in"), "out": usageNum(u, "out")}
+    textOf(response["content"])
 
 proc draftBinder*(home: string): DraftFn =
   ## Write the digest where a human will find it. Resolves the path and
@@ -252,13 +262,16 @@ proc unwiredMemory*(): MemFn =
   result = proc(): string =
     "(memory unavailable: the worker holds no local store)"
 
-proc buildBoundGraph*(w: Waku, writeDraft = true): Graph =
+proc buildBoundGraph*(w: Waku, writeDraft = true,
+                      usage: ref JsonNode = nil): Graph =
   ## Exactly one definition of what a gather may touch: reads (github —
   ## stubbed, web — stubbed, calendar, memory), one toolless synthesis,
   ## one outbox file. `writeDraft = false` is the headless worker: the
   ## outbox belongs to the orchestrator, so the graph returns the digest
   ## and files nothing. A `Waku` with no `db` binds no memory store for
-  ## the same reason — the worker never opens `state.db`.
+  ## the same reason — the worker never opens `state.db`. `usage` is an
+  ## optional sink the synthesis fills (slice 10); nil keeps a plain
+  ## gather byte for byte.
   let home = w.settings.home
   let client = w.client
   let model = w.settings.model
@@ -269,7 +282,7 @@ proc buildBoundGraph*(w: Waku, writeDraft = true): Graph =
     webFn = webBinder(),
     calendarFn = calendarBinder(home),
     memoryFn = memoryFn,
-    synthFn = synthBinder(client, model),
+    synthFn = synthBinder(client, model, usage),
     draftFn = draftFn)
 
 proc runGather*(w: var Waku, observer: Observer = nil,
@@ -284,9 +297,16 @@ proc runGather*(w: var Waku, observer: Observer = nil,
   ## `writeDraft = false` runs the same graph without filing the outbox
   ## copy: `draft_path` stays `""` and the digest is unchanged. The worker
   ## passes false (slice 9) because the orchestrator owns runtime data.
+  ## The synthesis usage lands under `state["usage"]` when the call
+  ## reported token counts (slice 10); the worker turns it into its
+  ## `cost` child line, and a plain gather simply ignores the key.
   let notify = compose(observer, w.tracer.tracerEvent())
   var state = newJObject()
-  discard runGraph(buildBoundGraph(w, writeDraft), state, notify)
+  var usage: ref JsonNode
+  new(usage)  # one sink per run: the synth node fills it when it runs
+  discard runGraph(buildBoundGraph(w, writeDraft, usage), state, notify)
+  if not usage[].isNil:
+    state["usage"] = usage[]
   return state
 
 proc gatherGraphTurn*(w: Waku): GraphTurn =

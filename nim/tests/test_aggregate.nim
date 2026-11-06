@@ -26,6 +26,21 @@ suite "aggregate T1.3":
     let (k2, _) = toTraceEvent(errChild)
     assert k2 == "worker_error"
 
+  test "slice 10: cost is a cost kind with the worker identity":
+    # The existing mapping already carries a delegated spend line; this
+    # pin keeps the identity stamp (agent/pid/ids) on it, so the parent
+    # never has to special-case a second shape.
+    let child = makeChildLine("cost", "t_1", "t_2", "gather", 12,
+        %*{"kind": "gather", "model": "m", "in": 7, "out": 3})
+    let (kind, ev) = toTraceEvent(child)
+    assert kind == "cost"
+    assert ev["agent"].getStr() == "gather"
+    assert ev["pid"].getInt() == 12
+    assert ev["trace_id"].getStr() == "t_1"
+    assert ev["turn_id"].getStr() == "t_2"
+    assert ev["in"].getInt() == 7
+    assert ev["out"].getInt() == 3
+
   test "delegation event carries from to route":
     let ev = delegationEvent("orchestrator", "gather", "t_1", "t_2",
         "full", "gather knows the shape")

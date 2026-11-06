@@ -368,6 +368,31 @@ suite "phase 4d gather binders":
       left.add(extractFilename(path))
     assert left == @["calendar.ics"]
 
+  test "slice 10: a headless gather keeps its synth usage in the state":
+    # The worker cannot write the ledger (silent tracer, no runtime
+    # data), so `runGather` hands the synth call's usage back inside
+    # the state: `runGatherWorker` turns it into the `cost` child line
+    # the orchestrator records. Same usage the response carried.
+    let home = getTempDir() / ("waku-g-usage-" & $getCurrentProcessId())
+    if dirExists(home):
+      removeDir(home)
+    createDir(home)
+    tempHomes.add(home)
+    let today = format(now(), "yyyyMMdd")
+    writeFile(home / "calendar.ics",
+      "BEGIN:VEVENT\nSUMMARY:A\nDTSTART:" & today & "T090000\n")
+    let usageResp = %*{"stop_reason": "end_turn",
+      "usage": {"in": 7, "out": 3},
+      "content": [{"type": "text", "text": "One meeting."}]}
+    let script = Script(items: @[usageResp])
+    var w = newWaku(testSettings(home), scriptedClient(script))
+    w.tracer.silent = true
+    let state = runGather(w, writeDraft = false)
+    assert state["usage"]["in"].getInt() == 7
+    assert state["usage"]["out"].getInt() == 3
+    assert state["usage"]["model"].getStr() == "m"
+    assert state["usage"]["kind"].getStr() == "gather"
+
   test "drafting and headless gathers answer the same digest":
     let filedHome = freshHome("waku-g-draft-filed")
     let headlessHome = freshHome("waku-g-draft-headless")

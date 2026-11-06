@@ -10,6 +10,9 @@ import std/os
 import std/strutils
 import std/unittest
 
+import ../src/aggregate
+import ../src/delegation
+import ../src/observability
 import ../src/otel
 import ../src/otelproto
 import ../src/observe
@@ -124,6 +127,85 @@ suite "metered ledger rows":
     t.silent = true
     t.event("gate", %*{"route": "gather"})
     assert not fileExists(t.path)
+    removeDir(home)
+
+suite "delegated cost rows (slice 10)":
+  test "a worker cost line lands in the ledger and carries its dollars":
+    # The worker's tracer is silent, so the parent is the only writer
+    # that can book a delegated call. The normal loop emits trace kind
+    # `llm` (recorded above), never `cost`, so translating this line
+    # here is exact — the worker's synth call has no other ledger row.
+    let home = freshHome("waku-trace-costrow")
+    var t = newTracer(home, "openrouter", "m")
+    t.turn("hi")
+    let id = t.turnId
+    t.event("cost", %*{"kind": "gather", "model": "mini", "in": 5,
+      "out": 2, "agent": "gather", "pid": 7, "trace_id": id,
+      "turn_id": "t_delegated"})
+    t.endTurn("yo", 1)
+    let rows = readLines(home / "usage.jsonl")
+    assert rows.len == 1
+    assert rows[0]["provider"].getStr() == "openrouter"
+    assert rows[0]["model"].getStr() == "mini"
+    assert rows[0]["kind"].getStr() == "gather"
+    assert rows[0]["turn_id"].getStr() == id
+    assert rows[0]["in"].getInt() == 5
+    assert rows[0]["out"].getInt() == 2
+    let row = readLines(t.path)[1]
+    assert row["type"].getStr() == "cost"
+    assert row["agent"].getStr() == "gather"
+    assert row["pid"].getInt() == 7
+    assert row["provider"].getStr() == "openrouter"
+    assert row["cost_usd"].getFloat() ==
+      llmCost("openrouter", "mini", %*{"in": 5, "out": 2})
+    removeDir(home)
+
+  test "a loop call and a delegated call are two rows, never four":
+    # The no-double-count guard: the loop's own `llm` row and the
+    # delegated `cost` row are different kinds and different calls.
+    let home = freshHome("waku-trace-nodouble")
+    var t = newTracer(home, "openrouter", "m")
+    t.turn("hi")
+    t.event("llm", %*{"usage": {"in": 10, "out": 2}})
+    t.event("cost", %*{"kind": "gather", "model": "mini", "in": 5,
+      "out": 2})
+    t.endTurn("yo", 1)
+    let rows = readLines(home / "usage.jsonl")
+    assert rows.len == 2
+    assert rows[0]["kind"].getStr() == "loop"
+    assert rows[1]["kind"].getStr() == "gather"
+    removeDir(home)
+
+  test "a silent tracer books no delegated cost either":
+    let home = freshHome("waku-trace-costsilent")
+    var t = newTracer(home, "openrouter", "m")
+    t.silent = true
+    t.event("cost", %*{"kind": "gather", "model": "mini", "in": 5,
+      "out": 2})
+    assert not fileExists(home / "usage.jsonl")
+    assert not fileExists(t.path)
+    removeDir(home)
+
+  test "the dashboard read sees the delegated cost on the worker":
+    # The whole slice through the existing seams: `toTraceEvent` carries
+    # the child line, the tracer books it and stamps the dollars, and
+    # `agentsSummary` — the same read behind `/api/observability` and the
+    # live agents in `/api/data` — reports a non-zero worker cost.
+    let home = freshHome("waku-trace-costvisible")
+    var t = newTracer(home, "openrouter", "m")
+    t.turn("hi")
+    let child = makeChildLine("cost", t.turnId, "t_delegated", "gather",
+      7, %*{"kind": "gather", "model": "mini", "in": 5, "out": 2})
+    let (kind, ev) = toTraceEvent(child)
+    t.event(kind, ev)
+    t.event("worker_done", %*{"agent": "gather", "pid": 7,
+      "trace_id": t.turnId, "turn_id": "t_delegated", "reply": "ok"})
+    t.endTurn("yo", 1)
+    let rows = agentsSummary(readLines(t.path))
+    assert rows.len == 1
+    assert rows[0]["agent"].getStr() == "gather"
+    assert rows[0]["cost"].getFloat() ==
+      llmCost("openrouter", "mini", %*{"in": 5, "out": 2})
     removeDir(home)
 
 suite "the tracer wired to a collector":

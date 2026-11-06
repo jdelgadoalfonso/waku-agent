@@ -6,9 +6,12 @@
 ##    events, `turn_end`). An `llm` line joins its turn and names its
 ##    cost; a `tool` line is the redacted v2 record. Records render with `$` (raw UTF-8), exactly like
 ##    Python's `ensure_ascii=False` — open the file and read.
-## 2. The spend ledger `<home>/usage.jsonl`: one line per LLM call
+## 2. The spend ledger `<home>/usage.jsonl`: one line per model call
 ##    (`{provider, model, kind, in, out}`) rendered with `jsonDumps`
-##    (`ensure_ascii=True`), like Python's plain `json.dumps`.
+##    (`ensure_ascii=True`), like Python's plain `json.dumps`. The loop
+##    and its metered side calls arrive as `llm` events; a delegated
+##    worker's synthesis arrives as its flat `cost` child line, because
+##    the worker's own tracer is silent (slice 10).
 ## 3. OTLP spans, when `OTEL_EXPORTER_OTLP_ENDPOINT` names a collector:
 ##    the same events as a span tree any OTel backend can render. There is
 ##    no Nim OTel SDK and binding opentelemetry-cpp would break the
@@ -106,18 +109,30 @@ proc writeRecord(t: Tracer, kind: string, ev: JsonNode) =
   rec["ts"] = %utcStamp()
   t.writeLine($rec)
 
-proc usageInt(ev: JsonNode, key: string): int =
+proc usageOf(ev: JsonNode): JsonNode =
+  ## The event's token counts: the nested `usage` object when present
+  ## (the loop and every `meteredClient` side call), else the event
+  ## itself — a delegated worker's `cost` line is flat
+  ## (`{kind, model, in, out}`), because the worker has no tracer turn
+  ## to nest under.
+  let u = ev.jget("usage")
+  if u.kind == JObject: u else: ev
+
+proc usageInt(usage: JsonNode, key: string): int =
   ## usage.get(key, 0): missing ledger numbers are 0, like Python.
-  let v = ev.jget("usage").jget(key)
+  let v = usage.jget(key)
   if v.kind == JInt: int(v.getBiggestInt()) else: 0
 
 proc recordUsage(t: Tracer, ev: JsonNode) =
-  ## One LLM call's tokens append to the PERMANENT ledger (never wiped,
+  ## One model call's tokens append to the PERMANENT ledger (never wiped,
   ## unlike traces). Tokens are the ground truth; dollars derive from
   ## pricing, so only tokens + provider/model are stored. Every model
-  ## call a turn makes lands here: the loop's own (`kind` "loop") and
-  ## the side calls `meteredClient` reports with their own `kind` and
-  ## model. Each row carries the turn's `turn_id`.
+  ## call a turn makes lands here: the loop's own (`kind` "loop"), the
+  ## side calls `meteredClient` reports with their own `kind` and
+  ## model, and the delegated `cost` line a worker emits for a call
+  ## whose silent tracer could not book it (slice 10). Each row carries
+  ## the turn's `turn_id`.
+  let usage = usageOf(ev)
   let kindNode = ev.jget("kind")
   let modelNode = ev.jget("model")
   let rec = %*{"ts": utcStamp(), "provider": t.provider,
@@ -128,12 +143,22 @@ proc recordUsage(t: Tracer, ev: JsonNode) =
                  kindNode.getStr().len > 0: kindNode.getStr()
                  else: "loop"),
                "turn_id": t.turnId,
-               "in": usageInt(ev, "in"), "out": usageInt(ev, "out")}
+               "in": usageInt(usage, "in"),
+               "out": usageInt(usage, "out")}
   createDir(t.home)
   var f: File
   discard open(f, t.home / "usage.jsonl", fmAppend)
   f.writeLine(jsonDumps(rec))
   close(f)
+
+proc stampedEvent(ev: JsonNode, base: JsonNode): JsonNode =
+  ## The event's own fields laid over a small base (provider/model), so
+  ## the shipped row carries the tracer's stamp and the payload's keys
+  ## without mutating the caller's node.
+  result = copy(base)
+  if ev.kind == JObject:
+    for key, value in pairs(ev):
+      result[key] = copy(value)
 
 proc event*(t: Tracer, kind: string, ev: JsonNode) =
   ## The Observer: every loop step lands in the trace (and the ledger).
@@ -148,10 +173,7 @@ proc event*(t: Tracer, kind: string, ev: JsonNode) =
     t.recordUsage(ev)
     # stamp WHICH brain answered — a trace without the model is half
     # a trace in a multi-model world (shootouts, live switching)
-    outp = %*{"provider": t.provider, "model": t.model}
-    if ev.kind == JObject:
-      for key, value in pairs(ev):
-        outp[key] = copy(value)
+    outp = stampedEvent(ev, %*{"provider": t.provider, "model": t.model})
     # Spec 012: join the call to its turn and say what it cost. The
     # stamp lands after the merge, so it wins — and the ledger above
     # already read the raw event, like Python records usage first.
@@ -159,6 +181,21 @@ proc event*(t: Tracer, kind: string, ev: JsonNode) =
     outp["cost_usd"] = %llmCost(t.provider, t.model, ev.jget("usage"))
     outp["span"] = %"llm"
     outp["gen_ai.operation.name"] = %"chat"
+  elif kind == "cost":
+    # Slice 10: the delegated synthesis. The worker's tracer is silent
+    # (one writer per turn), so its `cost` child line is the only record
+    # of that call and the orchestrator books it here. Evidence that this
+    # cannot double count: the normal loop emits trace kind `llm`, booked
+    # above, and nothing else emits `cost` — `waku/` has no producer,
+    # and the only writer in this port is the delegation mapping. The
+    # row is the call's only charge, and the dollars the dashboard reads
+    # come from the same pricing tables as every `llm` row.
+    t.recordUsage(ev)
+    var model = ev.jget("model").getStr()
+    if model.len == 0:
+      model = t.model
+    outp = stampedEvent(ev, %*{"provider": t.provider, "model": model})
+    outp["cost_usd"] = %llmCost(t.provider, model, usageOf(ev))
   elif kind == "tool":
     outp = traceRecord(ev, t.turnId, t.servers)
   t.writeRecord(kind, outp)
