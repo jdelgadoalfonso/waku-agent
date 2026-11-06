@@ -612,6 +612,35 @@ proc agentsOverview*(enabled: seq[string]): JsonNode =
                    "cost": 0,
                    "last_route": ""})
 
+proc mergeLiveAgents*(rows: JsonNode, liveAgents: JsonNode): JsonNode =
+  ## Overlay live trace fields onto the enabled-agents rows, by agent
+  ## name. Copies `cost`/`last_route` (lot 4) plus `pid`/`state` (live
+  ## tracking): a live `pid` of 0/null leaves the registry default, an
+  ## empty `last_route`/`state` leaves the default, everything else
+  ## overwrites. Pure so the panel merge is pinnable without a home dir.
+  result = copy(rows)
+  var liveByName = initTable[string, JsonNode]()
+  if liveAgents.kind == JArray:
+    for r in liveAgents:
+      if r.kind == JObject:
+        liveByName[r.jget("agent").getStr()] = r
+  for row in result.mitems:
+    if row.kind != JObject:
+      continue
+    let live = liveByName.getOrDefault(row.jget("name").getStr(), nil)
+    if live.isNil:
+      continue
+    row["cost"] = copy(live.jget("cost"))
+    if live.jget("last_route").getStr().len > 0:
+      row["last_route"] = copy(live.jget("last_route"))
+    let pid = live.jget("pid")
+    if pid.kind == JInt and pid.getBiggestInt() != 0:
+      row["pid"] = copy(pid)
+    elif pid.kind == JFloat and pid.getFloat() != 0.0:
+      row["pid"] = copy(pid)
+    if live.jget("state").getStr().len > 0:
+      row["state"] = copy(live.jget("state"))
+
 proc turnSection*(home, provider, model: string,
                   providers: seq[Provider]): (JsonNode, JsonNode, JsonNode) =
   ## `(turns, stats)` from the trace events — port of the turns-grouping
@@ -1433,21 +1462,7 @@ proc statusPayload*(d: DashboardDeps): JsonNode =
     names
   let (turns, stats, liveAgents) = turnSection(d.home, d.provider, d.model,
     d.providers)
-  let liveByName = block:
-    var t = initTable[string, JsonNode]()
-    for r in liveAgents:
-      if r.kind == JObject:
-        t[r.jget("agent").getStr()] = r
-    t
-  let agents = block:
-    var rows = agentsOverview(agentsEnabled)
-    for row in rows.mitems:
-      let live = liveByName.getOrDefault(row.jget("name").getStr(), nil)
-      if not live.isNil:
-        row["cost"] = copy(live.jget("cost"))
-        if live.jget("last_route").getStr().len > 0:
-          row["last_route"] = copy(live.jget("last_route"))
-    rows
+  let agents = mergeLiveAgents(agentsOverview(agentsEnabled), liveAgents)
   let pageDb = connectDb(d.home)
   let pageStore = factsFor(d, pageDb).store
   let pageEpisodes = episodesFor(d, pageDb)

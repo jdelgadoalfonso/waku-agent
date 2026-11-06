@@ -76,6 +76,35 @@ suite "lot 3 t3.4 per-agent observability":
     check rows[0]["turns"].getInt() == 1
     check rows[0]["last_route"].getStr() == "quick"
 
+  test "pid keeps newest non-zero and state follows terminal":
+    let events = @[
+      %*{"type": "delegation", "workflow": "brief",
+         "router": "orchestrator", "target": "full_agent",
+         "agent": "brief", "trace_id": "tr1", "turn_id": "tu1",
+         "pid": 1234},
+      %*{"type": "worker_done", "agent": "brief",
+         "trace_id": "tr1", "turn_id": "tu1",
+         "route": "full_agent", "pid": 1234, "cost": 0.01}
+    ]
+    let rows = agentsSummary(events)
+    check rows.len == 1
+    check rows[0]["pid"].getInt() == 1234
+    check rows[0]["state"].getStr() == "done"
+
+  test "running until terminal, pid null when unnamed":
+    let running = agentsSummary(@[
+      %*{"type": "delegation", "workflow": "brief",
+         "router": "orchestrator", "target": "full_agent",
+         "agent": "brief", "turn_id": "tu1"}
+    ])
+    check running[0]["state"].getStr() == "running"
+    check running[0]["pid"].kind == JNull
+    let costOnly = agentsSummary(@[
+      %*{"type": "cost", "agent": "gather", "turn_id": "tu1",
+         "cost": 0.5}
+    ])
+    check costOnly[0]["state"].getStr() == "running"
+
   test "the payload carries the rows and loses no key it served":
     let home = getTempDir() / "obs-t34-payload"
     if dirExists(home):

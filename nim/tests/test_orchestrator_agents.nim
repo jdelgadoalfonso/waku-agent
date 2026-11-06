@@ -17,3 +17,25 @@ suite "lot 3 t3.2 agents panel":
     check cards[0]["kind"].getStr() == "graph"
     check cards[0]["state"].getStr() == "idle"
     check cards[0]["last_route"].getStr() == ""
+
+  test "live merge overlays pid and state without second parse":
+    let rows = agentsOverview(@["triage"])
+    let live = %*[
+      {"agent": "triage", "cost": 0.02, "last_route": "full",
+       "pid": 4321, "state": "running"}
+    ]
+    let merged = mergeLiveAgents(rows, live)
+    check merged[0]["pid"].getInt() == 4321
+    check merged[0]["state"].getStr() == "running"
+    check merged[0]["cost"].getFloat() == 0.02
+    check merged[0]["last_route"].getStr() == "full"
+
+  test "live merge keeps defaults when pid unnamed":
+    let rows = agentsOverview(@["triage"])
+    let live = %*[
+      {"agent": "triage", "cost": 0.0, "last_route": "",
+       "pid": newJNull(), "state": "running"}
+    ]
+    let merged = mergeLiveAgents(rows, live)
+    check merged[0]["pid"].kind == JNull
+    check merged[0]["state"].getStr() == "running"

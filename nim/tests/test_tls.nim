@@ -292,31 +292,40 @@ when not TlsCompiled:
         assert not refusal.startsWith("OTHER "),
           "a seam failed some other way: " & refusal
 
-    test "why a finally that catches swallows the refusal in flight":
+    test "why a defensive except in a finally stays banned":
       # The mechanism behind the pin above, in five lines and with no
-      # socket, no URL and no transport involved: a `try/except` nested
-      # in a `finally` that is running DURING exception unwinding
-      # catches the exception that is unwinding, and the proc then
-      # returns normally. This is the pin for the four seams' old shape,
-      # and it stays because the rule is a property of Nim rather than of
-      # this file: the next editor who wraps a `close()` in a defensive
-      # `except` has to read here first. Nobody relies on the swallowing
-      # any more — the seams close in a bare `finally` (pinned by the next
-      # test) and let the refusal out.
+      # socket, no URL and no transport involved. On the Nim this pin was
+      # written for, a `try/except` nested in a `finally` running DURING
+      # exception unwinding caught the exception in flight and the proc
+      # returned normally — which is how the four seams' old shape turned
+      # the no-TLS refusal into a returned 0. On this compiler (Nim 2.4.1)
+      # the inner handler no longer intercepts the outer exception: the
+      # `boom` below propagates past the finally, `caught` stays false,
+      # and only an outer handler sees it. Pinned that way so the next
+      # editor who wraps a `close()` in a defensive `except` reads here
+      # first: the bare `finally` stays the rule for portability (pinned
+      # by the next test), even though this compiler lets the refusal out
+      # either way. Nobody relies on swallowing any more — the seams close
+      # in a bare `finally` and let the refusal out.
       var reached = "no"
       var caught = false
+      var escaped = ""
       try:
-        reached = reached & " body"
-        if reached.len > 0:       # always true; a bare `raise` here would
-          raise newException(IOError, "boom")   # read as unreachable below
-      finally:
         try:
-          reached = reached & " finally"
-        except CatchableError:
-          caught = true
-          reached = reached & " caught"
-      check reached == "no body finally caught"
-      check caught     # the handler ran, and that is what let the proc return
+          reached = reached & " body"
+          if reached.len > 0:     # always true; a bare `raise` here would
+            raise newException(IOError, "boom") # read as unreachable below
+        finally:
+          try:
+            reached = reached & " finally"
+          except CatchableError:
+            caught = true
+            reached = reached & " caught"
+      except IOError as exc:
+        escaped = exc.msg
+      check escaped == "boom"
+      check reached == "no body finally"
+      check not caught   # the inner handler did not run: no swallow here
 
     test "the live gateway dial refuses, unchanged":
       # The 7d2-2 line, byte for byte. This build cannot reach

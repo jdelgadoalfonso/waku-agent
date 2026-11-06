@@ -250,12 +250,17 @@ proc rowIndex(names: openArray[string], name: string): int =
 proc agentsSummary*(events: seq[JsonNode]): JsonNode =
   ## Lot 3 T3.4: per-agent observability from the same trace events, in
   ## first-appearance (oldest first) order. One row per worker
-  ## `{agent, turns, cost, last_route}`: `turns` counts distinct `turn_id`,
-  ## `cost` sums each event's one dollar value (`cost_usd`, else `cost`), and
-  ## `last_route` keeps the newest `route`/`target` seen. Pure and offline, so
-  ## `/api/observability` aggregates per agent from the one trace read it
-  ## already does — no new polling loop. A trace with no worker events reads
-  ## `[]`, and unknown shapes are skipped, never an error.
+  ## `{agent, turns, cost, last_route, pid, state}`: `turns` counts distinct
+  ## `turn_id`, `cost` sums each event's one dollar value (`cost_usd`, else
+  ## `cost`), `last_route` keeps the newest `route`/`target` seen, `pid`
+  ## keeps the newest non-zero stamped `pid` (null when no event names
+  ## one), and `state` is `done` once a `worker_done`/`worker_error` is
+  ## seen, else `running` (`cost` alone never flips it, so a late charge
+  ## cannot resurrect a finished worker and a new delegation/message
+  ## returns it to `running`). Pure and offline, so `/api/observability`
+  ## aggregates per agent from the one trace read it already does — no new
+  ## polling loop. A trace with no worker events reads `[]`, and unknown
+  ## shapes are skipped, never an error.
   result = newJArray()
   var names: seq[string] = @[]
   var turnIds: seq[seq[string]] = @[]
@@ -270,7 +275,7 @@ proc agentsSummary*(events: seq[JsonNode]): JsonNode =
       names.add(name)
       turnIds.add(@[])
       result.add(%*{"agent": name, "turns": 0, "cost": 0.0,
-        "last_route": ""})
+        "last_route": "", "pid": newJNull(), "state": "running"})
       idx = names.len - 1
     let turnId = ev.jget("turn_id").getStr()
     if turnId.len > 0 and turnId notin turnIds[idx]:
@@ -279,6 +284,24 @@ proc agentsSummary*(events: seq[JsonNode]): JsonNode =
     let route = eventRoute(ev)
     if route.len > 0:
       result[idx]["last_route"] = %route
+    let p = ev.jget("pid")
+    var pid = 0
+    case p.kind
+    of JInt:
+      pid = int(p.getBiggestInt())
+    of JFloat:
+      pid = int(p.getFloat())
+    else:
+      discard
+    if pid != 0:
+      result[idx]["pid"] = %pid
+    case ev.jget("type").getStr()
+    of "worker_done", "worker_error":
+      result[idx]["state"] = %"done"
+    of "cost":
+      discard
+    else:
+      result[idx]["state"] = %"running"
     result[idx]["cost"] = %(result[idx]["cost"].getFloat() + eventCost(ev))
 
 const
