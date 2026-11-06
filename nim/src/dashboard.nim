@@ -84,6 +84,7 @@ import ./aggregate
 import ./connect
 import ./config
 import ./db
+import ./delegate
 import ./discord
 import ./experimental
 import ./factstore
@@ -112,6 +113,7 @@ import ./graph/plugins
 from ./graph/engine import runGraph
 import ./search
 import ./session
+import ./supervisor
 import ./skills except FetchFn
 import ./telegram
 import ./tools
@@ -2727,9 +2729,13 @@ proc pluginGraphTurn(plugin: LoadedPlugin): GraphTurn =
 
 proc resolveGatewayGraph*(name: string, client: LlmClient, smallModel, home: string,
     full: proc(state: JsonNode, notify: Observer,
-               stream: bool): LoopResult {.closure.}, gatherTurn: GraphTurn = nil): GraphTurn =
+               stream: bool): LoopResult {.closure.}, gatherTurn: GraphTurn = nil,
+    agents: seq[string] = @[], delegateFn: DelegateFn = nil): GraphTurn =
   ## Name to GraphTurn. `off`/`loop`/empty/false/0/no is nil (plain loop).
-  ## `triage` (and legacy truthy `1`/`true`/`yes`/`on`) binds triage.
+  ## `triage` (and legacy truthy `1`/`true`/`yes`/`on`) binds triage, with
+  ## the caller's `agents`/`delegateFn` seam: both default empty/nil, so
+  ## every caller that binds no worker gets the quick|full graph byte for
+  ## byte (see `triageGraphTurn`).
   ## `gather` binds the caller-provided gather turn; nil when the caller
   ## did not bind one, so respond fails open to the loop.
   ## `plugin:<name>` binds the graph the plugin's manifest declared — nil
@@ -2742,7 +2748,7 @@ proc resolveGatewayGraph*(name: string, client: LlmClient, smallModel, home: str
   of "", "off", "loop", "0", "false", "no":
     discard
   of "triage", "1", "true", "yes", "on":
-    result = triageGraphTurn(client, smallModel, home, full)
+    result = triageGraphTurn(client, smallModel, home, full, agents, delegateFn)
   of "gather":
     result = gatherTurn
   else:
@@ -2773,13 +2779,24 @@ proc reselectGraphTurn*(w: var Waku, source: string,
   ## stored in `w.graphTurn` — inside the very object it points at — so it
   ## cannot outlive it, and both callers keep the agent put (a `WakuBox`
   ## field, the REPL's own `Waku`).
+  ##
+  ## The delegation seam is rebuilt here for the same reason it is built
+  ## in `buildCliApp`: this reselect runs every CLI and dashboard turn, so
+  ## a seam bound only at startup would be dropped by the first one. With
+  ## `WAKU_AGENTS` empty `liveDelegateFor` answers nil and the graph is
+  ## today's quick|full, byte for byte. The trace id is read per call
+  ## through the same address, so an empty `tracer.turnId` at bind time
+  ## is not a race.
   let agent = addr w
   try:
     w.graphTurn = resolveGatewayGraph(graphSelectorFor(source, env),
       w.client, w.settings.smallModel, w.settings.home,
       proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
         agent[].runFullTurn(st.jget("message").getStr(), n, strm),
-      gatherGraphTurn(w))
+      gatherGraphTurn(w),
+      workerAgents(w.settings.agents),
+      liveDelegateFor(w.settings.agents, getAppFilename(),
+        proc(): string = agent[].tracer.turnId, defaultWorkerRunner))
   except CatchableError:
     w.graphTurn = nil
 
@@ -2813,9 +2830,16 @@ proc ensureWaku*(box: WakuBox) =
     discard loadPluginGraphs(pluginDir(s.home), addr box.waku.hostFns[])
     wireMemory(box.waku, s, db, client, bundledSkillDirs())
     if s.graphWorkflows:
+      # The same live seam `buildCliApp` and `reselectGraphTurn` bind, so a
+      # gateway (or a build that never reselects) still runs the agent
+      # route; with `WAKU_AGENTS` empty `liveDelegateFor` answers nil and
+      # this is today's quick|full graph.
       box.waku.graphTurn = triageGraphTurn(client, s.smallModel, s.home,
         proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
-          box.waku.runFullTurn(st.jget("message").getStr(), n, strm))
+          box.waku.runFullTurn(st.jget("message").getStr(), n, strm),
+        workerAgents(s.agents),
+        liveDelegateFor(s.agents, getAppFilename(),
+          proc(): string = box.waku.tracer.turnId, defaultWorkerRunner))
     box.waku.session.sessionId =
       if box.sessionId.len > 0: box.sessionId
       else: "dashboard-" & format(now(), "yyyyMMdd-HHmmss")
@@ -2961,7 +2985,10 @@ proc runSlashCommand*(message: string, box: WakuBox, emit: SseEmit,
         let turn = triageGraphTurn(box.waku.client,
           box.waku.settings.smallModel, box.waku.settings.home,
           proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
-            box.waku.runFullTurn(st.jget("message").getStr(), n, strm))
+            box.waku.runFullTurn(st.jget("message").getStr(), n, strm),
+          workerAgents(box.waku.settings.agents),
+          liveDelegateFor(box.waku.settings.agents, getAppFilename(),
+            proc(): string = box.waku.tracer.turnId, defaultWorkerRunner))
         let (answered, res) = turn(arg,
           proc(kind: string, ev: JsonNode) {.closure.} = emit(kind, ev),
           true)
@@ -4096,7 +4123,10 @@ proc gatewayAgents*(providers: seq[Provider], settings: Settings,
         box.waku.settings.smallModel, box.waku.settings.home,
         proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
           box.waku.runFullTurn(st.jget("message").getStr(), n, strm),
-        gatherGraphTurn(box.waku))
+        gatherGraphTurn(box.waku),
+        workerAgents(box.waku.settings.agents),
+        liveDelegateFor(box.waku.settings.agents, getAppFilename(),
+          proc(): string = box.waku.tracer.turnId, defaultWorkerRunner))
       box.waku.respond(text, cli.liveObserver, source, false).reply
 
 proc liveGatewayHooks*(providers: seq[Provider], settings: Settings,
