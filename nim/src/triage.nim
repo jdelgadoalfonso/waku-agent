@@ -187,7 +187,14 @@ proc buildTriageGraph*(classifyFn: ClassifyFn, calendarFn: CalendarFn,
   if agentRoutes.len > 0 and not delegateFn.isNil:
     g.addNode(newNode("delegate_agent",
       proc(s: JsonNode, n: Observer): JsonNode =
-        %*{"delegation": delegateFn(s, n)}, kind = "agent"))
+        let d = delegateFn(s, n)
+        # Fail-open is an empty patch: no `result`, no `reply`, so the
+        # binder returns (false, _) and `respond` runs the plain loop.
+        # Anything else answers through the existing `result` path.
+        if d.kind == JObject and d.jget("fail_open").getBool(false):
+          newJObject()
+        else:
+          %*{"result": d}, kind = "agent"))
     for agent in agentRoutes:
       routes.add((label: agent, dst: "delegate_agent"))
     g.addEdge("delegate_agent", END)

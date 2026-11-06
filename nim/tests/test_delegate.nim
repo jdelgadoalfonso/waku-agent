@@ -7,6 +7,8 @@ import std/unittest
 import ../src/aggregate
 import ../src/delegate
 import ../src/delegation
+import ../src/supervisor
+import ../src/tools
 
 suite "delegate slice 1":
 
@@ -63,3 +65,34 @@ suite "delegate slice 1":
     assert ev["workflow"].getStr() == "gather"
     assert ev["router"].getStr() == "orchestrator"
     assert ev["target"].getStr() == "gather"
+
+suite "delegate slice 2a":
+
+  test "done answers through the result path and emits pairs":
+    let doneLine = makeChildLine("done", "t_1", "t_2", "gather", 0,
+        %*{"reply": "delegated reply"})
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      (res: ProcResult(timedOut: false, code: 0,
+        stdout: $doneLine & "\n", stderr: ""), pid: 4321)
+    var kinds: seq[string] = @[]
+    let fn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake)
+    let ans = fn(%*{"message": "gather news", "route": "gather",
+      "triage_reason": "morning shape"},
+      proc(kind: string, ev: JsonNode) = kinds.add(kind))
+    assert ans["reply"].getStr() == "delegated reply"
+    assert ans["iterations"].getInt() == 1
+    assert "delegation" in kinds
+    assert "worker_done" in kinds
+
+  test "timeout fails open with a marker and still emits the edge":
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      (res: ProcResult(timedOut: true, code: 124, stdout: "",
+        stderr: ""), pid: 0)
+    var kinds: seq[string] = @[]
+    let fn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake)
+    let ans = fn(%*{"message": "gather news", "route": "gather"},
+      proc(kind: string, ev: JsonNode) = kinds.add(kind))
+    assert ans["fail_open"].getBool(false)
+    assert kinds == @["delegation"]

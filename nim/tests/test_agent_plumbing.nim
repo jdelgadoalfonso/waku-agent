@@ -141,12 +141,23 @@ suite "agent plumbing T2.3 binder":
       agents = @["brief"],
       delegateFn = proc(s: JsonNode, n: Observer): JsonNode =
         delegated = s.jget("route").getStr()
-        %*{"agent": "brief", "reply": "delegated reply"})
-    let (answered, _) = turn("brief me", nil, false)
+        %*{"reply": "delegated reply", "tool_calls": [],
+            "iterations": 1})
+    let (answered, res) = turn("brief me", nil, false)
     # with a delegate bound the gate offers the route it can actually run
     assert "\"brief\"" in script.seen[0]["messages"][0]["content"].getStr()
     assert delegated == "brief"
-    # Execution wiring is the deferred follow-up: the binder does not read
-    # `delegation` yet, so the turn fails open to the loop instead of
-    # claiming it answered.
+    # Slice 2a: the delegate answers through the existing result path.
+    assert answered == true
+    assert res.reply == "delegated reply"
+
+  test "a fail-open delegate falls back to no answer":
+    let script = Script(items: @[textResp("{\"route\": \"brief\"}")])
+    let turn = triageGraphTurn(scriptedClient(script), "mini", noHome,
+      proc(st: JsonNode, n: Observer, s: bool): LoopResult =
+        raise newException(ValueError, "must not run"),
+      agents = @["brief"],
+      delegateFn = proc(s: JsonNode, n: Observer): JsonNode =
+        %*{"fail_open": true})
+    let (answered, _) = turn("brief me", nil, false)
     assert answered == false

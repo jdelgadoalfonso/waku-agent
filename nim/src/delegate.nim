@@ -12,6 +12,8 @@ import std/json
 import ./aggregate
 import ./delegation
 import ./loop
+import ./supervisor
+import ./triage
 import ./wire
 
 const delegateDefaultTimeoutMs* = 30000
@@ -63,3 +65,36 @@ proc delegateEdge*(fromAgent, toAgent, traceId, turnId, route,
   ## One orchestrator -> worker edge, shaped like the engine `route`
   ## event so `graph.js` lights it with the same code path.
   delegationEvent(fromAgent, toAgent, traceId, turnId, route, reason)
+
+proc makeDelegateFn*(agent, binary, traceId, turnId: string,
+    runner: WorkerRunner, timeoutMs = delegateDefaultTimeoutMs,
+    maxToolCalls = delegateDefaultMaxToolCalls,
+    timeoutSec = -1): DelegateFn =
+  ## Live `DelegateFn` for the triage binder. Builds the task line,
+  ## emits the `delegation` edge on the graph `notify` (which already
+  ## fans out to `Tracer.event`), supervises one worker, re-emits
+  ## every child pair, and answers through the existing `result` path.
+  ## `shouldFailOpen` answers `%*{"fail_open": true}` so the
+  ## `delegate_agent` node emits an empty patch and the binder returns
+  ## `(false, _)` — the plain loop answers, same as any broken graph.
+  result = proc(state: JsonNode, notify: Observer): JsonNode {.closure.} =
+    let task = state.jget("message").getStr()
+    let route = state.jget("route").getStr(agent)
+    let reason = state.jget("triage_reason").getStr("delegated")
+    let secs = if timeoutSec > 0: timeoutSec
+               else: delegateTimeoutSec(timeoutMs)
+    if not notify.isNil:
+      notify("delegation",
+        delegateEdge("orchestrator", agent, traceId, turnId, route,
+          reason))
+    let outcome = runWorker(delegateArgv(binary, agent),
+      delegateTaskLine(traceId, turnId, task, "", timeoutMs,
+        maxToolCalls), secs, runner)
+    for pair in delegateTracePairs(outcome.childLines):
+      if not notify.isNil:
+        notify(pair.kind, pair.ev)
+    if outcome.shouldFailOpen:
+      return %*{"fail_open": true}
+    let res = delegateLoopResult(outcome.childLines)
+    %*{"reply": res.reply, "tool_calls": %res.toolCalls,
+        "iterations": res.iterations}

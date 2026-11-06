@@ -51,7 +51,23 @@ suite "router agents T2.2":
         newException(ValueError, "must not run"),
       agentRoutes = @["gather"],
       delegateFn = proc(s: JsonNode, n: Observer): JsonNode =
-        %*{"delegated_to": s.jget("route").getStr()})
+        %*{"reply": "delegated", "tool_calls": [], "iterations": 1})
     var state = %*{"message": "brief me"}
     discard runGraph(g, state)
-    assert state["delegation"]["delegated_to"].getStr() == "gather"
+    assert state["result"]["reply"].getStr() == "delegated"
+
+  test "fail-open delegate leaves no result for the binder":
+    let g = buildTriageGraph(
+      classifyFn = proc(m: string): tuple[route, reason: string] =
+        ("gather", "morning shape"),
+      calendarFn = proc(): string = "",
+      quickFn = proc(s: JsonNode): string = raise
+        newException(ValueError, "must not run"),
+      fullFn = proc(s: JsonNode, n: Observer): LoopResult = raise
+        newException(ValueError, "must not run"),
+      agentRoutes = @["gather"],
+      delegateFn = proc(s: JsonNode, n: Observer): JsonNode =
+        %*{"fail_open": true})
+    var state = %*{"message": "brief me"}
+    discard runGraph(g, state)
+    assert not state.hasKey("result")
