@@ -20,8 +20,11 @@
 ##
 ## `--role worker --agent <name>` is the child half of the delegation
 ## contract (`delegation.nim`, slice 2b): one task line on stdin, child
-## lines on stdout, and a silent tracer — the orchestrator owns the
-## turn's trace and ledger, so this process writes neither.
+## lines on stdout, and no runtime data. It builds `buildWorkerApp`
+## (settings, client, silent tracer) and runs the gather with
+## `writeDraft = false`, so it opens no `state.db` and files no outbox
+## copy: the orchestrator owns the turn's trace, ledger and draft, and a
+## worker that wrote too would split one turn across two processes.
 
 import std/httpclient
 import std/json
@@ -204,10 +207,18 @@ proc writeVersion*() =
   ## Print the port version.
   echo version
 
-proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
-  ## Everything a CLI command runs against: env, registry, live client,
-  ## state db. Raises `ClientConfigError` (message holds the fix) before
-  ## touching the network or the filesystem beyond the `.env` read.
+type
+  CliSetup* = tuple[settings: Settings, client: LlmClient]
+    ## What every command needs before it can build a `Waku`: the settings
+    ## it runs under and the live client for the provider they name. No
+    ## connection, no directory, no tracer — `buildCliApp` adds the full
+    ## CLI app, `buildWorkerApp` stops at the silent minimum.
+
+proc loadCliSetup*(dotenvStart = "", homeEnv = ""): CliSetup =
+  ## The half of `buildCliApp` that touches no runtime data: env, settings,
+  ## provider registry and the live client. Raises `ClientConfigError`
+  ## (message holds the fix) before touching the network or the filesystem
+  ## beyond the `.env` read.
   ## `homeEnv` names an env var that overrides `WAKU_HOME` for this
   ## agent only — `DISCORD_HOME`, the difference between "a bot in my
   ## community" and "my private assistant, exposed" (port of
@@ -234,13 +245,20 @@ proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
   let rows = loadProviders(registryPath)
   let client = clientFor(settings, rows, getEnv("WAKU_API_KEY"),
                          dotenvPath)
-  let db = connectDb(settings.home)
-  var w = newWaku(settings, client, db)
-  w.tools = buildRegistry(db, settings.home, settings, liveSearchFetch,
-    liveGhRun, livePiSeams(settings.home, settings.provider,
-      settings.model),
+  result = (settings: settings, client: client)
+
+proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
+  ## Everything a CLI command runs against: env, registry, live client,
+  ## state db. `homeEnv` is forwarded to `loadCliSetup` (see there).
+  let setup = loadCliSetup(dotenvStart, homeEnv)
+  let db = connectDb(setup.settings.home)
+  var w = newWaku(setup.settings, setup.client, db)
+  w.tools = buildRegistry(db, setup.settings.home, setup.settings,
+    liveSearchFetch, liveGhRun,
+    livePiSeams(setup.settings.home, setup.settings.provider,
+      setup.settings.model),
     liveAppleSeams(), w.facts, w.episodes,
-    mcpRegistryTools(settings.home, processEnv(),
+    mcpRegistryTools(setup.settings.home, processEnv(),
       getTime().toUnix(), liveStdioFactory(), liveHttpPostFn()))
   # Step 3: the host table a plugin calls back into, built where the live
   # client and the tool registry exist (never on this stack frame — a
@@ -248,25 +266,38 @@ proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
   # `.waku/plugins/*.so` loaded and registered as `plugin:<name>`.
   # `loadPluginGraphs` never raises: a bad library is one stderr line and
   # the CLI runs exactly as it does without it.
-  w.hostFns = newHostTable(client, w.tools, settings.model)
-  discard loadPluginGraphs(pluginDir(settings.home), addr w.hostFns[])
-  wireMemory(w, settings, db, client, bundledSkillDirs())
-  if settings.graphWorkflows:
+  w.hostFns = newHostTable(setup.client, w.tools, setup.settings.model)
+  discard loadPluginGraphs(pluginDir(setup.settings.home), addr w.hostFns[])
+  wireMemory(w, setup.settings, db, setup.client, bundledSkillDirs())
+  if setup.settings.graphWorkflows:
     # The triage door. The gate is offered exactly the enabled agents
     # that have a worker in this binary (`delegateWorkers`: today only
     # `gather`), and gets a nil seam when none does — which is today's
     # quick|full graph, byte for byte. The seam reads `tracer.turnId`
     # per call (the binder outlives one turn) and spawns this same
     # binary at `getAppFilename()` in the worker role.
-    let workers = workerAgents(settings.agents)
-    w.graphTurn = triageGraphTurn(client, settings.smallModel,
-      settings.home,
+    let workers = workerAgents(setup.settings.agents)
+    w.graphTurn = triageGraphTurn(setup.client, setup.settings.smallModel,
+      setup.settings.home,
       proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
         w.runFullTurn(st.jget("message").getStr(), n, strm),
       workers,
-      liveDelegateFor(settings.agents, getAppFilename(),
+      liveDelegateFor(setup.settings.agents, getAppFilename(),
         proc(): string = w.tracer.turnId, defaultWorkerRunner))
   return w
+
+proc buildWorkerApp*(dotenvStart = ""): Waku =
+  ## The worker's Waku (slice 9): settings, the live client and a silenced
+  ## tracer — nothing that holds or writes runtime data. No `state.db`
+  ## (so no schema, no migrations, no chat row), no tool registry, no
+  ## plugins, no memory wiring: the orchestrator owns every write of a
+  ## turn, and a worker that opened the store would touch the
+  ## orchestrator's data just to answer one delegation. Raises
+  ## `ClientConfigError` like `buildCliApp`, so a worker with no key still
+  ## answers stderr and exit 1.
+  let setup = loadCliSetup(dotenvStart)
+  result = newWaku(setup.settings, setup.client)
+  result.tracer.silent = true
 
 proc runChat*(dotenvStart = ""): int =
   ## Default command: talk in the terminal.
@@ -672,9 +703,10 @@ proc runWorkerCmd*(args: seq[string], dotenvStart = ""): int =
   ## `error` line is an answer the parent can parse (it fails open on
   ## the empty reply) — and 1 only when no line could exist at all.
   ##
-  ## The tracer is made silent here: the orchestrator writes the turn's
-  ## trace and ledger, so a worker that wrote too would split one turn
-  ## across two files (design doc: workers never write runtime data).
+  ## The worker builds `buildWorkerApp`, not the full CLI app, and runs
+  ## `runGather` with `writeDraft = false`: no `state.db`, no tools, no
+  ## plugins, no outbox copy, and a silent tracer. The orchestrator owns
+  ## every runtime write of the turn (design doc, trace rule).
   let role = workerRole(args)
   if not role.isWorker:
     writeUsage()
@@ -684,14 +716,13 @@ proc runWorkerCmd*(args: seq[string], dotenvStart = ""): int =
   if role.agent in delegateWorkers:
     var w: Waku
     try:
-      w = buildCliApp(dotenvStart)
+      w = buildWorkerApp(dotenvStart)
     except ClientConfigError as exc:
-      # No app means no worker at all: stderr and exit 1, which the
-      # parent reads as a failed worker and fails open.
+      # No worker app at all: stderr and exit 1, which the parent reads
+      # as a failed worker and fails open.
       stderr.writeLine(exc.msg)
       return 1
-    w.tracer.silent = true
-    gather = proc(): JsonNode = runGather(w)
+    gather = proc(): JsonNode = runGather(w, writeDraft = false)
     taskLine = readTaskLine()
   # An unknown agent answers here, without an app and without reading
   # stdin: there is nothing to run, so there is nothing to wait for.

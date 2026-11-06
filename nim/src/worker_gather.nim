@@ -1,11 +1,12 @@
 ## Worker gather — lot 1 T1.4: gather as a headless worker turn.
 ##
 ## Pure turn logic for `waku --role worker --agent gather`. The live
-## entrypoint (stdin read, `buildCliApp`, `runGather`, stdout write)
+## entrypoint (stdin read, `buildWorkerApp`, `runGather`, stdout write)
 ## stays in `waku.nim` so this module and its tests stay offline:
 ## inject `GatherFn`, get back the exact child lines to emit.
 ##
-## - valid task -> `event` (digest ready) then `done` (reply + draft)
+## - valid task -> `event` (digest ready) then `done` (reply plus an
+##   empty `draft_path`: the worker writes nothing, the parent files)
 ## - invalid task or gather raising -> single `error`, never raises
 
 import std/json

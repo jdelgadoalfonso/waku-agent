@@ -343,6 +343,55 @@ suite "phase 4d gather binders":
       ("gather-" & format(now(), "yyyy-MM-dd") & ".md")
     assert readFile(path) == "# Morning\n"
 
+  test "a headless gather keeps the digest and writes nothing":
+    # Slice 9: a worker may not write runtime data. No `state.db` (the
+    # memory scan holds no store), no trace (the tracer is silenced), no
+    # outbox draft (`writeDraft = false`) — the orchestrator owns them.
+    let home = getTempDir() / ("waku-g-headless-" & $getCurrentProcessId())
+    if dirExists(home):
+      removeDir(home)
+    createDir(home)
+    tempHomes.add(home)
+    let today = format(now(), "yyyyMMdd")
+    writeFile(home / "calendar.ics",
+      "BEGIN:VEVENT\nSUMMARY:A\nDTSTART:" & today & "T090000\n")
+    let script = Script(items: @[textResp("One meeting.")])
+    var w = newWaku(testSettings(home), scriptedClient(script))
+    w.tracer.silent = true
+    let state = runGather(w, writeDraft = false)
+    assert state["digest"].getStr() == "One meeting."
+    assert state["cal_event_count"].getInt() == 1
+    assert state["draft_path"].getStr() == ""
+    assert "no local store" in state["mem_text"].getStr()
+    var left: seq[string] = @[]
+    for kind, path in walkDir(home):
+      left.add(extractFilename(path))
+    assert left == @["calendar.ics"]
+
+  test "drafting and headless gathers answer the same digest":
+    let filedHome = freshHome("waku-g-draft-filed")
+    let headlessHome = freshHome("waku-g-draft-headless")
+    let today = format(now(), "yyyyMMdd")
+    let stamp = format(now(), "yyyy-MM-dd")
+    for home in [filedHome, headlessHome]:
+      writeFile(home / "calendar.ics",
+        "BEGIN:VEVENT\nSUMMARY:A\nDTSTART:" & today & "T090000\n")
+    let filedScript = Script(items: @[textResp("One meeting.")])
+    let db = connectDb(filedHome)
+    var filed = newWaku(testSettings(filedHome), scriptedClient(filedScript), db)
+    let filedState = runGather(filed)
+    db.close()
+    let headlessScript = Script(items: @[textResp("One meeting.")])
+    var headless = newWaku(testSettings(headlessHome),
+      scriptedClient(headlessScript))
+    headless.tracer.silent = true
+    let headlessState = runGather(headless, writeDraft = false)
+    assert filedState["digest"].getStr() == headlessState["digest"].getStr()
+    assert filedState["draft_path"].getStr() ==
+      filedHome / "outbox" / ("gather-" & stamp & ".md")
+    assert headlessState["draft_path"].getStr() == ""
+    assert not dirExists(headlessHome / "outbox")
+
   test "bound gather runs end to end and stays quiet":
     let home = freshHome("waku-g-e2e")
     let db = connectDb(home)

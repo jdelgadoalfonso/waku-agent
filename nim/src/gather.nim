@@ -238,31 +238,55 @@ proc draftBinder*(home: string): DraftFn =
     writeFile(dest, state.jget("digest").getStr() & "\n")
     return dest
 
-proc buildBoundGraph*(w: Waku): Graph =
+proc noDraft*(): DraftFn =
+  ## The headless draft: keep the state, touch no disk, and answer `""` so
+  ## the turn carries no `draft_path`. A worker returns its digest to the
+  ## orchestrator, and filing it is the orchestrator's job.
+  result = proc(state: JsonNode): string = ""
+
+proc unwiredMemory*(): MemFn =
+  ## The headless memory scan: a worker holds no local store, so it says
+  ## so instead of opening one. `connectDb` would CREATE `state.db` (and
+  ## its schema) just to answer a read, and a worker never writes runtime
+  ## data. Honest text, never silence, like every other scan.
+  result = proc(): string =
+    "(memory unavailable: the worker holds no local store)"
+
+proc buildBoundGraph*(w: Waku, writeDraft = true): Graph =
   ## Exactly one definition of what a gather may touch: reads (github —
   ## stubbed, web — stubbed, calendar, memory), one toolless synthesis,
-  ## one outbox file.
+  ## one outbox file. `writeDraft = false` is the headless worker: the
+  ## outbox belongs to the orchestrator, so the graph returns the digest
+  ## and files nothing. A `Waku` with no `db` binds no memory store for
+  ## the same reason — the worker never opens `state.db`.
   let home = w.settings.home
   let client = w.client
   let model = w.settings.model
+  let memoryFn: MemFn = if w.db.isNil: unwiredMemory() else: memoryBinder(home)
+  let draftFn: DraftFn = if writeDraft: draftBinder(home) else: noDraft()
   buildGatherGraph(
     githubFn = unavailableGithub(),
     webFn = webBinder(),
     calendarFn = calendarBinder(home),
-    memoryFn = memoryBinder(home),
+    memoryFn = memoryFn,
     synthFn = synthBinder(client, model),
-    draftFn = draftBinder(home))
+    draftFn = draftFn)
 
-proc runGather*(w: var Waku, observer: Observer = nil): JsonNode =
+proc runGather*(w: var Waku, observer: Observer = nil,
+                writeDraft = true): JsonNode =
   ## Run one gather to completion. Returns the final state; never raises
   ## (every scan fails into honest text). Composed with the tracer, so a
   ## gather lands in traces/*.jsonl like any turn. Unlike Python's
   ## `run_gather(waku=None)` this never builds its own Waku (implicit
   ## network construction arrives with phase 5): the caller owns the app
   ## lifecycle and closes it.
+  ##
+  ## `writeDraft = false` runs the same graph without filing the outbox
+  ## copy: `draft_path` stays `""` and the digest is unchanged. The worker
+  ## passes false (slice 9) because the orchestrator owns runtime data.
   let notify = compose(observer, w.tracer.tracerEvent())
   var state = newJObject()
-  discard runGraph(buildBoundGraph(w), state, notify)
+  discard runGraph(buildBoundGraph(w, writeDraft), state, notify)
   return state
 
 proc gatherGraphTurn*(w: Waku): GraphTurn =

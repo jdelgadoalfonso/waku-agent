@@ -499,3 +499,39 @@ suite "slice 2b worker role":
 
   test "dispatch: a non-worker role prints usage and exits 1":
     assert runCommand(@["--role", "orchestrator"]) == 1
+
+suite "slice 9 headless worker":
+  test "the worker app holds settings, a client and a silent tracer only":
+    # Slice 9: the worker builds no runtime data. `buildCliApp` opens
+    # `state.db`, wires tools/plugins/memory; `buildWorkerApp` must do
+    # none of that — the orchestrator owns every write of a turn.
+    let saved = scrubEnv()
+    let home = freshHome("waku-cli-worker-app")
+    putEnv("WAKU_HOME", home)
+    putEnv("WAKU_PROVIDER", "anthropic")
+    putEnv("ANTHROPIC_API_KEY", "worker-fixture-key")
+    let w = buildWorkerApp(home)
+    assert w.db.isNil
+    assert w.tools.tools.len == 0
+    assert w.hostFns.isNil
+    assert w.tracer.silent
+    assert not fileExists(home / "state.db")
+    var left: seq[string] = @[]
+    for kind, path in walkDir(home):
+      left.add(extractFilename(path))
+    assert left.len == 0
+    restoreEnv(saved)
+    removeDir(home)
+
+  test "a worker app still refuses with the config fix":
+    let saved = scrubEnv()
+    let home = freshHome("waku-cli-worker-nokey")
+    putEnv("WAKU_HOME", home)
+    try:
+      discard buildWorkerApp(home)
+      assert false, "must raise"
+    except ClientConfigError as exc:
+      assert "No API key for provider 'anthropic'" in exc.msg
+    assert not fileExists(home / "state.db")
+    restoreEnv(saved)
+    removeDir(home)
