@@ -123,3 +123,25 @@ suite "delegate slice 2a":
     let ans = fn(%*{"message": "brief me", "route": "brief"}, nil)
     assert ans["fail_open"].getBool(false)
     assert not spawned
+
+  test "done without reply fails open":
+    let doneLine = makeChildLine("done", "t_1", "t_2", "gather", 0,
+        %*{})
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      (res: ProcResult(timedOut: false, code: 0,
+        stdout: $doneLine & "\n", stderr: ""), pid: 0)
+    let fn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake)
+    let ans = fn(%*{"message": "gather news", "route": "gather"}, nil)
+    assert ans["fail_open"].getBool(false)
+
+  test "whitespace-only reply fails open":
+    let doneLine = makeChildLine("done", "t_1", "t_2", "gather", 0,
+        %*{"reply": "   "})
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      (res: ProcResult(timedOut: false, code: 0,
+        stdout: $doneLine & "\n", stderr: ""), pid: 0)
+    let fn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake)
+    let ans = fn(%*{"message": "gather news", "route": "gather"}, nil)
+    assert ans["fail_open"].getBool(false)

@@ -6,6 +6,7 @@
 ## `notify` (which already fans out to `Tracer.event`).
 
 import std/json
+import std/strutils
 
 import ./aggregate
 import ./delegation
@@ -42,7 +43,7 @@ proc delegateReply*(childLines: seq[JsonNode]): string =
   for child in childLines:
     if child.kind == JObject and child.jget("type").getStr() == "done":
       let reply = child.jget("payload").jget("reply").getStr()
-      if reply.len > 0:
+      if reply.strip().len > 0:
         result = reply
 
 proc delegateLoopResult*(childLines: seq[JsonNode]): LoopResult =
@@ -104,7 +105,12 @@ proc makeDelegateFn*(agent, binary, traceId, turnId: string,
     if outcome.shouldFailOpen:
       return %*{"fail_open": true}
     let res = delegateLoopResult(outcome.childLines)
-    if res.reply.len == 0:
+    if res.reply.strip().len == 0:
+      # Covers error-only, text-only, done-without-reply, and
+      # whitespace-only: answering any of those would read as success.
+      # Known cost: a worker that already ran tools and then ends
+      # empty reruns the full local loop (fail-open duplicates work
+      # instead of dropping the turn). No reply, no claim.
       return %*{"fail_open": true}
     %*{"reply": res.reply, "tool_calls": %res.toolCalls,
         "iterations": res.iterations}
