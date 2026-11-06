@@ -1,11 +1,9 @@
-## Productive caller, slice 1 — pure delegate helpers (offline, no spawn).
-##
-## The parent never trusts the network or the clock here: build the
-## stdin task line, the same-binary argv, and the timeout the supervisor
-## must wait, then map the supervised child lines to the answer and to
-## the trace pairs the orchestrator emits. Live IO (runWorker with
-## `defaultWorkerRunner`, `Tracer.event`, `notify`) stays in the binder
-## slice; this module and its tests stay deterministic.
+## Productive caller, slices 1-2a: pure helpers plus the triage
+## `DelegateFn` (offline, no spawn in tests; live code injects
+## `defaultWorkerRunner`). Builds the stdin task line, the same-binary
+## argv, and the supervisor timeout; maps supervised child lines to the
+## answer and to the trace pairs the orchestrator emits on the graph
+## `notify` (which already fans out to `Tracer.event`).
 
 import std/json
 
@@ -35,7 +33,7 @@ proc delegateTaskLine*(traceId, turnId, task, context: string,
 proc delegateTimeoutSec*(timeoutMs: int): int =
   ## Supervisor seconds that never kill before the child votes
   ## fail-open: ceil(ms/1000) + 1s grace, minimum 1s. 30000ms -> 31s.
-  max(1, timeoutMs div 1000 + 1)
+  max(1, (timeoutMs + 999) div 1000 + 1)
 
 proc delegateReply*(childLines: seq[JsonNode]): string =
   ## The answer is the last `done` payload's reply. Anything else
@@ -77,9 +75,19 @@ proc makeDelegateFn*(agent, binary, traceId, turnId: string,
   ## `shouldFailOpen` answers `%*{"fail_open": true}` so the
   ## `delegate_agent` node emits an empty patch and the binder returns
   ## `(false, _)` — the plain loop answers, same as any broken graph.
+  ## An empty reply (error-only or text-only with exit 0) also fails
+  ## open: an answered turn with no reply would read as success.
+  ## A route that is not this delegate's agent never spawns: one
+  ## `makeDelegateFn` serves one agent, and the live binder must bind
+  ## one per enabled agent.
   result = proc(state: JsonNode, notify: Observer): JsonNode {.closure.} =
+    let wanted = state.jget("route").getStr(agent)
+    if wanted != agent:
+      # Never run the wrong worker: no edge, no spawn, fail open to
+      # the loop — the same answer as if no delegate were bound.
+      return %*{"fail_open": true}
     let task = state.jget("message").getStr()
-    let route = state.jget("route").getStr(agent)
+    let route = wanted
     let reason = state.jget("triage_reason").getStr("delegated")
     let secs = if timeoutSec > 0: timeoutSec
                else: delegateTimeoutSec(timeoutMs)
@@ -96,5 +104,7 @@ proc makeDelegateFn*(agent, binary, traceId, turnId: string,
     if outcome.shouldFailOpen:
       return %*{"fail_open": true}
     let res = delegateLoopResult(outcome.childLines)
+    if res.reply.len == 0:
+      return %*{"fail_open": true}
     %*{"reply": res.reply, "tool_calls": %res.toolCalls,
         "iterations": res.iterations}

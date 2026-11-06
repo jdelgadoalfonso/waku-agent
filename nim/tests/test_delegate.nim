@@ -25,6 +25,7 @@ suite "delegate slice 1":
 
   test "timeout seconds never kill before the child votes":
     assert delegateTimeoutSec(30000) == 31
+    assert delegateTimeoutSec(30001) == 32
     assert delegateTimeoutSec(0) == 1
     assert delegateTimeoutSec(1000) == 2
 
@@ -96,3 +97,29 @@ suite "delegate slice 2a":
       proc(kind: string, ev: JsonNode) = kinds.add(kind))
     assert ans["fail_open"].getBool(false)
     assert kinds == @["delegation"]
+
+  test "error-only exit 0 fails open instead of answering empty":
+    let errLine = makeChildLine("error", "t_1", "t_2", "gather", 0,
+        %*{"message": "boom"})
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      (res: ProcResult(timedOut: false, code: 0,
+        stdout: $errLine & "\n", stderr: ""), pid: 0)
+    var kinds: seq[string] = @[]
+    let fn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake)
+    let ans = fn(%*{"message": "gather news", "route": "gather"},
+      proc(kind: string, ev: JsonNode) = kinds.add(kind))
+    assert ans["fail_open"].getBool(false)
+    assert "worker_error" in kinds
+
+  test "route mismatch never spawns the wrong worker":
+    var spawned = false
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      spawned = true
+      (res: ProcResult(timedOut: false, code: 0, stdout: "", stderr: ""),
+        pid: 0)
+    let fn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake)
+    let ans = fn(%*{"message": "brief me", "route": "brief"}, nil)
+    assert ans["fail_open"].getBool(false)
+    assert not spawned
