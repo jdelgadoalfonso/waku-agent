@@ -11,6 +11,7 @@
 ## walk (now part of a gateway dispatch, as in Python's import-time
 ## `_load_env`) away from the repo checkout.
 
+import std/json
 import std/os
 import std/strutils
 import std/tables
@@ -22,12 +23,14 @@ import ../src/cli
 import ../src/client
 import ../src/config
 import ../src/db
+import ../src/delegation
 import ../src/gateway
 import ../src/integrations
 import ../src/mcp
 import ../src/memory
 import ../src/providers
 import ../src/waku
+import ../src/worker_gather
 
 const scrubNames = ["WAKU_PROVIDER", "WAKU_API_KEY", "WAKU_MODEL",
   "WAKU_SMALL_MODEL", "WAKU_BASE_URL", "WAKU_HOME", "WAKU_MAX_ITERATIONS",
@@ -445,3 +448,54 @@ suite "phase 15 evals turns command":
 
   test "evals routes to turns, bare evals prints usage":
     assert runCommand(@["evals"]) == 1
+
+suite "slice 2b worker role":
+  test "a gather task answers with the worker's child lines":
+    let task = makeTaskLine("t_a", "t_b", "gather news", "", 1000, 1)
+    let fake: GatherFn = proc(): JsonNode = %*{"digest": "five things",
+      "draft_path": "/tmp/draft.md"}
+    let lines = workerChildLines("gather", $task, fake)
+    assert lines.len == 2
+    assert lines[0]["type"].getStr() == "event"
+    assert lines[1]["type"].getStr() == "done"
+    assert lines[1]["payload"]["reply"].getStr() == "five things"
+    assert lines[1]["trace_id"].getStr() == "t_a"
+    assert lines[1]["turn_id"].getStr() == "t_b"
+
+  test "an agent with no worker answers one error line and never gathers":
+    var called = false
+    let fake: GatherFn = proc(): JsonNode =
+      called = true
+      newJObject()
+    let lines = workerChildLines("brief", "", fake)
+    assert lines.len == 1
+    assert lines[0]["type"].getStr() == "error"
+    assert "no worker" in lines[0]["payload"]["message"].getStr()
+    assert not called
+
+  test "an unreadable line answers one error line, never a raise":
+    let lines = workerChildLines("gather", "not json",
+      proc(): JsonNode = newJObject())
+    assert lines.len == 1
+    assert lines[0]["type"].getStr() == "error"
+    assert "not JSON" in lines[0]["payload"]["message"].getStr()
+
+  test "a structurally invalid task answers one error line":
+    let lines = workerChildLines("gather", """{"v": 9}""",
+      proc(): JsonNode = newJObject())
+    assert lines.len == 1
+    assert lines[0]["type"].getStr() == "error"
+    assert "invalid task" in lines[0]["payload"]["message"].getStr()
+
+  test "dispatch: a worker for an unknown agent exits 0 without an app":
+    let saved = scrubEnv()
+    let home = freshHome("waku-cli-worker-unknown")
+    # No app, no stdin read: the line is the answer, and an error line
+    # carries no reply so the parent fails open to its own loop.
+    assert runCommand(@["--role", "worker", "--agent", "brief"], home) == 0
+    assert not fileExists(home / ".env")
+    restoreEnv(saved)
+    removeDir(home)
+
+  test "dispatch: a non-worker role prints usage and exits 1":
+    assert runCommand(@["--role", "orchestrator"]) == 1

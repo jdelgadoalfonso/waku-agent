@@ -2,6 +2,7 @@
 ## No spawn, no tracer IO, no clock — injected child lines only.
 
 import std/json
+import std/strutils
 import std/unittest
 
 import ../src/aggregate
@@ -145,3 +146,89 @@ suite "delegate slice 2a":
     let fn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake)
     let ans = fn(%*{"message": "gather news", "route": "gather"}, nil)
     assert ans["fail_open"].getBool(false)
+
+suite "delegate slice 2b":
+
+  test "workerRole reads the argv delegateArgv builds":
+    let (isWorker, agent) = workerRole(delegateArgv("waku", "gather"))
+    assert isWorker
+    assert agent == "gather"
+
+  test "workerRole reads the child's own commandLineParams":
+    # Inside the child there is no argv[0]: the same flags arrive through
+    # `commandLineParams`, so the scan never assumes a position.
+    assert workerRole(@["--role", "worker", "--agent", "gather"]) ==
+      (isWorker: true, agent: "gather")
+    assert workerRole(@["--role", "worker"]) == (isWorker: true, agent: "")
+    assert workerRole(@["chat"]) == (isWorker: false, agent: "")
+
+  test "workerRole keeps the last role it reads":
+    assert not workerRole(@["--role", "worker", "--role", "chat"]).isWorker
+    assert workerRole(@["--role", "chat", "--role", "worker"]).isWorker
+
+  test "workerAgents keeps only enabled agents with a worker":
+    assert workerAgents(@[]) == @[]
+    assert workerAgents(@["brief"]) == @[]
+    assert workerAgents(@["brief", "gather", "gather"]) == @["gather"]
+
+  test "no enabled worker means no delegate seam":
+    let noSpawn: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      raise newException(CatchableError, "must not spawn")
+    let ids = proc(): string = "t_1"
+    assert liveDelegateFor(@[], "waku", ids, noSpawn).isNil
+    assert liveDelegateFor(@["brief"], "waku", ids, noSpawn).isNil
+
+  test "liveDelegateFor binds one agent and its guard still refuses others":
+    var argvSeen: seq[seq[string]] = @[]
+    let doneLine = makeChildLine("done", "t_1", "t_2", "gather", 0,
+        %*{"reply": "delegated"})
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      argvSeen.add(argv)
+      (res: ProcResult(timedOut: false, code: 0,
+        stdout: $doneLine & "\n", stderr: ""), pid: 7)
+    let fn = liveDelegateFor(@["gather"], "waku", proc(): string = "t_1",
+      fake)
+    assert not fn.isNil
+    let refused = fn(%*{"message": "brief me", "route": "brief"}, nil)
+    assert refused["fail_open"].getBool(false)
+    assert argvSeen.len == 0
+    let ans = fn(%*{"message": "gather news", "route": "gather"}, nil)
+    assert ans["reply"].getStr() == "delegated"
+    assert argvSeen[0] == @["waku", "--role", "worker", "--agent", "gather"]
+
+  test "live fn reads the trace id per call and mints a turn id per call":
+    var traceId = "t_turn_one"
+    var tasks: seq[JsonNode] = @[]
+    let doneLine = makeChildLine("done", "", "", "gather", 0,
+        %*{"reply": "ok"})
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      tasks.add(parseJson(stdinText))
+      (res: ProcResult(timedOut: false, code: 0,
+        stdout: $doneLine & "\n", stderr: ""), pid: 0)
+    let fn = makeLiveDelegateFn("gather", "waku", proc(): string = traceId,
+      fake)
+    discard fn(%*{"message": "one", "route": "gather"}, nil)
+    traceId = "t_turn_two"
+    discard fn(%*{"message": "two", "route": "gather"}, nil)
+    assert tasks.len == 2
+    assert tasks[0]["trace_id"].getStr() == "t_turn_one"
+    assert tasks[1]["trace_id"].getStr() == "t_turn_two"
+    for task in tasks:
+      let turnId = task["turn_id"].getStr()
+      assert turnId.startsWith("t_")
+      assert turnId.len == 18
+    assert tasks[0]["turn_id"].getStr() != tasks[1]["turn_id"].getStr()
+
+  test "a missing trace id reader answers an empty id, never crashes":
+    let doneLine = makeChildLine("done", "t_x", "t_y", "gather", 0,
+        %*{"reply": "ok"})
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      (res: ProcResult(timedOut: false, code: 0,
+        stdout: $doneLine & "\n", stderr: ""), pid: 0)
+    let fn = makeLiveDelegateFn("gather", "waku", nil, fake)
+    assert fn(%*{"message": "x", "route": "gather"}, nil)["reply"].getStr() ==
+      "ok"

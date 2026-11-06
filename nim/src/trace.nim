@@ -53,6 +53,12 @@ type
     model*: string
     path*: string  ## today's trace file (fixed at construction, like Python)
     turnId*: string  ## current turn, "" outside one (reset by `endTurn`)
+    silent*: bool
+      ## A worker process sets this (slice 2b): the orchestrator owns the
+      ## turn's JSONL and spend ledger, and a second writer would split
+      ## one turn across two files. `event` then writes nothing at all —
+      ## no row, no ledger row, no span; the turn markers come from
+      ## `turn`/`endTurn`, which a worker never calls.
     servers*: seq[string]
       ## The `mcp.json` server names longest-first (read tolerantly at
       ## construction, like Python): what sorts a tool into `mcp:<server>`.
@@ -131,6 +137,10 @@ proc recordUsage(t: Tracer, ev: JsonNode) =
 
 proc event*(t: Tracer, kind: string, ev: JsonNode) =
   ## The Observer: every loop step lands in the trace (and the ledger).
+  ## A silent tracer returns first, before the ledger write and the
+  ## span, so one writer per turn stays one writer.
+  if t.silent:
+    return
   if kind == "text":
     return
   var outp = ev

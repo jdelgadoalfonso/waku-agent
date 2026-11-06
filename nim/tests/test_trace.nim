@@ -99,6 +99,33 @@ suite "metered ledger rows":
     assert not fileExists(home / "usage.jsonl")
     removeDir(home)
 
+  test "a silent tracer writes no event row and no ledger row":
+    # Slice 2b: a worker process sets this so the orchestrator stays the
+    # turn's only trace writer. `event` drops the row (and so the ledger
+    # row an `llm` event would have appended); the turn markers are
+    # `turn`/`endTurn`'s, and a worker never calls those.
+    let home = freshHome("waku-trace-silent")
+    var t = newTracer(home, "openrouter", "m")
+    t.silent = true
+    t.turn("hi")
+    t.event("llm", %*{"usage": {"in": 11, "out": 7}})
+    t.event("tool", %*{"name": "gather.web"})
+    t.endTurn("yo", 1)
+    let lines = readLines(t.path)
+    assert lines.len == 2
+    assert lines[0]["type"].getStr() == "turn_start"
+    assert lines[1]["type"].getStr() == "turn_end"
+    assert not fileExists(home / "usage.jsonl")
+    removeDir(home)
+
+  test "a silent tracer still records nothing when it has no turn":
+    let home = freshHome("waku-trace-silent-noturn")
+    var t = newTracer(home, "openrouter", "m")
+    t.silent = true
+    t.event("gate", %*{"route": "gather"})
+    assert not fileExists(t.path)
+    removeDir(home)
+
 suite "the tracer wired to a collector":
   test "one POST per turn, carrying the root and every event in order":
     # The wire contract, seen from the tracer: `turn` opens the root,

@@ -1,9 +1,10 @@
-## Productive caller, slices 1-2a: pure helpers plus the triage
+## Productive caller, slices 1-2b: pure helpers, the triage
 ## `DelegateFn` (offline, no spawn in tests; live code injects
-## `defaultWorkerRunner`). Builds the stdin task line, the same-binary
-## argv, and the supervisor timeout; maps supervised child lines to the
-## answer and to the trace pairs the orchestrator emits on the graph
-## `notify` (which already fans out to `Tracer.event`).
+## `defaultWorkerRunner`), and the worker-role side of the same argv.
+## Builds the stdin task line, the same-binary argv, and the supervisor
+## timeout; maps supervised child lines to the answer and to the trace
+## pairs the orchestrator emits on the graph `notify` (which already
+## fans out to `Tracer.event`).
 
 import std/json
 import std/strutils
@@ -12,12 +13,43 @@ import ./aggregate
 import ./delegation
 import ./loop
 import ./supervisor
+import ./trace
 import ./triage
 import ./wire
 
 const delegateDefaultTimeoutMs* = 30000
   ## Tests and the binder agree on one budget: 30s / 8 tool calls.
 const delegateDefaultMaxToolCalls* = 8
+
+const delegateWorkers* = @["gather"]
+  ## The agents this binary can actually run headless as a worker. The
+  ## gate is offered an agent route only when its worker exists: a route
+  ## with nothing behind it would answer every such message with a
+  ## fail-open rerun of the local loop.
+
+proc workerAgents*(enabled: seq[string]): seq[string] =
+  ## The enabled agents that can actually run, in order and deduped —
+  ## what `triageGraphTurn` may offer as an agent route.
+  for agent in enabled:
+    if agent in delegateWorkers and agent notin result:
+      result.add(agent)
+
+proc workerRole*(args: seq[string]): tuple[isWorker: bool, agent: string] =
+  ## Read a command line back: `--role worker` marks a worker process
+  ## and `--agent <name>` names it. The same shape `delegateArgv`
+  ## builds, arriving inside the child as `commandLineParams` (no binary
+  ## at index 0), so the scan never assumes a position. The last
+  ## `--role` wins, like any repeated flag.
+  var i = 0
+  while i < args.len:
+    if args[i] == "--role" and i + 1 < args.len:
+      result.isWorker = args[i + 1] == "worker"
+      i += 2
+    elif args[i] == "--agent" and i + 1 < args.len:
+      result.agent = args[i + 1]
+      i += 2
+    else:
+      inc i
 
 proc delegateArgv*(binary, agent: string): seq[string] =
   ## Same binary, worker role, named agent. `binary` is the running
@@ -114,3 +146,40 @@ proc makeDelegateFn*(agent, binary, traceId, turnId: string,
       return %*{"fail_open": true}
     %*{"reply": res.reply, "tool_calls": %res.toolCalls,
         "iterations": res.iterations}
+
+proc makeLiveDelegateFn*(agent, binary: string,
+    getTraceId: proc(): string {.closure.},
+    runner: WorkerRunner,
+    timeoutMs = delegateDefaultTimeoutMs,
+    maxToolCalls = delegateDefaultMaxToolCalls,
+    timeoutSec = -1): DelegateFn =
+  ## Per-call twin of `makeDelegateFn`, for a binder that outlives one
+  ## turn (`buildCliApp` binds this at startup and every later turn runs
+  ## through it): the trace id is READ on each call — `getTraceId` is the
+  ## orchestrator's `tracer.turnId`, "" outside a turn — and the turn id
+  ## is minted per delegation, so two delegated runs never share an id.
+  ## `trace` owns the minting and does not import this module, so there
+  ## is no cycle. Everything else is `makeDelegateFn`'s by construction:
+  ## the route guard, the edge, the child pairs, and the fail-open.
+  ## A nil reader answers an empty trace id instead of raising.
+  result = proc(state: JsonNode, notify: Observer): JsonNode {.closure.} =
+    let traceId = if getTraceId.isNil: "" else: getTraceId()
+    makeDelegateFn(agent, binary, traceId, trace.mintTurnId(), runner,
+      timeoutMs, maxToolCalls, timeoutSec)(state, notify)
+
+proc liveDelegateFor*(enabled: seq[string], binary: string,
+    getTraceId: proc(): string {.closure.},
+    runner: WorkerRunner,
+    timeoutMs = delegateDefaultTimeoutMs,
+    maxToolCalls = delegateDefaultMaxToolCalls,
+    timeoutSec = -1): DelegateFn =
+  ## The seam the CLI binder passes to `triageGraphTurn`: nil unless an
+  ## enabled agent has a real worker (today only `gather`), else one live
+  ## `DelegateFn` for it. One `DelegateFn` serves one agent — its guard
+  ## refuses every other route — so the first worker wins, which is exact
+  ## while `delegateWorkers` holds one name.
+  let workers = workerAgents(enabled)
+  if workers.len == 0:
+    return nil
+  makeLiveDelegateFn(workers[0], binary, getTraceId, runner, timeoutMs,
+    maxToolCalls, timeoutSec)

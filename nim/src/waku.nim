@@ -17,6 +17,11 @@
 ## convention; Python has no such flags, so bare `waku --help` there is
 ## usage+1). Every name in `cliCommands` has a real handler, so there is
 ## no known-but-unported stub left.
+##
+## `--role worker --agent <name>` is the child half of the delegation
+## contract (`delegation.nim`, slice 2b): one task line on stdin, child
+## lines on stdout, and a silent tracer — the orchestrator owns the
+## turn's trace and ledger, so this process writes neither.
 
 import std/httpclient
 import std/json
@@ -39,6 +44,8 @@ import ./connect
 import ./dashboard
 import ./observability
 import ./db
+import ./delegate
+import ./delegation
 import ./discord
 import ./experimental
 import ./gather
@@ -55,12 +62,14 @@ import ./providers
 import ./registry
 import ./search
 import ./skills
+import ./supervisor
 import ./telegram
 import ./triage
 import ./voice
 import ./voiceio
 import ./whatsapp
 import ./wire
+import ./worker_gather
 
 proc declaredVersion(manifest: string): string {.noSideEffect.} =
   ## The `version = "..."` value in a nimble manifest, read the way nimble
@@ -243,10 +252,20 @@ proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
   discard loadPluginGraphs(pluginDir(settings.home), addr w.hostFns[])
   wireMemory(w, settings, db, client, bundledSkillDirs())
   if settings.graphWorkflows:
+    # The triage door. The gate is offered exactly the enabled agents
+    # that have a worker in this binary (`delegateWorkers`: today only
+    # `gather`), and gets a nil seam when none does — which is today's
+    # quick|full graph, byte for byte. The seam reads `tracer.turnId`
+    # per call (the binder outlives one turn) and spawns this same
+    # binary at `getAppFilename()` in the worker role.
+    let workers = workerAgents(settings.agents)
     w.graphTurn = triageGraphTurn(client, settings.smallModel,
       settings.home,
       proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
-        w.runFullTurn(st.jget("message").getStr(), n, strm))
+        w.runFullTurn(st.jget("message").getStr(), n, strm),
+      workers,
+      liveDelegateFor(settings.agents, getAppFilename(),
+        proc(): string = w.tracer.turnId, defaultWorkerRunner))
   return w
 
 proc runChat*(dotenvStart = ""): int =
@@ -618,6 +637,68 @@ proc runVoiceCmd*(dotenvStart = "", logger: LogFn = nil): int =
   return voiceMain(env, gatewayRespond(agent), openMic, logger = log,
     stop = installVoiceInterrupt())
 
+proc workerChildLines*(agent, stdinLine: string,
+    gather: GatherFn): seq[JsonNode] =
+  ## Pure worker entrypoint: one stdin line in, the child lines out.
+  ## An agent with no worker, an unreadable line and a structurally
+  ## invalid task each answer ONE valid `error` line, and `gather` is
+  ## never called for them. An error line carries no reply, so the
+  ## parent fails open to its own loop — which is the answer a broken
+  ## worker should cost, never a turn that reads as success or a broken
+  ## pipe that reads as nothing at all.
+  if agent notin delegateWorkers:
+    return @[makeChildLine("error", "", "", agent, 0,
+      %*{"message": "no worker for agent '" & agent & "'"})]
+  var task: JsonNode
+  try:
+    task = parseJson(stdinLine.strip())
+  except CatchableError:
+    return @[makeChildLine("error", "", "", agent, 0,
+      %*{"message": "invalid task: the line is not JSON"})]
+  runGatherWorker(task, gather)
+
+proc readTaskLine(): string =
+  ## Exactly one line, per the contract: a worker that kept reading
+  ## could hang on a parent that already went away.
+  try:
+    result = stdin.readLine()
+  except EOFError, IOError:
+    result = ""
+
+proc runWorkerCmd*(args: seq[string], dotenvStart = ""): int =
+  ## `waku --role worker --agent <name>`: the child half of the
+  ## delegation contract. Exit 0 whenever a valid child line reached
+  ## stdout — unknown agent and invalid task included, because an
+  ## `error` line is an answer the parent can parse (it fails open on
+  ## the empty reply) — and 1 only when no line could exist at all.
+  ##
+  ## The tracer is made silent here: the orchestrator writes the turn's
+  ## trace and ledger, so a worker that wrote too would split one turn
+  ## across two files (design doc: workers never write runtime data).
+  let role = workerRole(args)
+  if not role.isWorker:
+    writeUsage()
+    return 1
+  var gather: GatherFn = nil
+  var taskLine = ""
+  if role.agent in delegateWorkers:
+    var w: Waku
+    try:
+      w = buildCliApp(dotenvStart)
+    except ClientConfigError as exc:
+      # No app means no worker at all: stderr and exit 1, which the
+      # parent reads as a failed worker and fails open.
+      stderr.writeLine(exc.msg)
+      return 1
+    w.tracer.silent = true
+    gather = proc(): JsonNode = runGather(w)
+    taskLine = readTaskLine()
+  # An unknown agent answers here, without an app and without reading
+  # stdin: there is nothing to run, so there is nothing to wait for.
+  for child in workerChildLines(role.agent, taskLine, gather):
+    stdout.writeLine($child)
+  return 0
+
 proc runCommand*(args: seq[string], dotenvStart = "",
                  serve = false): int =
   ## Dispatch one command line. `dotenvStart` pins the `.env` search for
@@ -628,6 +709,11 @@ proc runCommand*(args: seq[string], dotenvStart = "",
   ## four gateway commands forward `dotenvStart` for the same reason: a
   ## gateway dispatch reads the `.env` before its credentials, so a test
   ## points it at a temp dir to keep the checkout's `.env` out.
+  ##
+  ## `--role` is checked before every command, so a worker can never
+  ## fall through into `chat` and open a REPL in the parent's terminal.
+  if args.len > 0 and args[0] == "--role":
+    return runWorkerCmd(args, dotenvStart)
   if args.len == 0 or args[0] == "chat":
     return runChat(dotenvStart)
   if args[0] == "dashboard":
