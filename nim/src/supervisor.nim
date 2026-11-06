@@ -20,9 +20,10 @@ import ./tools
 
 type
   WorkerRunner* = proc(argv: seq[string], stdinText: string,
-      timeoutSec: int): ProcResult {.closure.}
+      timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.}
     ## Run one worker to completion. Tests inject recordings; live
-    ## code passes `defaultWorkerRunner`.
+    ## code passes `defaultWorkerRunner`. The `pid` is the observed
+    ## child pid (0 when unknown): the parent stamps it on receipt.
 
   WorkerOutcome* = object
     timedOut*: bool
@@ -31,6 +32,7 @@ type
     malformed*: int
     shouldFailOpen*: bool
     error*: string
+    pid*: int
 
 proc collectChildLines*(output: string): tuple[lines: seq[JsonNode],
     malformed: int] =
@@ -57,19 +59,22 @@ proc collectChildLines*(output: string): tuple[lines: seq[JsonNode],
   (lines: lines, malformed: bad)
 
 proc defaultWorkerRunner*(argv: seq[string], stdinText: string,
-    timeoutSec: int): ProcResult =
+    timeoutSec: int): tuple[res: ProcResult, pid: int] =
   ## Live path: write the task line, wait to `timeoutSec`, kill past
-  ## the deadline. Mirrors `tools.runProcess` outcomes.
+  ## the deadline. Mirrors `tools.runProcess` outcomes. The `pid` is
+  ## the observed child pid via `processID`, 0 when the child never
+  ## started.
   if argv.len == 0:
-    return ProcResult(timedOut: false, code: 127, stdout: "",
-      stderr: "no command")
+    return (res: ProcResult(timedOut: false, code: 127, stdout: "",
+      stderr: "no command"), pid: 0)
   var p: Process
   try:
     p = startProcess(argv[0], args = argv[1 .. ^1],
       options = {poUsePath})
   except OSError as exc:
-    return ProcResult(timedOut: false, code: 127, stdout: "",
-      stderr: exc.msg)
+    return (res: ProcResult(timedOut: false, code: 127, stdout: "",
+      stderr: exc.msg), pid: 0)
+  let observedPid = p.processID
   try:
     write(p.inputStream, stdinText & "\n")
     flush(p.inputStream)
@@ -101,16 +106,23 @@ proc defaultWorkerRunner*(argv: seq[string], stdinText: string,
   except OSError, IOError:
     discard
   p.close()
-  ProcResult(timedOut: timedOut, code: code, stdout: stdoutText,
-    stderr: stderrText)
+  (res: ProcResult(timedOut: timedOut, code: code, stdout: stdoutText,
+    stderr: stderrText), pid: observedPid)
 
 proc runWorker*(argv: seq[string], task: JsonNode, timeoutSec: int,
     runner: WorkerRunner): WorkerOutcome =
   ## Supervise one worker turn. Fails open (caller runs the local
   ## loop) when the deadline fires, the exit is non-zero, or no valid
-  ## child line arrived.
-  let res = runner(argv, $task, timeoutSec)
-  let collected = collectChildLines(res.stdout)
+  ## child line arrived. The observed `pid` stamps every child line
+  ## when non-zero (parent truth wins); zero keeps the child value.
+  let run = runner(argv, $task, timeoutSec)
+  let res = run.res
+  let observedPid = run.pid
+  var collected = collectChildLines(res.stdout)
+  if observedPid != 0:
+    for line in collected.lines.mitems:
+      if line.kind == JObject:
+        line["pid"] = %observedPid
   let failOpen = res.timedOut or res.code != 0 or
     collected.lines.len == 0
   var err = ""
@@ -122,4 +134,4 @@ proc runWorker*(argv: seq[string], task: JsonNode, timeoutSec: int,
     err = "no valid child lines"
   WorkerOutcome(timedOut: res.timedOut, exitCode: res.code,
     childLines: collected.lines, malformed: collected.malformed,
-    shouldFailOpen: failOpen, error: err)
+    shouldFailOpen: failOpen, error: err, pid: observedPid)
