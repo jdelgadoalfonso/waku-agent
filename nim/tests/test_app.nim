@@ -238,6 +238,39 @@ suite "phase 4c respond":
     db.close()
     removeDir(home)
 
+  test "a refused turn still closes the trace with the reason":
+    let home = freshHome("waku-app-refused")
+    let db = connectDb(home)
+    var refused: ref LlmRefused
+    new(refused)
+    refused.msg = "502 Bad Gateway"
+    refused.statusCode = 502
+    let refClient = LlmClient(
+      create: proc(req: JsonNode): JsonNode =
+        raise refused)
+    var w = newWaku(testSettings(home), refClient, db)
+    try:
+      discard w.respond("hi")
+      assert false, "must raise"
+    except LlmRefused as e:
+      assert e.statusCode == 502
+    var sawStart = false
+    var sawEnd = false
+    var sawErr = ""
+    for e in traceLines(home):
+      if e["type"].getStr() == "turn_start":
+        sawStart = true
+        assert e["turn_id"].getStr().len > 0
+      if e["type"].getStr() == "turn_end":
+        sawEnd = true
+      if e["type"].getStr() == "turn_error":
+        sawErr = e["error"].getStr()
+    assert sawStart
+    assert sawEnd
+    assert sawErr == "502 Bad Gateway"
+    db.close()
+    removeDir(home)
+
 suite "phase 4c graph door":
   test "flag on with no seam falls through to the loop in silence":
     let home = freshHome("waku-app-noseam")

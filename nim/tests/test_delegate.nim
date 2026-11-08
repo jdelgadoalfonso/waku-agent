@@ -132,12 +132,15 @@ suite "delegate slice 2a":
         timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
       (res: ProcResult(timedOut: true, code: 124, stdout: "",
         stderr: ""), pid: 0)
-    var kinds: seq[string] = @[]
+    var seen: seq[tuple[kind: string, ev: JsonNode]] = @[]
     let fn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake)
     let ans = fn(%*{"message": "gather news", "route": "gather"},
-      proc(kind: string, ev: JsonNode) = kinds.add(kind))
+      proc(kind: string, ev: JsonNode) = seen.add((kind, copy(ev))))
     assert ans["fail_open"].getBool(false)
-    assert kinds == @["delegation"]
+    assert seen.len == 2
+    assert seen[0].kind == "delegation"
+    assert seen[1].kind == "delegation_error"
+    assert seen[1].ev["error"].getStr() == "worker timed out"
 
   test "error-only exit 0 fails open instead of answering empty":
     let errLine = makeChildLine("error", "t_1", "t_2", "gather", 0,
@@ -272,3 +275,34 @@ suite "delegate slice 2b":
     let fn = makeLiveDelegateFn("gather", "waku", nil, fake)
     assert fn(%*{"message": "x", "route": "gather"}, nil)["reply"].getStr() ==
       "ok"
+
+suite "delegate error visibility":
+  test "a failing worker notifies delegation_error with the reason":
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      (res: ProcResult(timedOut: false, code: 1, stdout: "",
+        stderr: "boom"), pid: 0)
+    var seen: seq[tuple[kind: string, ev: JsonNode]] = @[]
+    let fn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake)
+    let ans = fn(%*{"message": "gather news", "route": "gather"},
+      proc(kind: string, ev: JsonNode) = seen.add((kind, copy(ev))))
+    assert ans.hasKey("fail_open")
+    assert seen.len == 2
+    assert seen[0].kind == "delegation"
+    assert seen[1].kind == "delegation_error"
+    assert seen[1].ev["agent"].getStr() == "gather"
+    assert seen[1].ev["turn_id"].getStr() == "t_2"
+    assert seen[1].ev["error"].getStr() == "worker exit code 1"
+
+  test "a route mismatch stays silent: no edge, no error":
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      assert false, "must never spawn"
+      (res: ProcResult(timedOut: false, code: 1, stdout: "",
+        stderr: ""), pid: 0)
+    var kinds: seq[string] = @[]
+    let fn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake)
+    let ans = fn(%*{"message": "gather news", "route": "brief"},
+      proc(kind: string, ev: JsonNode) = kinds.add(kind))
+    assert ans.hasKey("fail_open")
+    assert kinds.len == 0

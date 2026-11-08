@@ -129,3 +129,22 @@ suite "lot 3 t3.4 per-agent observability":
         "tools", "memory", "spend", "evals"]:
       check p.hasKey(key)
     removeDir(home)
+
+  test "delegation_error never flips state and adds no cost":
+    let events = @[
+      %*{"type": "delegation", "workflow": "gather",
+         "router": "orchestrator", "target": "gather",
+         "trace_id": "tr1", "turn_id": "tu1"},
+      %*{"type": "worker_done", "agent": "gather",
+         "trace_id": "tr1", "turn_id": "tu1",
+         "route": "gather", "path": ["gather"], "cost": 0.02},
+      %*{"type": "delegation_error", "agent": "gather",
+         "trace_id": "tr1", "turn_id": "tu1",
+         "error": "worker exit code 1"}
+    ]
+    let rows = agentsSummary(events)
+    check rows.len == 1
+    check rows[0]["agent"].getStr() == "gather"
+    check rows[0]["state"].getStr() == "done"
+    check rows[0]["cost"].getFloat() == 0.02
+    check rows[0]["turns"].getInt() == 1

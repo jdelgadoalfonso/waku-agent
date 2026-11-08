@@ -135,6 +135,15 @@ proc makeDelegateFn*(agent, binary, traceId, turnId: string,
       if not notify.isNil:
         notify(pair.kind, pair.ev)
     if outcome.shouldFailOpen:
+      # A worker that ran and failed leaves its reason on the turn:
+      # timeout, non-zero exit, or no valid child lines. Silent only
+      # when no worker ran (route mismatch) or it answered without a
+      # claim (empty reply) — those are routing, not failure.
+      if outcome.error.len > 0 and not notify.isNil:
+        notify("delegation_error",
+          %*{"agent": agent, "route": route, "reason": reason,
+             "error": outcome.error, "trace_id": traceId,
+             "turn_id": turnId})
       return %*{"fail_open": true}
     let res = delegateLoopResult(outcome.childLines)
     if res.reply.strip().len == 0:

@@ -369,7 +369,17 @@ proc respond*(w: var Waku, userMessage: string, observer: Observer = nil,
                              "error": errorText(exc)})
       answered = false
   if not answered:
-    res = w.runFullTurn(userMessage, notify, stream)
+    # A turn that raises still closes its trace: the error lands as a
+    # `turn_error` record and `turn_end` books the empty reply, so the
+    # turn never reads as hanging — then the error keeps propagating to
+    # the chat door, which answers it as `done` with the error.
+    try:
+      res = w.runFullTurn(userMessage, notify, stream)
+    except CatchableError as exc:
+      w.tracer.event("turn_error",
+        %*{"error": errorText(exc), "turn_id": w.tracer.turnId})
+      w.tracer.endTurn("", 0)
+      raise
 
   # Spec 007: a reply holding a research report saves it whole to memory
   # and keeps only its first sentences in the chat. No backend, or a

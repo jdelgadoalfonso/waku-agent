@@ -78,7 +78,7 @@ nim-test:       ## the Nim port's offline suite (every tests/test_*.nim, no API 
 	cd nim && nimble test
 
 nim-build:      ## the one Nim binary (needs the checkout: the dashboard assets embed at compile time)
-	cd nim && nimble build
+	cd nim && nimble -d:release -d:useMimalloc -d:ssl -d:wakuTls -d:wakuStyle --path:vendor/terminal_style build
 
 # The same two targets with the live-TLS switches, and for the same
 # reason they `cd nim`: the suite's pins read the checkout relative to
@@ -89,8 +89,9 @@ nim-build:      ## the one Nim binary (needs the checkout: the dashboard assets 
 # default build's outputs.
 #
 # Needs the OpenSSL development headers (`libssl-dev` on Debian and
-# Ubuntu); the default targets above do not, which is the point of
-# keeping the flag off by default.
+# Ubuntu); `nim-test` does not, which is the point of keeping the flag
+# off its suite. `nim-build` above carries the live switches, so it
+# needs them too.
 nim-build-tls:  ## the same binary with live TLS (wss gateway, https REST)
 	cd nim && nimble buildTls
 

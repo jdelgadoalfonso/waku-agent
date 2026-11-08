@@ -298,7 +298,10 @@ proc agentsSummary*(events: seq[JsonNode]): JsonNode =
     case ev.jget("type").getStr()
     of "worker_done", "worker_error":
       result[idx]["state"] = %"done"
-    of "cost":
+    of "cost", "delegation_error", "turn_error":
+      # Charges and error annotations ride the turn but never move it:
+      # a late cost cannot resurrect a finished worker, and a recorded
+      # failure must not flip a done worker back to running.
       discard
     else:
       result[idx]["state"] = %"running"
