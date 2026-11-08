@@ -470,6 +470,14 @@ function agentsPanel(d){
     `${a.pid ? `pid ${esc(String(a.pid))} · ` : ""}${a.last_route ? `last ${esc(a.last_route)} · ` : ""}cost ${esc(String(a.cost ?? 0))}`)).join("");
 }
 
+// Overview disclosure state survives the 5s re-render: render() rebuilds
+// #view innerHTML from the mode, so a user-toggled <details> would snap
+// back on the next poll. The toggle handler records the user's choice and
+// overview() prefers it over the mode default (null = never touched).
+let overviewDetails = {loop: null, graph: null};
+function overviewDetailsToggled(which, open){
+  overviewDetails[which] = open;
+}
 const VIEWS = {
   models(d){
     // The shortlist first (what the chat switcher shows, across every
@@ -505,8 +513,8 @@ const VIEWS = {
     const s = d.stats;
     const u = d.usage || {total_cost:0};
     const mode = d.overview_mode || ((d.turns.length && d.turns[0].graph && d.turns[0].graph.route) ? "graph" : "loop");
-    const loopOpen = mode === "graph" ? "" : " open";
-    const graphOpen = mode === "graph" ? " open" : "";
+    const loopOpen = (overviewDetails.loop ?? (mode !== "graph")) ? " open" : "";
+    const graphOpen = (overviewDetails.graph ?? (mode === "graph")) ? " open" : "";
     return `${uiStatBand([
         {label:"spent", value:money(u.total_cost), sub:"all-time", tone:"ok"},
         {label:"avg turn", value:secs(s.latency_avg)},
@@ -514,9 +522,9 @@ const VIEWS = {
         {label:"facts", value:d.facts.length}, {label:"events", value:d.calendar.length},
       ])}
     <h2>Retrieval gate — the hero decision</h2>${gateSplit(s)}
-    <details${loopOpen} data-overview="loop"><summary><h2 style="margin-top:var(--space-6)">Architecture — click any box <span class="arch-status"></span></h2></summary>
+    <details${loopOpen} data-overview="loop" ontoggle="overviewDetailsToggled('loop',this.open)"><summary><h2>Architecture — click any box <span class="arch-status"></span></h2></summary>
     ${archSVG(d)}</details>
-    <details${graphOpen} data-overview="graph"><summary><h2>Graph workflows — when a turn needs shape</h2></summary>
+    <details${graphOpen} data-overview="graph" ontoggle="overviewDetailsToggled('graph',this.open)"><summary><h2>Graph workflows — when a turn needs shape</h2></summary>
     ${graphPanel(d)}</details>
     <h2>Agents — workers with kind loop|graph</h2>
     ${agentsPanel(d)}

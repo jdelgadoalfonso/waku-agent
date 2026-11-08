@@ -17,7 +17,7 @@ Thin orchestrator of same-binary role processes with single dashboard and dual O
 ## Tasks
 
 - T1 (S1,S2,S6): Lot 1 — done: T1.1 contract 1acf693, T1.2 supervisor c7b08fb, T1.3 aggregate c40f24e, T1.4 gather worker 59d753f, T1.5 evals+tracking 59daade
-- T2 (S1,S2,S6): Lot 2 — done T2.1 registry 82f0734, T2.2 router 419a986, T2.3 plumbing def1430; T2.4 evals+docs in progress (53/53 focused green; .env.example mention deferred)
+- T2 (S1,S2,S6): Lot 2 — done T2.1 registry 82f0734, T2.2 router 419a986, T2.3 plumbing def1430; T2.4 evals+docs done (53/53 focused green; .env.example check green, see L14)
 - T3 (S3,S4,S5,S6,S7,S8): Lot 3 — single dashboard, dual Overview, agents panel with kind loop|graph, inter-agent edges, real-time message waves, same animations, per-agent observability — route: proposal only — commit: -
   - T3.1 Overview dual: expand archSVG for loop turns, graphPanel for graph-plugin turns by last turn graph.route; archSVG byte-frozen — done, see L7
   - T3.2 Agents panel: new agentsPanel in Overview with {name, kind, pid, state, cost, last_route} from registry describe in /api/data — done, see L8
