@@ -161,3 +161,43 @@ suite "agent plumbing T2.3 binder":
         %*{"fail_open": true})
     let (answered, _) = turn("brief me", nil, false)
     assert answered == false
+
+  test "the binder threads one delegate per agent (T17)":
+    # The additive `delegates` seam: no single `delegateFn`, one closure
+    # per agent, and the route still reaches the one that owns it.
+    let script = Script(items: @[textResp("{\"route\": \"brief\"}")])
+    var delegated = ""
+    let briefFn: DelegateFn = proc(s: JsonNode, n: Observer): JsonNode =
+      delegated = s.jget("route").getStr()
+      %*{"reply": "briefed", "tool_calls": [], "iterations": 1}
+    let delegates: Delegates = @[(agent: "brief", fn: briefFn)]
+    let turn = triageGraphTurn(scriptedClient(script), "mini", noHome,
+      proc(st: JsonNode, n: Observer, s: bool): LoopResult =
+        raise newException(ValueError, "must not run"),
+      agents = @["brief", "gather"],
+      delegates = delegates)
+    let (answered, res) = turn("brief me", nil, false)
+    # the bound agent is still the only route offered to the gate
+    assert "\"brief\"" in script.seen[0]["messages"][0]["content"].getStr()
+    assert delegated == "brief"
+    assert answered
+    assert res.reply == "briefed"
+
+  test "binder with per-agent delegates and no matching one fails open":
+    # A route the graph reaches with nothing behind it answers no turn,
+    # never another agent's delegate.
+    let script = Script(items: @[textResp("{\"route\": \"gather\"}")])
+    var delegated = ""
+    let briefFn: DelegateFn = proc(s: JsonNode, n: Observer): JsonNode =
+      delegated = "brief"
+      %*{"reply": "briefed", "tool_calls": [], "iterations": 1}
+    let delegates: Delegates = @[(agent: "brief", fn: briefFn)]
+    let turn = triageGraphTurn(scriptedClient(script), "mini", noHome,
+      proc(st: JsonNode, n: Observer, s: bool): LoopResult =
+        LoopResult(reply: "loop answered", toolCalls: @[], iterations: 1),
+      agents = @["brief", "gather"],
+      delegates = delegates)
+    let (answered, res) = turn("gather the news", nil, false)
+    assert delegated.len == 0
+    assert not answered  # the binder fails open to the plain loop
+    assert res.reply.len == 0

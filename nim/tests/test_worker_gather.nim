@@ -49,6 +49,44 @@ suite "worker gather T1.4":
     assert lines[0]["type"].getStr() == "event"
     assert lines[1]["type"].getStr() == "done"
 
+  test "T19: the task's model override wins in the cost payload":
+    # The parent names the model the worker must run on; the ledger
+    # prices what the cost payload says, so the payload says the
+    # override even when the gather state reports the app's own model.
+    var task = makeTaskLine("t_1", "t_2", "morning briefing", "", 30000, 8)
+    task["model"] = %"worker-model"
+    var state = %*{"digest": "briefing ok", "draft_path": "",
+      "usage": {"kind": "gather", "model": "parent-model", "in": 7,
+                "out": 3}}
+    let fake: GatherFn = proc(): JsonNode {.closure.} = state
+    let lines = runGatherWorker(task, fake)
+    assert lines.len == 3
+    assert lines[1]["type"].getStr() == "cost"
+    assert lines[1]["payload"]["model"].getStr() == "worker-model"
+    assert lines[1]["payload"]["in"].getInt() == 7
+    # the gather's own state is read, never rewritten
+    assert state["usage"]["model"].getStr() == "parent-model"
+
+  test "T19: no override keeps the model the gather reported":
+    let task = makeTaskLine("t_1", "t_2", "morning briefing", "", 30000, 8)
+    let fake: GatherFn = proc(): JsonNode {.closure.} =
+      %*{"digest": "briefing ok", "draft_path": "",
+         "usage": {"kind": "gather", "model": "parent-model", "in": 7,
+                   "out": 3}}
+    let lines = runGatherWorker(task, fake)
+    assert lines[1]["payload"]["model"].getStr() == "parent-model"
+
+  test "T19: taskLineModel reads the line, inherit otherwise":
+    # The worker end of `delegateTaskLine`'s optional `model` key. A
+    # hint it cannot read is no hint: inherit is always the safe answer,
+    # and `workerChildLines` still answers the structural errors.
+    assert taskLineModel("""{"v":1,"model":"worker-model"}""") ==
+      "worker-model"
+    assert taskLineModel("""{"v":1}""") == ""
+    assert taskLineModel("not json") == ""
+    assert taskLineModel("""{"model":7}""") == ""
+    assert taskLineModel("""{"model":"  "}""") == ""
+
   test "invalid task emits a single error line":
     let fake: GatherFn = proc(): JsonNode {.closure.} =
       %*{"digest": "unreachable"}

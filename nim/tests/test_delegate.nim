@@ -10,6 +10,7 @@ import ../src/delegate
 import ../src/delegation
 import ../src/supervisor
 import ../src/tools
+import ../src/triage
 
 suite "delegate slice 1":
 
@@ -276,6 +277,85 @@ suite "delegate slice 2b":
     assert fn(%*{"message": "x", "route": "gather"}, nil)["reply"].getStr() ==
       "ok"
 
+## T19 (S1,S2): the child line names the worker's model. Empty is the
+## default and means "inherit the parent's model", so the line stays byte
+## for byte what it was — an override is opt-in on the wire, never a new
+## shape an old worker would choke on.
+
+suite "delegate T19 worker model override":
+
+  test "the task line carries a model only when one is asked for":
+    let plain = delegateTaskLine("t_1", "t_2", "gather news", "", 30000, 8)
+    assert not plain.hasKey("model")
+    let asked = delegateTaskLine("t_1", "t_2", "gather news", "", 30000, 8,
+      model = "worker-model")
+    assert asked["model"].getStr() == "worker-model"
+    var err = ""
+    assert parseTaskLine(asked, err)  # the override never breaks the wire
+
+  test "the binder puts the override on the child line it spawns":
+    var tasks: seq[JsonNode] = @[]
+    let doneLine = makeChildLine("done", "t_1", "t_2", "gather", 0,
+      %*{"reply": "ok"})
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      tasks.add(parseJson(stdinText))
+      (res: ProcResult(timedOut: false, code: 0,
+        stdout: $doneLine & "\n", stderr: ""), pid: 0)
+    let fn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake,
+      model = "worker-model")
+    discard fn(%*{"message": "gather news", "route": "gather"}, nil)
+    assert tasks.len == 1
+    assert tasks[0]["model"].getStr() == "worker-model"
+
+  test "no override keeps the line free of a model key":
+    var tasks: seq[JsonNode] = @[]
+    let doneLine = makeChildLine("done", "t_1", "t_2", "gather", 0,
+      %*{"reply": "ok"})
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      tasks.add(parseJson(stdinText))
+      (res: ProcResult(timedOut: false, code: 0,
+        stdout: $doneLine & "\n", stderr: ""), pid: 0)
+    let fn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake)
+    discard fn(%*{"message": "gather news", "route": "gather"}, nil)
+    assert tasks.len == 1
+    assert not tasks[0].hasKey("model")
+
+  test "the live seam forwards the override to every worker it holds":
+    var tasks: seq[JsonNode] = @[]
+    let doneLine = makeChildLine("done", "t_1", "t_2", "gather", 0,
+      %*{"reply": "ok"})
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      tasks.add(parseJson(stdinText))
+      (res: ProcResult(timedOut: false, code: 0,
+        stdout: $doneLine & "\n", stderr: ""), pid: 0)
+    let fn = liveDelegateFor(@["gather"], "waku", proc(): string = "t_1",
+      fake, model = "worker-model")
+    discard fn(%*{"message": "gather news", "route": "gather"}, nil)
+    assert tasks.len == 1
+    assert tasks[0]["model"].getStr() == "worker-model"
+
+  test "one ledger row per delegated call, and it names the override":
+    # T19 adds a name, not a charge: the override rides the same single
+    # `cost` line L27 pinned, so the parent's mapping still yields one
+    # cost pair and the tracer still books one row for it.
+    let lines = @[
+      makeChildLine("cost", "t_1", "t_2", "gather", 0,
+        %*{"kind": "gather", "model": "worker-model", "in": 7,
+           "out": 3}),
+      makeChildLine("done", "t_1", "t_2", "gather", 0,
+        %*{"reply": "ok"}),
+    ]
+    let pairs = delegateTracePairs(lines)
+    var costs = 0
+    for pair in pairs:
+      if pair.kind == "cost":
+        inc costs
+        assert pair.ev["model"].getStr() == "worker-model"
+    assert costs == 1
+
 suite "delegate error visibility":
   test "a failing worker notifies delegation_error with the reason":
     let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
@@ -306,3 +386,54 @@ suite "delegate error visibility":
       proc(kind: string, ev: JsonNode) = kinds.add(kind))
     assert ans.hasKey("fail_open")
     assert kinds.len == 0
+
+## T17 (S1,S2): one `DelegateFn` in front of N agents. The dispatcher is
+## the mechanism `liveDelegateFor` builds, pinned here with fake delegates
+## so no second productive worker exists: each route reaches its own
+## closure, and a route nothing owns fails open without spawning.
+
+suite "delegate T17 multi-agent dispatcher":
+
+  test "the dispatcher answers through the delegate its route names":
+    var ran: seq[string] = @[]
+    let gather: DelegateFn = proc(s: JsonNode, n: Observer): JsonNode =
+      ran.add("gather")
+      %*{"reply": "digest", "tool_calls": [], "iterations": 1}
+    let brief: DelegateFn = proc(s: JsonNode, n: Observer): JsonNode =
+      ran.add("brief")
+      %*{"reply": "briefing", "tool_calls": [], "iterations": 1}
+    let dispatch = makeDelegateDispatcher(@[(agent: "gather", fn: gather),
+                                            (agent: "brief", fn: brief)])
+    assert dispatch(%*{"message": "x", "route": "brief"},
+      nil)["reply"].getStr() == "briefing"
+    assert dispatch(%*{"message": "x", "route": "gather"},
+      nil)["reply"].getStr() == "digest"
+    assert ran == @["brief", "gather"]
+
+  test "a route with no delegate fails open instead of guessing":
+    var ran: seq[string] = @[]
+    let gather: DelegateFn = proc(s: JsonNode, n: Observer): JsonNode =
+      ran.add("gather")
+      %*{"reply": "digest", "tool_calls": [], "iterations": 1}
+    for missing in [%*{"message": "x", "route": "brief"},
+                    %*{"message": "x"}]:
+      let ans = makeDelegateDispatcher(@[(agent: "gather", fn: gather)])(
+        missing, nil)
+      assert ans["fail_open"].getBool(false)
+    assert ran.len == 0
+
+  test "a nil delegate in the table is skipped, never called":
+    let gather: DelegateFn = proc(s: JsonNode, n: Observer): JsonNode =
+      %*{"reply": "digest", "tool_calls": [], "iterations": 1}
+    let dispatch = makeDelegateDispatcher(@[(agent: "brief", fn: nil),
+                                            (agent: "gather", fn: gather)])
+    assert dispatch(%*{"message": "x", "route": "brief"},
+      nil)["fail_open"].getBool(false)
+    assert dispatch(%*{"message": "x", "route": "gather"},
+      nil)["reply"].getStr() == "digest"
+
+  test "no new productive worker: the worker list is still gather":
+    # T17 is the dispatch mechanism, not a worker. A name here would make
+    # every install offer a route whose worker does not exist.
+    assert delegateWorkers == @["gather"]
+    assert workerAgents(@["brief", "gather"]) == @["gather"]

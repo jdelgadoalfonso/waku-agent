@@ -34,8 +34,11 @@ Reply with ONLY this JSON, nothing else:
 
 quick — greetings, thanks, acknowledgements, pure small talk: nothing to do,
         nothing to look up.
-full  — anything mentioning tasks, schedules, people, notes, memory, or that
-        needs a tool. When unsure, choose full.
+full  — anything mentioning tasks, schedules, people, notes, memory, identity,
+        or personal preferences, and any chat that needs a tool or a memory
+        to answer. "What do you remember about me?", "who am I?" and
+        "qué recuerdas de mí" are memory questions, not small talk: full.
+        When unsure, choose full.
 
 User message: {message}"""
 
@@ -53,6 +56,11 @@ type
   QuickFn* = proc(state: JsonNode): string {.closure.}
   FullFn* = proc(state: JsonNode, notify: Observer): LoopResult {.closure.}
   DelegateFn* = proc(state: JsonNode, notify: Observer): JsonNode {.closure.}
+  Delegates* = seq[tuple[agent: string, fn: DelegateFn]]
+    ## One delegate per agent, in the order the caller binds them: the
+    ## graph's single `delegate_agent` node picks the entry whose `agent`
+    ## matches the state's `route`. A seq (not a table) keeps that order
+    ## explicit and matches `workerAgents`, which already dedupes.
 
 proc agentRoutesIn(allowedRoutes: seq[string]): seq[string] =
   ## The agent routes an allow-list enables, in order and deduped.
@@ -75,9 +83,19 @@ proc triagePromptFor*(allowedRoutes: seq[string] = @[]): string =
   var routes = "\"quick\" or \"full\""
   for agent in agents:
     routes.add(" or \"" & agent & "\"")
-  let legend = "\n" & agents.join(", ") & " — enrolled agent routes. Hand the\n" &
+  var legend = "\n" & agents.join(", ") & " — enrolled agent routes. Hand the\n" &
     "        message to the agent whose job it clearly is: it runs its own\n" &
-    "        turn and answers.\n"
+    "        turn and answers. A memory or identity question is never an\n" &
+    "        agent route: an agent holds no memory of this conversation,\n" &
+    "        so it could only answer blind. Those go to full.\n"
+  if "gather" in agents:
+    # The live misrouting (S10): `gather` answering identity questions
+    # with a generic briefing, because the worker is blind to memory by
+    # design (slice 9). Naming the boundary in the prompt is the fix the
+    # small model can actually read.
+    legend.add "        gather — only an explicit digest, briefing or report that it\n" &
+      "        builds with its own tools: never a memory or identity question,\n" &
+      "        never plain chat.\n"
   result = triagePrompt.replace("\"quick\" or \"full\"", routes)
   result = result.replace("\n\nUser message: {message}",
     "\n" & legend & "\nUser message: {message}")
@@ -138,20 +156,38 @@ proc todaysEvents*(home: string): string =
       lines.add(title)
   if lines.len == 0: "(nothing today)" else: lines.join("; ")
 
+proc delegateForRoute*(route: string, delegates: Delegates,
+                       delegateFn: DelegateFn): DelegateFn =
+  ## The delegate that owns `route`, or nil when nothing does. With no
+  ## per-agent table this is the caller's single `delegateFn`, which keeps
+  ## T2.2's shape byte for byte (its own guard still refuses other
+  ## routes). With a table, only the matching entry answers — the table
+  ## wins over `delegateFn`, and an unowned route answers nil: falling
+  ## back to another agent's delegate would run the wrong worker.
+  if delegates.len > 0:
+    for d in delegates:
+      if d.agent == route and not d.fn.isNil:
+        return d.fn
+    return nil
+  delegateFn
+
 proc buildTriageGraph*(classifyFn: ClassifyFn, calendarFn: CalendarFn,
                        quickFn: QuickFn, fullFn: FullFn,
                        agentRoutes: seq[string] = @[],
-                       delegateFn: DelegateFn = nil): Graph =
+                       delegateFn: DelegateFn = nil,
+                       delegates: Delegates = @[]): Graph =
   ## Callables injected so evals script them, the dashboard builds it with
   ## stubs just to describe(), and the app binder below binds the real
   ## client/loop. The router waits on BOTH parallel branches (via the
-  ## `gather` join) before deciding. `agentRoutes` adds one
-  ## `delegate_agent` node the router can reach per enabled agent, and
-  ## only when a `delegateFn` is bound: with no delegate there is nothing
-  ## to spread a route over, so the graph is the plain five-node
-  ## quick|full one. (`keyRouter`'s default covers only a missing or empty
-  ## route key; an unknown label is recorded as a router error instead, so
-  ## a caller must never offer a route the graph cannot reach — the binder
+  ## `gather` join) before deciding. `agentRoutes` adds the route the
+  ## router can reach per enabled agent, and only when a delegate is bound
+  ## — one `delegateFn` or a per-agent `delegates` table: with no delegate
+  ## there is nothing to spread a route over, so the graph is the plain
+  ## five-node quick|full one. One node serves every agent route and looks
+  ## the worker up by `route`, so N agents cost N router labels, not N
+  ## nodes. (`keyRouter`'s default covers only a missing or empty route
+  ## key; an unknown label is recorded as a router error instead, so a
+  ## caller must never offer a route the graph cannot reach — the binder
   ## below keeps its answer domain equal to what it builds.)
   var g = Graph(name: "triage")
 
@@ -184,10 +220,18 @@ proc buildTriageGraph*(classifyFn: ClassifyFn, calendarFn: CalendarFn,
   g.addEdge("check_calendar", "gather")
   var routes = @[(label: "quick", dst: "quick_reply"),
     (label: "full", dst: "full_agent")]
-  if agentRoutes.len > 0 and not delegateFn.isNil:
+  if agentRoutes.len > 0 and (not delegateFn.isNil or delegates.len > 0):
     g.addNode(newNode("delegate_agent",
       proc(s: JsonNode, n: Observer): JsonNode =
-        let d = delegateFn(s, n)
+        # One node, N routes: the route names the worker, so a second
+        # enabled agent reaches its own delegate instead of failing open
+        # on the first one's guard. A route nothing owns fails open the
+        # same way a missing delegate does.
+        let fn = delegateForRoute(s.jget("route").getStr(), delegates,
+          delegateFn)
+        if fn.isNil:
+          return newJObject()
+        let d = fn(s, n)
         # Fail-open is an empty patch: no `result`, no `reply`, so the
         # binder returns (false, _) and `respond` runs the plain loop.
         # Anything else answers through the existing `result` path.
@@ -227,25 +271,28 @@ proc triageGraphTurn*(client: LlmClient, smallModel, home: string,
     full: proc(state: JsonNode, notify: Observer,
                stream: bool): LoopResult {.closure.},
     agents: seq[string] = @[],
-    delegateFn: DelegateFn = nil): GraphTurn =
+    delegateFn: DelegateFn = nil,
+    delegates: Delegates = @[]): GraphTurn =
   ## The app binder: triage as a `Waku.graphTurn` seam. `stream` rides
   ## per call (like Python's closure over `respond`'s flag), not per
   ## bind. Returns `(answered, result)`; `(false, _)` whenever the graph
   ## produced no answer, so `respond` falls open to the plain loop.
   ##
-  ## `agents` is the enabled agent list (`Settings.agents`) and
-  ## `delegateFn` is the seam that will run one. Both default empty/nil,
-  ## so every existing caller binds exactly the quick|full graph it binds
-  ## today: no agents, no delegate node. Threading the delegate seam is
-  ## plumbing only — no worker is spawned here yet.
+  ## `agents` is the enabled agent list (`Settings.agents`) and the
+  ## delegate seam that runs them is either one `delegateFn` or one entry
+  ## per agent in `delegates`. All three default empty/nil, so every
+  ## existing caller binds exactly the quick|full graph it binds today: no
+  ## agents, no delegate node.
   ##
   ## A route is offered to the model only when something can receive it,
-  ## so with no `delegateFn` the gate keeps today's quick|full answer
+  ## so with no delegate at all the gate keeps today's quick|full answer
   ## domain: enabling `WAKU_AGENTS` before the delegate is wired changes
   ## nothing (the model's agent route fails open to full), and the gate can
   ## never ask the graph for a label the router has no target for.
-  let agentRoutes = if delegateFn.isNil: newSeq[string]()
-                    else: agentRoutesIn(agents)
+  let agentRoutes = if delegateFn.isNil and delegates.len == 0:
+                      newSeq[string]()
+                    else:
+                      agentRoutesIn(agents)
   result = proc(userMessage: string, notify: Observer,
                 stream: bool): tuple[answered: bool, res: LoopResult] =
     let g = buildTriageGraph(
@@ -258,7 +305,8 @@ proc triageGraphTurn*(client: LlmClient, smallModel, home: string,
       fullFn = proc(s: JsonNode, n: Observer): LoopResult =
         full(s, n, stream),
       agentRoutes = agentRoutes,
-      delegateFn = delegateFn)
+      delegateFn = delegateFn,
+      delegates = delegates)
     var state = %*{"message": userMessage}
     discard runGraph(g, state, notify)
     if state.jget("result").kind == JObject:

@@ -25,7 +25,10 @@ const delegateWorkers* = @["gather"]
   ## The agents this binary can actually run headless as a worker. The
   ## gate is offered an agent route only when its worker exists: a route
   ## with nothing behind it would answer every such message with a
-  ## fail-open rerun of the local loop.
+  ## fail-open rerun of the local loop. A name here is a real worker: the
+  ## N-agent dispatch below (slice T17) needs no new entry, and adding
+  ## one without its `--role worker` behaviour would offer a route that
+  ## cannot answer.
 
 proc workerAgents*(enabled: seq[string]): seq[string] =
   ## The enabled agents that can actually run, in order and deduped —
@@ -58,10 +61,24 @@ proc delegateArgv*(binary, agent: string): seq[string] =
 
 proc delegateTaskLine*(traceId, turnId, task, context: string,
     timeoutMs = delegateDefaultTimeoutMs,
-    maxToolCalls = delegateDefaultMaxToolCalls): JsonNode =
+    maxToolCalls = delegateDefaultMaxToolCalls,
+    model = ""): JsonNode =
   ## One stdin line for the worker. Thin over `makeTaskLine` so the
   ## binder has one owner for productive defaults.
-  makeTaskLine(traceId, turnId, task, context, timeoutMs, maxToolCalls)
+  ##
+  ## `model` is the child's model override (T19): the parent names the
+  ## model it wants this worker to run, and the worker reads the key
+  ## back off the line (`worker_gather.taskLineModel`) before its one
+  ## model call. The channel is the task line, not the argv, because it
+  ## is already the turn's contract: it carries the ids and the budget,
+  ## and a second parent never has to remember a flag. Empty (the
+  ## default) puts no key on the wire at all, so the line is byte for
+  ## byte what it was: an old worker ignores the key, and a new worker
+  ## reading an old line reads "inherit the parent's model".
+  result = makeTaskLine(traceId, turnId, task, context, timeoutMs,
+    maxToolCalls)
+  if model.len > 0:
+    result["model"] = %model
 
 proc delegateTimeoutSec*(timeoutMs: int): int =
   ## Supervisor seconds that never kill before the child votes
@@ -100,7 +117,7 @@ proc delegateEdge*(fromAgent, toAgent, traceId, turnId, route,
 proc makeDelegateFn*(agent, binary, traceId, turnId: string,
     runner: WorkerRunner, timeoutMs = delegateDefaultTimeoutMs,
     maxToolCalls = delegateDefaultMaxToolCalls,
-    timeoutSec = -1): DelegateFn =
+    timeoutSec = -1, model = ""): DelegateFn =
   ## Live `DelegateFn` for the triage binder. Builds the task line,
   ## emits the `delegation` edge on the graph `notify` (which already
   ## fans out to `Tracer.event`), supervises one worker, re-emits
@@ -112,7 +129,9 @@ proc makeDelegateFn*(agent, binary, traceId, turnId: string,
   ## open: an answered turn with no reply would read as success.
   ## A route that is not this delegate's agent never spawns: one
   ## `makeDelegateFn` serves one agent, and the live binder must bind
-  ## one per enabled agent.
+  ## one per enabled agent. `model` (T19) rides the task line as the
+  ## child's model override; empty keeps the parent's model, which is
+  ## what every caller gets today.
   result = proc(state: JsonNode, notify: Observer): JsonNode {.closure.} =
     let wanted = state.jget("route").getStr(agent)
     if wanted != agent:
@@ -130,7 +149,7 @@ proc makeDelegateFn*(agent, binary, traceId, turnId: string,
           reason))
     let outcome = runWorker(delegateArgv(binary, agent),
       delegateTaskLine(traceId, turnId, task, "", timeoutMs,
-        maxToolCalls), secs, runner)
+        maxToolCalls, model), secs, runner)
     for pair in delegateTracePairs(outcome.childLines):
       if not notify.isNil:
         notify(pair.kind, pair.ev)
@@ -161,7 +180,7 @@ proc makeLiveDelegateFn*(agent, binary: string,
     runner: WorkerRunner,
     timeoutMs = delegateDefaultTimeoutMs,
     maxToolCalls = delegateDefaultMaxToolCalls,
-    timeoutSec = -1): DelegateFn =
+    timeoutSec = -1, model = ""): DelegateFn =
   ## Per-call twin of `makeDelegateFn`, for a binder that outlives one
   ## turn (`buildCliApp` binds this at startup and every later turn runs
   ## through it): the trace id is READ on each call — `getTraceId` is the
@@ -171,24 +190,51 @@ proc makeLiveDelegateFn*(agent, binary: string,
   ## is no cycle. Everything else is `makeDelegateFn`'s by construction:
   ## the route guard, the edge, the child pairs, and the fail-open.
   ## A nil reader answers an empty trace id instead of raising.
+  ## `model` (T19) is forwarded verbatim: the override belongs to the
+  ## agent this fn runs, exactly like its route guard.
   result = proc(state: JsonNode, notify: Observer): JsonNode {.closure.} =
     let traceId = if getTraceId.isNil: "" else: getTraceId()
     makeDelegateFn(agent, binary, traceId, trace.mintTurnId(), runner,
-      timeoutMs, maxToolCalls, timeoutSec)(state, notify)
+      timeoutMs, maxToolCalls, timeoutSec, model)(state, notify)
+
+proc makeDelegateDispatcher*(delegates: Delegates): DelegateFn =
+  ## One `DelegateFn` in front of N agents (slice T17). The state's
+  ## `route` picks the delegate that owns it — `delegateForRoute` is the
+  ## one owner of that rule, shared with the graph node — so a binder can
+  ## hand the graph ONE seam while every enabled agent still runs its own
+  ## worker. Order is the caller's and the first match wins (the table
+  ## comes from `workerAgents`, already ordered and deduped). A route no
+  ## entry owns answers `%*{"fail_open": true}` — the same answer as no
+  ## delegate at all, never another agent's worker. A nil entry is
+  ## skipped, so an unwired agent fails open instead of raising.
+  result = proc(state: JsonNode, notify: Observer): JsonNode {.closure.} =
+    let fn = delegateForRoute(state.jget("route").getStr(), delegates, nil)
+    if fn.isNil:
+      return %*{"fail_open": true}
+    fn(state, notify)
 
 proc liveDelegateFor*(enabled: seq[string], binary: string,
     getTraceId: proc(): string {.closure.},
     runner: WorkerRunner,
     timeoutMs = delegateDefaultTimeoutMs,
     maxToolCalls = delegateDefaultMaxToolCalls,
-    timeoutSec = -1): DelegateFn =
+    timeoutSec = -1, model = ""): DelegateFn =
   ## The seam the CLI binder passes to `triageGraphTurn`: nil unless an
-  ## enabled agent has a real worker (today only `gather`), else one live
-  ## `DelegateFn` for it. One `DelegateFn` serves one agent — its guard
-  ## refuses every other route — so the first worker wins, which is exact
-  ## while `delegateWorkers` holds one name.
+  ## enabled agent has a real worker, else ONE dispatcher holding a live
+  ## `DelegateFn` per worker, so the state's `route` decides which agent
+  ## runs instead of the first one always winning. `delegateWorkers` holds
+  ## one name today, so production binds a single live fn and the table is
+  ## what a second worker inherits; every live fn keeps its own route
+  ## guard as the last line of defence. `model` (T19) reaches every
+  ## worker in the table: one binder, one override, no per-agent flag to
+  ## keep in sync. Empty is today's behaviour — each child inherits the
+  ## parent's model.
   let workers = workerAgents(enabled)
   if workers.len == 0:
     return nil
-  makeLiveDelegateFn(workers[0], binary, getTraceId, runner, timeoutMs,
-    maxToolCalls, timeoutSec)
+  var delegates: Delegates = @[]
+  for agent in workers:
+    delegates.add((agent: agent,
+      fn: makeLiveDelegateFn(agent, binary, getTraceId, runner, timeoutMs,
+        maxToolCalls, timeoutSec, model)))
+  makeDelegateDispatcher(delegates)

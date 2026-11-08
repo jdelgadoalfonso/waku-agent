@@ -100,6 +100,15 @@ suite "phase 0b model resolution":
     assert small == "gpt-4.1-mini"
     restoreEnv(saved)
 
+  test "an explicit WAKU_SMALL_MODEL wins over the row default (T21 C)":
+    # C: un small más capaz se elige por config, sin tocar el registry.
+    let saved = saveEnv(["WAKU_MODEL", "WAKU_SMALL_MODEL"])
+    let rows = parseProviders(fixture)
+    putEnv("WAKU_SMALL_MODEL", "custom-capable-small")
+    let (_, small) = modelsFor("openai", "", "custom-capable-small", rows)
+    assert small == "custom-capable-small", "override must win, got " & small
+    restoreEnv(saved)
+
   test "keeps an unfamiliar model id instead of downgrading it":
     let saved = saveEnv(["WAKU_MODEL", "WAKU_SMALL_MODEL"])
     let rows = parseProviders(fixture)

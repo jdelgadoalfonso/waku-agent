@@ -10,8 +10,14 @@
 ##   plus an empty `draft_path`: the worker writes nothing, the parent
 ##   files)
 ## - invalid task or gather raising -> single `error`, never raises
+##
+## T19: a task line may name the model the worker must run on. The
+## override is read here (`taskLineModel`, or `taskModel` on a parsed
+## line) and the `cost` line names it, because the ledger prices what
+## that payload says.
 
 import std/json
+import std/strutils
 
 import ./delegation
 import ./wire
@@ -22,6 +28,29 @@ type
     ## `draft_path`, and — slice 10 — `usage` when the synthesis
     ## reported token counts). Tests inject recordings; live code
     ## passes a closure over `runGather`.
+
+proc taskModel(task: JsonNode): string =
+  ## The model override a task line names (T19), `""` when it names
+  ## none. Missing key, non-string value and blank string all mean
+  ## "inherit the parent's model": a hint the worker cannot read must
+  ## never break the wire, and `workerChildLines` already answers the
+  ## structural errors with the one `error` line this turn gets.
+  let asked = task.jget("model")
+  if asked.kind == JString: asked.getStr().strip() else: ""
+
+proc taskLineModel*(line: string): string =
+  ## `taskModel` over the raw stdin line, for the entrypoint that must
+  ## know the override before it can build the gather closure — so
+  ## `runWorkerCmd` never re-implements the parse. An unreadable line
+  ## answers `""` (inherit) instead of raising; the structural read
+  ## stays `workerChildLines`'s, and it still answers the one `error`
+  ## line that turn gets.
+  var task: JsonNode
+  try:
+    task = parseJson(line.strip())
+  except CatchableError:
+    return ""
+  taskModel(task)
 
 proc runGatherWorker*(task: JsonNode, gather: GatherFn): seq[JsonNode] =
   ## One headless gather turn. `agent` is always "gather", `pid` is 0
@@ -49,8 +78,17 @@ proc runGatherWorker*(task: JsonNode, gather: GatherFn): seq[JsonNode] =
   # only reach the orchestrator as this line — before `done`, with the
   # task's ids, so the parent books it against the same turn. No usage
   # in the state means no model call happened: no invented charge.
+  # T19: the payload names the model the ledger will price it with, so
+  # the task line's override wins over whatever the state reports. Live
+  # code cannot disagree — the same string reached the synth that wrote
+  # this usage — and a state that reports none still gets named.
   let usage = state.jget("usage")
   if usage.kind == JObject:
-    result.add(makeChildLine("cost", traceId, turnId, "gather", 0, usage))
+    var payload = copy(usage)
+    let override = taskModel(task)
+    if override.len > 0:
+      payload["model"] = %override
+    result.add(makeChildLine("cost", traceId, turnId, "gather", 0,
+      payload))
   result.add(makeChildLine("done", traceId, turnId, "gather", 0,
     %*{"reply": digest, "draft_path": draft}))

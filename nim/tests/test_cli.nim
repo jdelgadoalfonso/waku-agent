@@ -498,7 +498,13 @@ suite "slice 2b worker role":
     removeDir(home)
 
   test "dispatch: a non-worker role prints usage and exits 1":
-    assert runCommand(@["--role", "orchestrator"]) == 1
+    assert runCommand(@["--role", "bogus"]) == 1
+
+  test "dispatch: --role orchestrator is the default process (alias)":
+    # The orchestrator takes no role flag by design (Lot-1): the flag is
+    # accepted and stripped, then dispatch continues as without it.
+    assert runCommand(@["--role", "orchestrator", "--help"]) == 0
+    assert runCommand(@["--role", "orchestrator", "bogus"]) == 1
 
 suite "slice 9 headless worker":
   test "the worker app holds settings, a client and a silent tracer only":

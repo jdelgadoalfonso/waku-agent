@@ -25,6 +25,9 @@
 ## `writeDraft = false`, so it opens no `state.db` and files no outbox
 ## copy: the orchestrator owns the turn's trace, ledger and draft, and a
 ## worker that wrote too would split one turn across two processes.
+## The task line may also name the model that worker must run on (T19):
+## the override reaches the gather's single synthesis call and the
+## `cost` line it reports, and an absent key inherits the parent's model.
 
 import std/httpclient
 import std/json
@@ -200,6 +203,10 @@ proc writeHelp*() =
   echo "Commands:"
   for cmd in cliCommands:
     echo "  " & cmd
+  echo ""
+  echo "Roles: no flag = orchestrator; `--role worker --agent <name>` = worker."
+  echo ""
+  echo "Roles: the orchestrator is the default process (no flag; `--role orchestrator` is the same); `--role worker --agent <name>` runs one delegation headless."
   echo ""
   echo "Run 'waku --version' for the port version."
 
@@ -707,6 +714,12 @@ proc runWorkerCmd*(args: seq[string], dotenvStart = ""): int =
   ## `runGather` with `writeDraft = false`: no `state.db`, no tools, no
   ## plugins, no outbox copy, and a silent tracer. The orchestrator owns
   ## every runtime write of the turn (design doc, trace rule).
+  ##
+  ## T19: the task line may also name the model this worker must run on.
+  ## The override is read after the app exists (a broken config still
+  ## fails fast, without waiting on the parent's line) and handed to
+  ## `runGather`, the one call it governs. Empty means inherit: the
+  ## worker runs on the parent's model, exactly as before.
   let role = workerRole(args)
   if not role.isWorker:
     writeUsage()
@@ -722,8 +735,10 @@ proc runWorkerCmd*(args: seq[string], dotenvStart = ""): int =
       # as a failed worker and fails open.
       stderr.writeLine(exc.msg)
       return 1
-    gather = proc(): JsonNode = runGather(w, writeDraft = false)
     taskLine = readTaskLine()
+    let model = taskLineModel(taskLine)
+    gather = proc(): JsonNode = runGather(w, writeDraft = false,
+      model = model)
   # An unknown agent answers here, without an app and without reading
   # stdin: there is nothing to run, so there is nothing to wait for.
   for child in workerChildLines(role.agent, taskLine, gather):
@@ -743,7 +758,14 @@ proc runCommand*(args: seq[string], dotenvStart = "",
   ##
   ## `--role` is checked before every command, so a worker can never
   ## fall through into `chat` and open a REPL in the parent's terminal.
+  ## `--role orchestrator` is the default process (design Lot-1 takes no
+  ## role flag): accepted and stripped, then dispatch continues as without
+  ## it. Any other non-worker `--role` is usage + exit 1.
   if args.len > 0 and args[0] == "--role":
+    if args.len >= 2 and args[1] == "orchestrator":
+      if args.len == 2:
+        return runCommand(@[], dotenvStart, serve)
+      return runCommand(args[2 .. ^1], dotenvStart, serve)
     return runWorkerCmd(args, dotenvStart)
   if args.len == 0 or args[0] == "chat":
     return runChat(dotenvStart)

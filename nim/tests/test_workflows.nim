@@ -14,11 +14,16 @@ import db_connector/db_sqlite
 import ../src/app
 import ../src/brief
 import ../src/db
+import ../src/delegate
 import ../src/gather
 import ../src/graph/engine
 import ../src/memory
+import ../src/observability
+import ../src/observe
+import ../src/trace
 import ../src/triage
 import ../src/wire
+import ../src/worker_gather
 
 type
   Script = ref object
@@ -442,6 +447,94 @@ suite "phase 4d brief":
       ("brief-" & format(now(), "yyyy-MM-dd") & ".txt")
     assert readFile(path) == "Your week: swim.\n"
     db.close()
+
+## T19 (S1,S2): the worker runs on the model the child line names.
+## The override governs the one call it was meant for — the gather
+## synthesis — so the `cost` line the worker emits names the model the
+## ledger prices, while the app's own settings stay the parent's.
+
+suite "T19 worker model override":
+
+  proc ledgerRows(path: string): seq[JsonNode] =
+    for line in readFile(path).strip().splitLines():
+      if line.strip().len > 0:
+        result.add(parseJson(line))
+
+  proc traceRows(path: string): seq[JsonNode] =
+    for line in readFile(path).strip().splitLines():
+      if line.strip().len > 0:
+        result.add(parseJson(line))
+
+  test "the synth call names the override and the state reports it back":
+    let home = freshHome("waku-g-model")
+    let usageResp = %*{"stop_reason": "end_turn",
+      "usage": {"in": 7, "out": 3},
+      "content": [{"type": "text", "text": "One meeting."}]}
+    let script = Script(items: @[usageResp])
+    var w = newWaku(testSettings(home), scriptedClient(script))
+    w.tracer.silent = true
+    let state = runGather(w, writeDraft = false, model = "worker-model")
+    assert script.seen.len == 1
+    assert script.seen[0]["model"].getStr() == "worker-model"
+    assert state["usage"]["model"].getStr() == "worker-model"
+    assert state["usage"]["in"].getInt() == 7
+    assert state["digest"].getStr() == "One meeting."
+    # the override never rewrites the app: it governs one call, nothing else
+    assert w.settings.model == "m"
+
+  test "no override asks for the app's own model":
+    let home = freshHome("waku-g-model-inherit")
+    let script = Script(items: @[textResp("One meeting.")])
+    var w = newWaku(testSettings(home), scriptedClient(script))
+    w.tracer.silent = true
+    discard runGather(w, writeDraft = false)
+    assert script.seen.len == 1
+    assert script.seen[0]["model"].getStr() == "m"
+
+  test "one delegated cost row, named and priced by the override":
+    # The whole chain, with real parts and no fake: the gather runs on
+    # the task line's model (the same expression `runWorkerCmd` uses),
+    # the worker emits that model on its `cost` line, and the parent's
+    # existing single mapping books ONE row — priced with the override,
+    # never with the parent's model and never twice.
+    let home = freshHome("waku-g-model-ledger")
+    let usageResp = %*{"stop_reason": "end_turn",
+      "usage": {"in": 7, "out": 3},
+      "content": [{"type": "text", "text": "One meeting."}]}
+    let script = Script(items: @[usageResp])
+    var w = newWaku(testSettings(home), scriptedClient(script))
+    w.tracer.silent = true
+    let taskLine = delegateTaskLine("t_1", "t_2", "morning briefing", "",
+      30000, 8, model = "worker-model")
+    let raw = $taskLine
+    let lines = runGatherWorker(taskLine,
+      proc(): JsonNode = runGather(w, writeDraft = false,
+        model = taskLineModel(raw)))
+    var t = newTracer(home, "openai", "m")
+    t.turn("hi")
+    for pair in delegateTracePairs(lines):
+      t.event(pair.kind, pair.ev)
+    t.endTurn("yo", 1)
+    let rows = ledgerRows(home / "usage.jsonl")
+    assert rows.len == 1, "one delegated call, one ledger row (L27)"
+    assert rows[0]["model"].getStr() == "worker-model"
+    assert rows[0]["kind"].getStr() == "gather"
+    assert rows[0]["in"].getInt() == 7
+    assert rows[0]["out"].getInt() == 3
+    var costRow: JsonNode = nil
+    for row in traceRows(t.path):
+      if row["type"].getStr() == "cost":
+        costRow = row
+    assert not costRow.isNil
+    assert costRow["model"].getStr() == "worker-model"
+    assert costRow["cost_usd"].getFloat() ==
+      llmCost("openai", "worker-model", %*{"in": 7, "out": 3})
+    # the same read the dashboard and `/api/observability` use
+    let agents = agentsSummary(traceRows(t.path))
+    assert agents.len == 1
+    assert agents[0]["agent"].getStr() == "gather"
+    assert agents[0]["cost"].getFloat() ==
+      llmCost("openai", "worker-model", %*{"in": 7, "out": 3})
 
 ## The run's teardown, between the last suite that makes a home and the one
 ## that checks. It sits at module level so a --filter that skips suites still
