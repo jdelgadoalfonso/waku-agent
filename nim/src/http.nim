@@ -180,12 +180,16 @@ proc openAiPayload(req: JsonNode, stream: bool): JsonNode =
 
 proc anthropicPayload(req: JsonNode, stream: bool): JsonNode =
   ## The loop's request is already Anthropic-shaped; pass through with the
-  ## input tool schemas and the stream flag.
+  ## input tool schemas and the stream flag. A toolless request carries
+  ## no `tools` key, so only an array iterates — the payload still emits
+  ## `"tools": []`, byte-identical to every request that already worked.
   var tools = newJArray()
-  for t in req.jget("tools"):
-    tools.add(%*{"name": t["name"].getStr(),
-      "description": t["description"].getStr(),
-      "input_schema": t["input_schema"]})
+  let src = req.jget("tools")
+  if src.kind == JArray:
+    for t in src:
+      tools.add(%*{"name": t["name"].getStr(),
+        "description": t["description"].getStr(),
+        "input_schema": t["input_schema"]})
   result = %*{"model": req["model"].getStr(), "system": req["system"].getStr(),
     "messages": req["messages"], "max_tokens": req["max_tokens"].getInt(),
     "tools": tools, "stream": stream}

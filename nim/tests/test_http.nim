@@ -153,6 +153,11 @@ proc turnReq(): JsonNode =
      "messages": [{"role": "user", "content": "hi"}],
      "tools": [], "max_tokens": 16}
 
+proc toollessReq(): JsonNode =
+  %*{"model": "m", "system": "sys",
+     "messages": [{"role": "user", "content": "hi"}],
+     "max_tokens": 16}
+
 suite "phase 3e transport":
   test "openai json round-trips through the stub":
     ensureStub()
@@ -186,6 +191,12 @@ suite "phase 3e transport":
       proc(d: string) = deltas.add(d))
     assert deltas == @["Hi"]
     assert msg["content"] == %*[{"type": "text", "text": "Hi"}]
+    assert msg["usage"] == %*{"in": 6, "out": 2}
+
+  test "anthropic json tolerates a toolless request":
+    ensureStub()
+    let msg = anthropicTransport().createRemote(toollessReq())
+    assert msg["content"] == %*[{"type": "text", "text": "hello human"}]
     assert msg["usage"] == %*{"in": 6, "out": 2}
 
   test "a 401 surfaces as a refusal with status":
