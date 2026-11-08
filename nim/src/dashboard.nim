@@ -3177,6 +3177,7 @@ proc liveChatStreamFn*(box: WakuBox,
     var triageEv: JsonNode = newJNull()
     var delegations: seq[JsonNode] = @[]
     var completions: seq[JsonNode] = @[]
+    var costs: seq[JsonNode] = @[]
     proc observer(kind: string, ev: JsonNode) =
       if kind == "gate":
         gate = ev
@@ -3190,13 +3191,24 @@ proc liveChatStreamFn*(box: WakuBox,
         delegations.add(copy(ev))
       elif kind == "worker_done" or kind == "worker_error":
         completions.add(copy(ev))
+      elif kind == "cost":
+        var model = ev.jget("model").getStr()
+        if model.len == 0:
+          model = box.waku.tracer.model
+        let usage = if ev.jget("usage").kind == JObject: ev.jget("usage")
+          else: ev
+        let dollars = llmCost(box.waku.tracer.provider, model, usage)
+        costs.add(%*{"agent": ev.jget("agent").getStr(),
+          "trace_id": ev.jget("trace_id").getStr(),
+          "turn_id": ev.jget("turn_id").getStr(),
+          "cost_usd": dollars})
       emit(kind, ev)
     let t0 = now()
     try:
       let res = box.waku.respond(message, observer, "dashboard", true)
       emit("done", donePayload(box, res, gate, cons, route, triageEv,
         int((now() - t0).inMilliseconds),
-        doneAgents(delegations, completions)))
+        doneAgents(delegations, completions, costs)))
     except CatchableError as exc:
       emit("done", %*{"error": errorText(exc)})
 
