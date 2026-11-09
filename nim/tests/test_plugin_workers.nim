@@ -186,6 +186,28 @@ suite "T2 headless plugin run":
     assert lines[0]["type"].getStr() == "error"
     removeDir(home)
 
+suite "T2 wire handoff":
+  test "the runner closure reads the wire task field":
+    # Regression pin: runWorkerCmd used to read task["message"] while
+    # the wire carries "task", so every production plugin delegation
+    # ran on an empty message. The closure must read the wire field.
+    let dir = getTempDir() / "waku-pw-handoff"
+    discard buildFixture(dir, "workergreet.so", "fixture_plugin_worker.nim")
+    let home = getTempDir() / "waku-pw-handoff-home"
+    if dirExists(home):
+      removeDir(home)
+    createDir(home / "plugins")
+    copyFile(dir / "workergreet.so", home / "plugins" / "workergreet.so")
+    let line = $makeTaskLine("t_a", "t_b", "echo hi", "", 1000, 1)
+    let run = pluginTaskRunner(home, "workergreet", line, "m", "",
+      deadClient())
+    let task = parseJson(line.strip())
+    let lines = runPluginWorker("plugin:workergreet", task, run)
+    assert lines[^1]["type"].getStr() == "done"
+    assert lines[^1]["payload"]["reply"].getStr() == "hello: echo hi"
+    removeDir(dir)
+    removeDir(home)
+
 suite "T2 plugin gate and dispatch":
 
   test "a plugin table entry answers through the lookup":

@@ -756,15 +756,13 @@ proc runWorkerCmd*(args: seq[string], dotenvStart = ""): int =
     brief = proc(): JsonNode = %*{"reply": runBriefHeadless(w, model,
       memoryText), "draft_path": ""}
     if isPluginAgent(role.agent):
-      let pluginName = role.agent[pluginGraphPrefix.len .. ^1]
-      let home = w.settings.home
-      let client = w.client
+      # The tested unit owns the whole handoff (parse, wire field,
+      # headless run): this stays a one-line bind like gather/brief.
       let overrideModel = if model.len > 0: model
                           else: w.settings.model
-      pluginRun = proc(): JsonNode =
-        let task = parseJson(taskLine.strip())
-        pluginRunHeadless(home, pluginName, task.jget("message").getStr(),
-          overrideModel, memoryText, client)
+      pluginRun = pluginTaskRunner(w.settings.home,
+        role.agent[pluginGraphPrefix.len .. ^1], taskLine,
+        overrideModel, memoryText, w.client)
   # An unknown agent answers here, without an app and without reading
   # stdin: there is nothing to run, so there is nothing to wait for.
   # A plugin agent runs through its own table entry, built per turn

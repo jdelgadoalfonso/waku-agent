@@ -42,6 +42,12 @@ proc makeTaskLine*(traceId, turnId, task, context: string, timeoutMs,
       "task": task, "context": context,
       "budget": {"timeout_ms": timeoutMs, "max_tool_calls": maxToolCalls}}
 
+proc taskMessage*(task: JsonNode): string =
+  ## The user text of a well-formed task line (`task` on the wire, not
+  ## to confuse with the triage state key `message`). Missing or
+  ## non-string reads as "" — an empty task fails open downstream.
+  task.jget("task").getStr("")
+
 proc parseTaskLine*(node: JsonNode, err: var string): bool =
   ## Structural validation only. Returns true when the node is a
   ## well-formed task line; otherwise false with `err` naming the

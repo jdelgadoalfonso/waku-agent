@@ -128,3 +128,16 @@ proc pluginRunHeadless*(home, pluginName, message, model,
       "in": totalIn, "out": totalOut}
   if logs.len > 0:
     result["logs"] = %logs
+
+proc pluginTaskRunner*(home, pluginName, taskLine, model,
+    memoryText: string, client: LlmClient): PluginFn =
+  ## The `runWorkerCmd` closure as a testable unit: it parses the raw
+  ## stdin line, reads the user text from the wire `task` field (not a
+  ## `message` key — the triage state key with the same smell), and runs
+  ## the plugin headless. An unreadable line raises here, and the caller
+  ## maps it to one `error` child line like any failing run.
+  let line = taskLine
+  result = proc(): JsonNode {.closure.} =
+    let task = parseJson(line.strip())
+    pluginRunHeadless(home, pluginName, taskMessage(task), model,
+      memoryText, client)

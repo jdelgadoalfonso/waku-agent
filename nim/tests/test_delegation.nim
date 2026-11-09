@@ -8,6 +8,11 @@ import std/unittest
 
 import ../src/delegation
 
+suite "delegation task message":
+  test "taskMessage reads the wire task field":
+    assert taskMessage(makeTaskLine("t_1", "t_2", "echo hi", "", 1, 1)) == "echo hi"
+    assert taskMessage(%*{"v": 1}) == ""
+
 suite "delegation contract T1.1":
 
   test "task line round-trips with budget":
