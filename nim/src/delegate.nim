@@ -27,14 +27,14 @@ const delegateMaxContextChars* = 5000
   ## gated retrieval truncated with a `[truncated]` mark, so a turn with
   ## a large store still sends one bounded line.
 
-const delegateWorkers* = @["gather"]
+const delegateWorkers* = @["gather", "brief"]
   ## The agents this binary can actually run headless as a worker. The
   ## gate is offered an agent route only when its worker exists: a route
   ## with nothing behind it would answer every such message with a
   ## fail-open rerun of the local loop. A name here is a real worker: the
   ## N-agent dispatch below (slice T17) needs no new entry, and adding
   ## one without its `--role worker` behaviour would offer a route that
-  ## cannot answer.
+  ## cannot answer. `brief` (T3) is the second entry with a real worker.
 
 proc workerAgents*(enabled: seq[string]): seq[string] =
   ## The enabled agents that can actually run, in order and deduped —

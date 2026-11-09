@@ -207,7 +207,11 @@ proc event*(t: Tracer, kind: string, ev: JsonNode) =
 
 proc turn*(t: Tracer, userMessage: string) =
   ## One run opens with a `turn_start` marker (the root span in Python),
-  ## carrying the fresh `turn_id` every row of the turn shares.
+  ## carrying the fresh `turn_id` every row of the turn shares. A silent
+  ## tracer (a worker's) returns first and mints nothing — like `event`
+  ## above, one writer per turn stays one writer.
+  if t.silent:
+    return
   t.turnId = mintTurnId()
   t.writeRecord("turn_start",
     %*{"turn_id": t.turnId, "user_message": userMessage})
@@ -216,7 +220,11 @@ proc turn*(t: Tracer, userMessage: string) =
 
 proc endTurn*(t: Tracer, reply: string, iterations: int) =
   ## ... and closes with `turn_end` (flushed per turn, so the trace
-  ## survives even a killed process). The id resets, like Python.
+  ## survives even a killed process). The id resets, like Python. A
+  ## silent tracer returns first and books nothing.
+  if t.silent:
+    t.turnId = ""
+    return
   t.writeRecord("turn_end", %*{"turn_id": t.turnId, "reply": reply,
     "iterations": iterations})
   t.turnId = ""

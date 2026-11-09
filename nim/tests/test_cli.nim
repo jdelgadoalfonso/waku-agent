@@ -467,7 +467,7 @@ suite "slice 2b worker role":
     let fake: GatherFn = proc(): JsonNode =
       called = true
       newJObject()
-    let lines = workerChildLines("brief", "", fake)
+    let lines = workerChildLines("nope", "", fake)
     assert lines.len == 1
     assert lines[0]["type"].getStr() == "error"
     assert "no worker" in lines[0]["payload"]["message"].getStr()
@@ -492,7 +492,7 @@ suite "slice 2b worker role":
     let home = freshHome("waku-cli-worker-unknown")
     # No app, no stdin read: the line is the answer, and an error line
     # carries no reply so the parent fails open to its own loop.
-    assert runCommand(@["--role", "worker", "--agent", "brief"], home) == 0
+    assert runCommand(@["--role", "worker", "--agent", "nope"], home) == 0
     assert not fileExists(home / ".env")
     restoreEnv(saved)
     removeDir(home)

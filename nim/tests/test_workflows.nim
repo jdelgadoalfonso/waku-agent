@@ -580,3 +580,57 @@ suite "phase 4d temp homes":
     w.tracer.silent = true
     let state = runGather(w, writeDraft = false, memoryText = "   ")
     assert "no local store" in state["mem_text"].getStr()
+
+suite "T3 headless brief":
+
+  test "a headless brief answers without filing anything":
+    # Slice-9 rules for the second worker: no outbox copy, no store —
+    # the orchestrator owns every write of the turn.
+    let home = freshHome("waku-g-brief-headless")
+    let today = format(now(), "yyyyMMdd")
+    writeFile(home / "calendar.ics",
+      "BEGIN:VEVENT\nSUMMARY:A\nDTSTART:" & today & "T090000\n")
+    let script = Script(items: @[textResp("Week ahead.")], seen: @[])
+    var w = newWaku(testSettings(home), scriptedClient(script))
+    w.tracer.silent = true
+    let reply = runBriefHeadless(w)
+    assert reply == "Week ahead."
+    # No turn data: no outbox copy, no store, no traces. `SOUL.md` may
+    # exist — the loop creates the persona file on first run for every
+    # command, worker or not; that is setup, not a write of this turn.
+    assert not dirExists(home / "outbox")
+    assert not fileExists(home / "state.db")
+    assert not dirExists(home / "traces")
+    assert not fileExists(home / "outbox" / "brief-test.md")
+
+  test "the model override wins for the turn only":
+    let home = freshHome("waku-g-brief-model")
+    let script = Script(items: @[textResp("Week ahead."),
+                                 textResp("Week ahead.")], seen: @[])
+    var w = newWaku(testSettings(home), scriptedClient(script))
+    w.tracer.silent = true
+    assert w.settings.model == "m"
+    discard runBriefHeadless(w, model = "worker-model")
+    assert w.settings.model == "worker-model"
+    var plain = newWaku(testSettings(home), scriptedClient(script))
+    discard runBriefHeadless(plain)
+    assert plain.settings.model == "m"
+
+  test "the snapshot reaches the model request as retrieved memory":
+    let home = freshHome("waku-g-brief-ctx")
+    let script = Script(items: @[textResp("Week ahead.")], seen: @[])
+    var w = newWaku(testSettings(home), scriptedClient(script))
+    w.tracer.silent = true
+    discard runBriefHeadless(w, memoryText = "remember the launch")
+    assert script.seen.len == 1
+    assert "remember the launch" in $script.seen[0]
+    assert "Relevant memory" in $script.seen[0]
+
+  test "an empty snapshot keeps the wired retrieve untouched":
+    let home = freshHome("waku-g-brief-ctx-empty")
+    let script = Script(items: @[textResp("Week ahead.")], seen: @[])
+    var w = newWaku(testSettings(home), scriptedClient(script))
+    w.tracer.silent = true
+    w.session.retrieve = proc(msg: string, n: Observer): string = "wired"
+    discard runBriefHeadless(w)
+    assert w.session.retrieve("anything", nil) == "wired"

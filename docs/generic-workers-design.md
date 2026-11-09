@@ -1,6 +1,6 @@
 # Generic workers (proposal)
 
-Status: proposal — awaiting maintainer yes. No code changes ship under this doc until the maintainer approves it.
+Status: approved 2026-11-09, implemented on `feat/generic-workers` (T2 worker table, T3 headless `brief`, silent-tracer turn guard).
 
 ## Goal
 

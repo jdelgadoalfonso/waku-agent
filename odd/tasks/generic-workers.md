@@ -14,7 +14,7 @@ delegation contract the orchestrator already speaks.
 - T1 (S1,S2): Proposal — `docs/generic-workers-design.md` + sí maintainer antes de código — route: proposal gate — done: sí 2026-11-09, see L5
 - T2 (S1,S3): Worker table en `nim/src/workers.nim` nuevo — una tabla agente→runner con forma común (task→child lines); `workerChildLines` por lookup, `runWorkerCmd` construye contexto (app+model+snapshot); `gather` primera entrada sin cambio — done, see L6
 - T3 (S1,S3): First worker headless (`brief`) con pins — done, see L7
-- T4 (S1): Evals + docs — in progress, see L8
+- T4 (S1): Evals + docs — done, see L8
 
 ## Log
 
@@ -25,3 +25,4 @@ delegation contract the orchestrator already speaks.
 - L5 (decision, verbatim): "ok, vamos a implementar la propuesta" — sí maintainer a `docs/generic-workers-design.md` con `brief` como primer worker; rama `feat/generic-workers`.
 - L6 (T2 in progress 2026-11-09): tabla en `nim/src/workers.nim` con `gather` como primera entrada; `workerChildLines` pasa a lookup; sin cambio de comportamiento.
 - L7 (T3 done 2026-11-09): RED `worker_brief` ausente; GREEN `worker_brief.nim` (`BriefFn`, `runBriefWorker`), `brief.nim` `runBriefHeadless` (override+snapshot, sin outbox), tabla con `brief`, `runWorkerCmd` con ambas closures, `delegateWorkers` +`brief`, pins test_cli/test_delegate actualizados al nuevo comportamiento. Hallazgo: `turn`/`endTurn` escribían con tracer silente — guard `silent` en `trace.nim` + pin actualizado al contrato nuevo (un writer por turno). Pins: workers 11/11, workflows T3 4/4, trace silent OK.
+- L8 (T4 done 2026-11-09): `nimble test` exit 0, 1821 OK (baseline 1806 + 15 nuevos); `make nim-build` exit 0; `test_repo_docs` sin rojos; commits por unidad en `feat/generic-workers`, sin push.

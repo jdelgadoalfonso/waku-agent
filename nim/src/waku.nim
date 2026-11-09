@@ -51,7 +51,6 @@ import ./dashboard
 import ./observability
 import ./db
 import ./delegate
-import ./delegation
 import ./discord
 import ./experimental
 import ./gather
@@ -75,7 +74,9 @@ import ./voice
 import ./voiceio
 import ./whatsapp
 import ./wire
+import ./worker_brief
 import ./worker_gather
+import ./workers
 
 proc declaredVersion(manifest: string): string {.noSideEffect.} =
   ## The `version = "..."` value in a nimble manifest, read the way nimble
@@ -678,7 +679,7 @@ proc runVoiceCmd*(dotenvStart = "", logger: LogFn = nil): int =
     stop = installVoiceInterrupt())
 
 proc workerChildLines*(agent, stdinLine: string,
-    gather: GatherFn): seq[JsonNode] =
+    gather: GatherFn, brief: BriefFn = nil): seq[JsonNode] =
   ## Pure worker entrypoint: one stdin line in, the child lines out.
   ## An agent with no worker, an unreadable line and a structurally
   ## invalid task each answer ONE valid `error` line, and `gather` is
@@ -686,16 +687,12 @@ proc workerChildLines*(agent, stdinLine: string,
   ## parent fails open to its own loop — which is the answer a broken
   ## worker should cost, never a turn that reads as success or a broken
   ## pipe that reads as nothing at all.
-  if agent notin delegateWorkers:
-    return @[makeChildLine("error", "", "", agent, 0,
-      %*{"message": "no worker for agent '" & agent & "'"})]
-  var task: JsonNode
-  try:
-    task = parseJson(stdinLine.strip())
-  except CatchableError:
-    return @[makeChildLine("error", "", "", agent, 0,
-      %*{"message": "invalid task: the line is not JSON"})]
-  runGatherWorker(task, gather)
+  ##
+  ## T2: the dispatch lives in `workers.nim` now; this keeps its shape
+  ## so existing callers bind one table with `gather` as its entry.
+  ## T3: `brief` rides the same table when it is bound; nil keeps the
+  ## gather-only wire for callers that bind no briefing.
+  runWorkerLines(agent, stdinLine, workerTable(gather, brief))
 
 proc readTaskLine(): string =
   ## Exactly one line, per the contract: a worker that kept reading
@@ -727,11 +724,17 @@ proc runWorkerCmd*(args: seq[string], dotenvStart = ""): int =
   ## `context`. It is read after the app exists and handed to `runGather`
   ## as `memoryText`, so the worker uses it as its memory scan without
   ## opening a store. Empty keeps today's unavailable text.
+  ##
+  ## T3: `brief` runs headless beside `gather`: `runBriefHeadless`
+  ## answers through the loop without filing the outbox, on the same
+  ## model override and memory snapshot. Both closures stay lazy — only
+  ## the dispatched agent runs.
   let role = workerRole(args)
   if not role.isWorker:
     writeUsage()
     return 1
   var gather: GatherFn = nil
+  var brief: BriefFn = nil
   var taskLine = ""
   if role.agent in delegateWorkers:
     var w: Waku
@@ -747,9 +750,11 @@ proc runWorkerCmd*(args: seq[string], dotenvStart = ""): int =
     let memoryText = taskLineContext(taskLine)
     gather = proc(): JsonNode = runGather(w, writeDraft = false,
       model = model, memoryText = memoryText)
+    brief = proc(): JsonNode = %*{"reply": runBriefHeadless(w, model,
+      memoryText), "draft_path": ""}
   # An unknown agent answers here, without an app and without reading
   # stdin: there is nothing to run, so there is nothing to wait for.
-  for child in workerChildLines(role.agent, taskLine, gather):
+  for child in workerChildLines(role.agent, taskLine, gather, brief):
     stdout.writeLine($child)
   return 0
 

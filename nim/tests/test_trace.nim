@@ -102,22 +102,24 @@ suite "metered ledger rows":
     assert not fileExists(home / "usage.jsonl")
     removeDir(home)
 
-  test "a silent tracer writes no event row and no ledger row":
-    # Slice 2b: a worker process sets this so the orchestrator stays the
-    # turn's only trace writer. `event` drops the row (and so the ledger
-    # row an `llm` event would have appended); the turn markers are
-    # `turn`/`endTurn`'s, and a worker never calls those.
+  test "a silent tracer writes no rows at all, markers included":
+    # Slice 2b + T3: a worker process sets this so the orchestrator
+    # stays the turn's only trace writer. `event` drops the row (and so
+    # the ledger row an `llm` event would have appended); `turn`/
+    # `endTurn` drop the markers too and mint nothing — the brief worker
+    # answers through `respond`, which opens and closes a turn like any
+    # loop turn, so silence must cover the markers as well.
     let home = freshHome("waku-trace-silent")
     var t = newTracer(home, "openrouter", "m")
     t.silent = true
     t.turn("hi")
+    assert t.turnId == ""
     t.event("llm", %*{"usage": {"in": 11, "out": 7}})
     t.event("tool", %*{"name": "gather.web"})
     t.endTurn("yo", 1)
-    let lines = readLines(t.path)
-    assert lines.len == 2
-    assert lines[0]["type"].getStr() == "turn_start"
-    assert lines[1]["type"].getStr() == "turn_end"
+    assert t.turnId == ""
+    assert not fileExists(t.path)
+    removeDir(home)
     assert not fileExists(home / "usage.jsonl")
     removeDir(home)
 

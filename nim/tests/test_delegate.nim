@@ -210,10 +210,13 @@ suite "delegate slice 2b":
     assert not workerRole(@["--role", "worker", "--role", "chat"]).isWorker
     assert workerRole(@["--role", "chat", "--role", "worker"]).isWorker
 
-  test "workerAgents keeps only enabled agents with a worker":
+  test "T3: workerAgents keeps enabled agents with a worker":
+    # `brief` (T3) is the second agent with a real worker: unknown names
+    # stay out, order is kept, duplicates collapse.
     assert workerAgents(@[]) == @[]
-    assert workerAgents(@["brief"]) == @[]
-    assert workerAgents(@["brief", "gather", "gather"]) == @["gather"]
+    assert workerAgents(@["nope"]) == @[]
+    assert workerAgents(@["brief", "gather", "gather"]) == @["brief",
+      "gather"]
 
   test "no enabled worker means no delegate seam":
     let noSpawn: WorkerRunner = proc(argv: seq[string], stdinText: string,
@@ -221,7 +224,9 @@ suite "delegate slice 2b":
       raise newException(CatchableError, "must not spawn")
     let ids = proc(): string = "t_1"
     assert liveDelegateFor(@[], "waku", ids, noSpawn).isNil
-    assert liveDelegateFor(@["brief"], "waku", ids, noSpawn).isNil
+    assert liveDelegateFor(@["nope"], "waku", ids, noSpawn).isNil
+    assert not liveDelegateFor(@["brief"], "waku", ids,
+      noSpawn).isNil
 
   test "liveDelegateFor binds one agent and its guard still refuses others":
     var argvSeen: seq[seq[string]] = @[]
@@ -432,11 +437,13 @@ suite "delegate T17 multi-agent dispatcher":
     assert dispatch(%*{"message": "x", "route": "gather"},
       nil)["reply"].getStr() == "digest"
 
-  test "no new productive worker: the worker list is still gather":
-    # T17 is the dispatch mechanism, not a worker. A name here would make
-    # every install offer a route whose worker does not exist.
-    assert delegateWorkers == @["gather"]
-    assert workerAgents(@["brief", "gather"]) == @["gather"]
+  test "T3: the worker list holds gather and brief":
+    # T17 is the dispatch mechanism, not a worker — but every name here
+    # needs a real `--role worker` half, or the gate would offer a route
+    # that cannot answer. `brief` (T3) is the second such half.
+    assert delegateWorkers == @["gather", "brief"]
+    assert workerAgents(@["brief", "gather", "nope"]) == @["brief",
+      "gather"]
 
 ## T21-D (S10): read-only memory via `context`. The orchestrator fills the
 ## task line from gated retrieval, truncated and marked; the worker reads
