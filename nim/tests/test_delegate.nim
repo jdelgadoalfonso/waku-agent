@@ -437,3 +437,88 @@ suite "delegate T17 multi-agent dispatcher":
     # every install offer a route whose worker does not exist.
     assert delegateWorkers == @["gather"]
     assert workerAgents(@["brief", "gather"]) == @["gather"]
+
+## T21-D (S10): read-only memory via `context`. The orchestrator fills the
+## task line from gated retrieval, truncated and marked; the worker reads
+## it as `mem_text` without opening a store. Empty keeps today.
+
+suite "delegate T21-D memory context":
+
+  test "truncateContext keeps short text and marks long text":
+    assert truncateContext("short") == "short"
+    assert truncateContext("") == ""
+    let longText = "m".repeat(delegateMaxContextChars + 10)
+    let cut = truncateContext(longText)
+    assert cut.len == delegateMaxContextChars + "\n[truncated]".len
+    assert cut.endsWith("[truncated]")
+    assert cut.startsWith("m".repeat(10))
+
+  test "the binder puts truncated retrieval on the child line it spawns":
+    var tasks: seq[JsonNode] = @[]
+    let doneLine = makeChildLine("done", "t_1", "t_2", "gather", 0,
+      %*{"reply": "ok"})
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      tasks.add(parseJson(stdinText))
+      (res: ProcResult(timedOut: false, code: 0,
+        stdout: $doneLine & "\n", stderr: ""), pid: 0)
+    let ctx: ContextFn = proc(msg: string): string = "memory for " & msg
+    let fn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake,
+      contextFn = ctx)
+    discard fn(%*{"message": "gather news", "route": "gather"}, nil)
+    assert tasks.len == 1
+    assert tasks[0]["context"].getStr() == "memory for gather news"
+
+  test "a long retrieval truncates on the wire with its mark":
+    var tasks: seq[JsonNode] = @[]
+    let doneLine = makeChildLine("done", "t_1", "t_2", "gather", 0,
+      %*{"reply": "ok"})
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      tasks.add(parseJson(stdinText))
+      (res: ProcResult(timedOut: false, code: 0,
+        stdout: $doneLine & "\n", stderr: ""), pid: 0)
+    let ctx: ContextFn = proc(msg: string): string =
+      "m".repeat(delegateMaxContextChars + 5)
+    let fn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake,
+      contextFn = ctx)
+    discard fn(%*{"message": "gather news", "route": "gather"}, nil)
+    assert tasks.len == 1
+    let sent = tasks[0]["context"].getStr()
+    assert sent.endsWith("[truncated]")
+    assert sent.len == delegateMaxContextChars + "\n[truncated]".len
+
+  test "empty retrieval sends empty context and no fn keeps today":
+    var tasks: seq[JsonNode] = @[]
+    let doneLine = makeChildLine("done", "t_1", "t_2", "gather", 0,
+      %*{"reply": "ok"})
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      tasks.add(parseJson(stdinText))
+      (res: ProcResult(timedOut: false, code: 0,
+        stdout: $doneLine & "\n", stderr: ""), pid: 0)
+    let emptyCtx: ContextFn = proc(msg: string): string = ""
+    let withEmpty = makeDelegateFn("gather", "waku", "t_1", "t_2", fake,
+      contextFn = emptyCtx)
+    discard withEmpty(%*{"message": "gather news", "route": "gather"}, nil)
+    let withoutFn = makeDelegateFn("gather", "waku", "t_1", "t_2", fake)
+    discard withoutFn(%*{"message": "gather news", "route": "gather"}, nil)
+    assert tasks.len == 2
+    assert tasks[0]["context"].getStr() == ""
+    assert tasks[1]["context"].getStr() == ""
+
+  test "the live seam forwards the context fn to the wire":
+    var tasks: seq[JsonNode] = @[]
+    let doneLine = makeChildLine("done", "t_1", "t_2", "gather", 0,
+      %*{"reply": "ok"})
+    let fake: WorkerRunner = proc(argv: seq[string], stdinText: string,
+        timeoutSec: int): tuple[res: ProcResult, pid: int] {.closure.} =
+      tasks.add(parseJson(stdinText))
+      (res: ProcResult(timedOut: false, code: 0,
+        stdout: $doneLine & "\n", stderr: ""), pid: 0)
+    let ctx: ContextFn = proc(msg: string): string = "ctx for " & msg
+    let fn = liveDelegateFor(@["gather"], "waku", proc(): string = "t_1",
+      fake, contextFn = ctx)
+    discard fn(%*{"message": "gather news", "route": "gather"}, nil)
+    assert tasks.len == 1
+    assert tasks[0]["context"].getStr() == "ctx for gather news"

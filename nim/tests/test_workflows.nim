@@ -544,3 +544,39 @@ removeTempHomes()
 suite "phase 4d temp homes":
   test "the run leaves no /tmp waku dir behind":
     check wakuTempDirs() == wakuTempDirsAtStart
+
+  test "T21-D: a headless gather uses the task snapshot without a store":
+    let home = getTempDir() / ("waku-g-ctx-" & $getCurrentProcessId())
+    if dirExists(home):
+      removeDir(home)
+    createDir(home)
+    tempHomes.add(home)
+    let today = format(now(), "yyyyMMdd")
+    writeFile(home / "calendar.ics",
+      "BEGIN:VEVENT\nSUMMARY:A\nDTSTART:" & today & "T090000\n")
+    let script = Script(items: @[textResp("One meeting.")])
+    var w = newWaku(testSettings(home), scriptedClient(script))
+    w.tracer.silent = true
+    let state = runGather(w, writeDraft = false, memoryText = "remember the launch")
+    assert state["mem_text"].getStr() == "remember the launch"
+    assert state["digest"].getStr() == "One meeting."
+    assert state["draft_path"].getStr() == ""
+    var left: seq[string] = @[]
+    for kind, path in walkDir(home):
+      left.add(extractFilename(path))
+    assert left == @["calendar.ics"]
+
+  test "T21-D: empty snapshot keeps the unavailable text":
+    let home = getTempDir() / ("waku-g-ctx-empty-" & $getCurrentProcessId())
+    if dirExists(home):
+      removeDir(home)
+    createDir(home)
+    tempHomes.add(home)
+    let today = format(now(), "yyyyMMdd")
+    writeFile(home / "calendar.ics",
+      "BEGIN:VEVENT\nSUMMARY:A\nDTSTART:" & today & "T090000\n")
+    let script = Script(items: @[textResp("One meeting.")])
+    var w = newWaku(testSettings(home), scriptedClient(script))
+    w.tracer.silent = true
+    let state = runGather(w, writeDraft = false, memoryText = "   ")
+    assert "no local store" in state["mem_text"].getStr()

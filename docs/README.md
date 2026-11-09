@@ -33,6 +33,7 @@ into four groups.
 | [agent-graphs-design.md](agent-graphs-design.md) | the graph engine's design and its fail-open rule |
 | [graph-plugins-design.md](graph-plugins-design.md) | a graph node from a Nim dynamic library: the C boundary, the host functions, and the trust tiers (proposal) |
 | [orchestrator-instances-design.md](orchestrator-instances-design.md) | the orchestrator of same-binary role processes: the delegation contract, the agent registry, and the single dashboard |
+| [orchestrator-memory-context-design.md](orchestrator-memory-context-design.md) | read-only memory for delegated workers: the bounded task snapshot without a worker store (proposal) |
 | [mcp-per-turn-filter-design.md](mcp-per-turn-filter-design.md) | selective MCP tools: the per-turn filter and its `tasks`/`when` config |
 | [gmail-integration-design.md](gmail-integration-design.md) | Gmail as a capability: the three tools, the draft-first send guard, and its open decisions |
 | [providers-registry.md](providers-registry.md) | adding a model provider: one table in `data/providers.toml` |

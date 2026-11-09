@@ -21,6 +21,12 @@ const delegateDefaultTimeoutMs* = 30000
   ## Tests and the binder agree on one budget: 30s / 8 tool calls.
 const delegateDefaultMaxToolCalls* = 8
 
+const delegateMaxContextChars* = 5000
+  ## Bound for the read-only memory snapshot the orchestrator may place
+  ## on the task line (T21-D, approved 2026-11-09). The snapshot is
+  ## gated retrieval truncated with a `[truncated]` mark, so a turn with
+  ## a large store still sends one bounded line.
+
 const delegateWorkers* = @["gather"]
   ## The agents this binary can actually run headless as a worker. The
   ## gate is offered an agent route only when its worker exists: a route
@@ -36,6 +42,19 @@ proc workerAgents*(enabled: seq[string]): seq[string] =
   for agent in enabled:
     if agent in delegateWorkers and agent notin result:
       result.add(agent)
+
+type ContextFn* = proc(message: string): string {.closure.}
+  ## Read-only memory for one delegation (T21-D): the orchestrator's
+  ## gated retrieval for the task message. Empty means no memory, so
+  ## the wire keeps today's empty `context`. Nil keeps today too.
+
+proc truncateContext*(s: string): string =
+  ## Bound the memory snapshot (T21-D): short text passes through, long
+  ## text keeps the first `delegateMaxContextChars` chars and names the
+  ## cut so the worker knows it read a recorte, not the whole store.
+  if s.len <= delegateMaxContextChars:
+    return s
+  result = s[0 ..< delegateMaxContextChars] & "\n[truncated]"
 
 proc workerRole*(args: seq[string]): tuple[isWorker: bool, agent: string] =
   ## Read a command line back: `--role worker` marks a worker process
@@ -117,7 +136,8 @@ proc delegateEdge*(fromAgent, toAgent, traceId, turnId, route,
 proc makeDelegateFn*(agent, binary, traceId, turnId: string,
     runner: WorkerRunner, timeoutMs = delegateDefaultTimeoutMs,
     maxToolCalls = delegateDefaultMaxToolCalls,
-    timeoutSec = -1, model = ""): DelegateFn =
+    timeoutSec = -1, model = "",
+    contextFn: ContextFn = nil): DelegateFn =
   ## Live `DelegateFn` for the triage binder. Builds the task line,
   ## emits the `delegation` edge on the graph `notify` (which already
   ## fans out to `Tracer.event`), supervises one worker, re-emits
@@ -131,7 +151,9 @@ proc makeDelegateFn*(agent, binary, traceId, turnId: string,
   ## `makeDelegateFn` serves one agent, and the live binder must bind
   ## one per enabled agent. `model` (T19) rides the task line as the
   ## child's model override; empty keeps the parent's model, which is
-  ## what every caller gets today.
+  ## what every caller gets today. `contextFn` (T21-D) fills the task
+  ## line from gated retrieval, truncated and marked; nil keeps today's
+  ## empty `context`.
   result = proc(state: JsonNode, notify: Observer): JsonNode {.closure.} =
     let wanted = state.jget("route").getStr(agent)
     if wanted != agent:
@@ -148,7 +170,7 @@ proc makeDelegateFn*(agent, binary, traceId, turnId: string,
         delegateEdge("orchestrator", agent, traceId, turnId, route,
           reason))
     let outcome = runWorker(delegateArgv(binary, agent),
-      delegateTaskLine(traceId, turnId, task, "", timeoutMs,
+      delegateTaskLine(traceId, turnId, task, if contextFn.isNil: "" else: truncateContext(contextFn(task)), timeoutMs,
         maxToolCalls, model), secs, runner)
     for pair in delegateTracePairs(outcome.childLines):
       if not notify.isNil:
@@ -180,7 +202,8 @@ proc makeLiveDelegateFn*(agent, binary: string,
     runner: WorkerRunner,
     timeoutMs = delegateDefaultTimeoutMs,
     maxToolCalls = delegateDefaultMaxToolCalls,
-    timeoutSec = -1, model = ""): DelegateFn =
+    timeoutSec = -1, model = "",
+    contextFn: ContextFn = nil): DelegateFn =
   ## Per-call twin of `makeDelegateFn`, for a binder that outlives one
   ## turn (`buildCliApp` binds this at startup and every later turn runs
   ## through it): the trace id is READ on each call — `getTraceId` is the
@@ -191,11 +214,13 @@ proc makeLiveDelegateFn*(agent, binary: string,
   ## the route guard, the edge, the child pairs, and the fail-open.
   ## A nil reader answers an empty trace id instead of raising.
   ## `model` (T19) is forwarded verbatim: the override belongs to the
-  ## agent this fn runs, exactly like its route guard.
+  ## agent this fn runs, exactly like its route guard. `contextFn`
+  ## (T21-D) is forwarded the same way: the snapshot belongs to the
+  ## message this call carries.
   result = proc(state: JsonNode, notify: Observer): JsonNode {.closure.} =
     let traceId = if getTraceId.isNil: "" else: getTraceId()
     makeDelegateFn(agent, binary, traceId, trace.mintTurnId(), runner,
-      timeoutMs, maxToolCalls, timeoutSec, model)(state, notify)
+      timeoutMs, maxToolCalls, timeoutSec, model, contextFn)(state, notify)
 
 proc makeDelegateDispatcher*(delegates: Delegates): DelegateFn =
   ## One `DelegateFn` in front of N agents (slice T17). The state's
@@ -218,7 +243,8 @@ proc liveDelegateFor*(enabled: seq[string], binary: string,
     runner: WorkerRunner,
     timeoutMs = delegateDefaultTimeoutMs,
     maxToolCalls = delegateDefaultMaxToolCalls,
-    timeoutSec = -1, model = ""): DelegateFn =
+    timeoutSec = -1, model = "",
+    contextFn: ContextFn = nil): DelegateFn =
   ## The seam the CLI binder passes to `triageGraphTurn`: nil unless an
   ## enabled agent has a real worker, else ONE dispatcher holding a live
   ## `DelegateFn` per worker, so the state's `route` decides which agent
@@ -228,7 +254,8 @@ proc liveDelegateFor*(enabled: seq[string], binary: string,
   ## guard as the last line of defence. `model` (T19) reaches every
   ## worker in the table: one binder, one override, no per-agent flag to
   ## keep in sync. Empty is today's behaviour — each child inherits the
-  ## parent's model.
+  ## parent's model. `contextFn` (T21-D) reaches every worker the same
+  ## way; nil keeps today's empty `context`.
   let workers = workerAgents(enabled)
   if workers.len == 0:
     return nil
@@ -236,5 +263,5 @@ proc liveDelegateFor*(enabled: seq[string], binary: string,
   for agent in workers:
     delegates.add((agent: agent,
       fn: makeLiveDelegateFn(agent, binary, getTraceId, runner, timeoutMs,
-        maxToolCalls, timeoutSec, model)))
+        maxToolCalls, timeoutSec, model, contextFn)))
   makeDelegateDispatcher(delegates)

@@ -264,7 +264,8 @@ proc unwiredMemory*(): MemFn =
 
 proc buildBoundGraph*(w: Waku, writeDraft = true,
                       usage: ref JsonNode = nil,
-                      model = ""): Graph =
+                      model = "",
+                      memoryText = ""): Graph =
   ## Exactly one definition of what a gather may touch: reads (github —
   ## stubbed, web — stubbed, calendar, memory), one toolless synthesis,
   ## one outbox file. `writeDraft = false` is the headless worker: the
@@ -275,11 +276,19 @@ proc buildBoundGraph*(w: Waku, writeDraft = true,
   ## gather byte for byte. `model` is the child's override (T19): the
   ## synthesis — the graph's one model call — runs on it, and every
   ## other read stays the app's. Empty keeps `settings.model`, so a
-  ## plain gather is unchanged.
+  ## plain gather is unchanged. `memoryText` (T21-D) is the orchestrator's
+  ## read-only snapshot: non-empty replaces the memory scan without
+  ## opening a store; empty keeps today's store-or-unavailable choice.
   let home = w.settings.home
   let client = w.client
   let effectiveModel = if model.len > 0: model else: w.settings.model
-  let memoryFn: MemFn = if w.db.isNil: unwiredMemory() else: memoryBinder(home)
+  let snapshot = memoryText
+  var memoryFn: MemFn
+  if snapshot.strip().len > 0:
+    let text = snapshot
+    memoryFn = proc(): string = text
+  else:
+    memoryFn = if w.db.isNil: unwiredMemory() else: memoryBinder(home)
   let draftFn: DraftFn = if writeDraft: draftBinder(home) else: noDraft()
   buildGatherGraph(
     githubFn = unavailableGithub(),
@@ -290,7 +299,7 @@ proc buildBoundGraph*(w: Waku, writeDraft = true,
     draftFn = draftFn)
 
 proc runGather*(w: var Waku, observer: Observer = nil,
-                writeDraft = true, model = ""): JsonNode =
+                writeDraft = true, model = "", memoryText = ""): JsonNode =
   ## Run one gather to completion. Returns the final state; never raises
   ## (every scan fails into honest text). Composed with the tracer, so a
   ## gather lands in traces/*.jsonl like any turn. Unlike Python's
@@ -309,11 +318,15 @@ proc runGather*(w: var Waku, observer: Observer = nil,
   ## off the task line. It reaches the synthesis — the one call a gather
   ## makes — and nothing else: the worker process is still the parent's
   ## configuration, and its silent tracer never names a model.
+  ##
+  ## `memoryText` (T21-D) is the task line's read-only snapshot, read by
+  ## `runWorkerCmd` off the same line. Non-empty replaces the memory scan
+  ## without opening a store; empty keeps today's behaviour.
   let notify = compose(observer, w.tracer.tracerEvent())
   var state = newJObject()
   var usage: ref JsonNode
   new(usage)  # one sink per run: the synth node fills it when it runs
-  discard runGraph(buildBoundGraph(w, writeDraft, usage, model), state,
+  discard runGraph(buildBoundGraph(w, writeDraft, usage, model, memoryText), state,
     notify)
   if not usage[].isNil:
     state["usage"] = usage[]

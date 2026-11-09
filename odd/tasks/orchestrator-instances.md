@@ -42,7 +42,7 @@ Thin orchestrator of same-binary role processes with single dashboard and dual O
 - T18 (S1): `--role orchestrator` alias al proceso por defecto + `--help`/`usage` documentan roles — done: test_cli 37/37, `runCommand(@["--role","orchestrator","--help"])==0`, `bogus` sigue 1, see L37
 - T19 (S1,S2): override de modelo en la task line (`model` opcional, vacío=hereda) — done: delegate 34/34, worker_gather 8/8, workflows 34/34, `nimble test` 1781 OK, see L36
 - T20 (S1,S2,S6): evals primera área `test_delegate_env.py` — done: `test_delegate_env.nim` 14/14, `test_experimental` 10/10, `nimble test` 1796 OK, see L39; smoke vivo Anthropic — blocked sin clave (ANTHROPIC_API_KEY=no, WAKU_API_KEY=no)
-- T21 (S10): T16 C+D — C small model por config (pin override gana) — done, see L40; D memoria read-only vía `context` (toca memoria, pide propuesta + sí maintainer) — pending
+- T21 (S10): T16 C+D — C small model por config (pin override gana) — done, see L40; D memoria read-only vía `context` — approved 2026-11-09, implementing, see L41-L42
 
 ## Log
 
@@ -86,3 +86,5 @@ Thin orchestrator of same-binary role processes with single dashboard and dual O
 - L38 (T20 alcance): primera área `evals/deterministic/test_delegate_env.py` (6.2K, offline con spawn real, oráculo claro) frente a `test_turn_meta.py` (tiny pero meta ya cubierta en Nim por session/app); smoke toolless Anthropic sigue bloqueado sin clave hoy
 - L39 (T20 evals done): RED ausencia de pins; GREEN solo tests (helper ya correcto, wiring ya pasaba `liveDelegateEnv`); 14 nuevos + experimental intacto; suite 1796 OK; residual: `supervisor.nim:72` hereda ambiente al worker sin `env=` (fuera de superficie, necesita decisión si instancia=delegate); smoke toolless sigue bloqueado sin clave
 - L40 (T21 C done): RED sin pin de override; GREEN `test_providers.nim` pin `WAKU_SMALL_MODEL` gana sobre row default; `test_providers` OK; D queda como propuesta sin código
+- L41 (T21 D proposal drafted 2026-11-09): `docs/orchestrator-memory-context-design.md` proposes bounded read-only `context` (orchestrator fills from gated retrieval, max 5000 chars + `[truncated]`; worker uses as `mem_text`, never opens DB; empty/malformed keeps today; wire unchanged). No `src/` change; awaiting maintainer yes before any code.
+- L42 (T21 D implemented 2026-11-09): RED `truncateContext`/`taskLineContext` undeclared; GREEN `delegate.nim` (`delegateMaxContextChars`=5000, `ContextFn`, `truncateContext`, `contextFn` on `makeDelegateFn`/`makeLiveDelegateFn`/`liveDelegateFor`), `worker_gather.nim` (`taskContext`/`taskLineContext`), `gather.nim` (`memoryText` on `buildBoundGraph`/`runGather`), `waku.nim` (snapshot into `runGather`, retrieval `contextFn` in CLI binder) + 4 dashboard binders; pins: delegate 5/5, worker 2/2, workflows 2/2, live seam 1/1.

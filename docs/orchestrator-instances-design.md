@@ -24,6 +24,7 @@ Today `Waku.respond()` already routes `quick | full` with fail-open to the loop 
 - Roles: the orchestrator is the default process (no flag; `--role orchestrator` is accepted as the same, T18); a worker is `waku --role worker --agent <name>`.
 - Transport: stdlib only, no new dependency. Parent spawns child per delegation:
   - parent -> child on stdin, one JSON line: `{trace_id, turn_id, task, context, budget:{timeout_ms, max_tool_calls}}`.
+  - `context` carries a bounded read-only memory snapshot for the worker (see `orchestrator-memory-context-design.md`); empty preserves the original wire.
   - child -> parent on stdout, JSON lines: `{type, trace_id, agent, pid, payload}` where type in `text, event, cost, done, error`.
 - Lifecycle: spawn per delegation with timeout and kill; on timeout, malformed output, or non-zero exit, fail-open to the local loop (same rule as `waku/app.py:128-129`).
 - Trace rule: orchestrator mints `trace_id` per user turn and passes it down. Only the orchestrator writes to `.waku/traces/<date>.jsonl`, `usage.jsonl`, and DB. Workers never write runtime data directly (hard rule 1).

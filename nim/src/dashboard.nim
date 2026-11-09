@@ -2796,7 +2796,9 @@ proc reselectGraphTurn*(w: var Waku, source: string,
       gatherGraphTurn(w),
       workerAgents(w.settings.agents),
       liveDelegateFor(w.settings.agents, getAppFilename(),
-        proc(): string = agent[].tracer.turnId, defaultWorkerRunner))
+        proc(): string = agent[].tracer.turnId, defaultWorkerRunner,
+        contextFn = proc(msg: string): string =
+          if agent[].session.retrieve.isNil: "" else: agent[].session.retrieve(msg, nil)))
   except CatchableError:
     w.graphTurn = nil
 
@@ -2839,7 +2841,9 @@ proc ensureWaku*(box: WakuBox) =
           box.waku.runFullTurn(st.jget("message").getStr(), n, strm),
         workerAgents(s.agents),
         liveDelegateFor(s.agents, getAppFilename(),
-          proc(): string = box.waku.tracer.turnId, defaultWorkerRunner))
+          proc(): string = box.waku.tracer.turnId, defaultWorkerRunner,
+          contextFn = proc(msg: string): string =
+            if box.waku.session.retrieve.isNil: "" else: box.waku.session.retrieve(msg, nil)))
     box.waku.session.sessionId =
       if box.sessionId.len > 0: box.sessionId
       else: "dashboard-" & format(now(), "yyyyMMdd-HHmmss")
@@ -2988,7 +2992,9 @@ proc runSlashCommand*(message: string, box: WakuBox, emit: SseEmit,
             box.waku.runFullTurn(st.jget("message").getStr(), n, strm),
           workerAgents(box.waku.settings.agents),
           liveDelegateFor(box.waku.settings.agents, getAppFilename(),
-            proc(): string = box.waku.tracer.turnId, defaultWorkerRunner))
+            proc(): string = box.waku.tracer.turnId, defaultWorkerRunner,
+            contextFn = proc(msg: string): string =
+              if box.waku.session.retrieve.isNil: "" else: box.waku.session.retrieve(msg, nil)))
         let (answered, res) = turn(arg,
           proc(kind: string, ev: JsonNode) {.closure.} = emit(kind, ev),
           true)
@@ -4138,7 +4144,9 @@ proc gatewayAgents*(providers: seq[Provider], settings: Settings,
         gatherGraphTurn(box.waku),
         workerAgents(box.waku.settings.agents),
         liveDelegateFor(box.waku.settings.agents, getAppFilename(),
-          proc(): string = box.waku.tracer.turnId, defaultWorkerRunner))
+          proc(): string = box.waku.tracer.turnId, defaultWorkerRunner,
+          contextFn = proc(msg: string): string =
+            if box.waku.session.retrieve.isNil: "" else: box.waku.session.retrieve(msg, nil)))
       box.waku.respond(text, cli.liveObserver, source, false).reply
 
 proc liveGatewayHooks*(providers: seq[Provider], settings: Settings,

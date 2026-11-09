@@ -290,7 +290,9 @@ proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
         w.runFullTurn(st.jget("message").getStr(), n, strm),
       workers,
       liveDelegateFor(setup.settings.agents, getAppFilename(),
-        proc(): string = w.tracer.turnId, defaultWorkerRunner))
+        proc(): string = w.tracer.turnId, defaultWorkerRunner,
+        contextFn = proc(msg: string): string =
+          if w.session.retrieve.isNil: "" else: w.session.retrieve(msg, nil)))
   return w
 
 proc buildWorkerApp*(dotenvStart = ""): Waku =
@@ -720,6 +722,11 @@ proc runWorkerCmd*(args: seq[string], dotenvStart = ""): int =
   ## fails fast, without waiting on the parent's line) and handed to
   ## `runGather`, the one call it governs. Empty means inherit: the
   ## worker runs on the parent's model, exactly as before.
+  ##
+  ## T21-D: the task line may also carry a read-only memory snapshot in
+  ## `context`. It is read after the app exists and handed to `runGather`
+  ## as `memoryText`, so the worker uses it as its memory scan without
+  ## opening a store. Empty keeps today's unavailable text.
   let role = workerRole(args)
   if not role.isWorker:
     writeUsage()
@@ -737,8 +744,9 @@ proc runWorkerCmd*(args: seq[string], dotenvStart = ""): int =
       return 1
     taskLine = readTaskLine()
     let model = taskLineModel(taskLine)
+    let memoryText = taskLineContext(taskLine)
     gather = proc(): JsonNode = runGather(w, writeDraft = false,
-      model = model)
+      model = model, memoryText = memoryText)
   # An unknown agent answers here, without an app and without reading
   # stdin: there is nothing to run, so there is nothing to wait for.
   for child in workerChildLines(role.agent, taskLine, gather):

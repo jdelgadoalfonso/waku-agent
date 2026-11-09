@@ -100,3 +100,23 @@ suite "worker gather T1.4":
       raise newException(CatchableError, "scan boom")
     let lines = runGatherWorker(task, fake)
     assert lines[^1]["type"].getStr() == "error"
+
+## T21-D (S10): the worker reads `context` without opening a store.
+## A hint it cannot read is no hint: missing, non-string, unreadable,
+## and blank all mean inherit (empty), and `workerChildLines` still
+## answers the structural errors.
+
+suite "worker gather T21-D memory context":
+
+  test "taskLineContext reads the line, inherit otherwise":
+    assert taskLineContext("{\"v\":1,\"context\":\"memory here\"}") ==
+      "memory here"
+    assert taskLineContext("{\"v\":1}") == ""
+    assert taskLineContext("not json") == ""
+    assert taskLineContext("{\"context\":7}") == ""
+    assert taskLineContext("{\"context\":\"  \"}") == ""
+
+  test "taskContext mirrors taskLineContext over a parsed line":
+    assert taskContext(%*{"context": "memory here"}) == "memory here"
+    assert taskContext(%*{"v": 1}) == ""
+    assert taskContext(%*{"context": 7}) == ""

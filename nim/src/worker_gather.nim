@@ -15,6 +15,10 @@
 ## override is read here (`taskLineModel`, or `taskModel` on a parsed
 ## line) and the `cost` line names it, because the ledger prices what
 ## that payload says.
+##
+## T21-D: a task line may carry a read-only memory snapshot in
+## `context`. The worker reads it back here (`taskLineContext`) and
+## uses it as its memory scan without opening a store.
 
 import std/json
 import std/strutils
@@ -51,6 +55,27 @@ proc taskLineModel*(line: string): string =
   except CatchableError:
     return ""
   taskModel(task)
+
+proc taskContext*(task: JsonNode): string =
+  ## The read-only memory snapshot a task line names (T21-D), `""` when
+  ## it names none. Missing key, non-string value and blank string all
+  ## mean inherit (empty): a hint the worker cannot read must never
+  ## break the wire, and the structural read stays `workerChildLines`'s.
+  let asked = task.jget("context")
+  if asked.kind == JString and asked.getStr().strip().len > 0:
+    return asked.getStr()
+  return ""
+
+proc taskLineContext*(line: string): string =
+  ## `taskContext` over the raw stdin line, for the entrypoint that must
+  ## know the snapshot before it can build the gather closure. An
+  ## unreadable line answers `""` (inherit) instead of raising.
+  var task: JsonNode
+  try:
+    task = parseJson(line.strip())
+  except CatchableError:
+    return ""
+  taskContext(task)
 
 proc runGatherWorker*(task: JsonNode, gather: GatherFn): seq[JsonNode] =
   ## One headless gather turn. `agent` is always "gather", `pid` is 0
