@@ -153,6 +153,18 @@ proc routeList(def: JsonNode, pluginName: string,
           "': duplicate route label '" & label.getStr() & "'")
     result.add((label: label.getStr(), dst: dst.getStr()))
 
+proc pluginWorkerEligible*(nodes: seq[PluginNodeDecl]): bool =
+  ## Whether a manifest may run as a worker process (T2): no node may
+  ## need `tool` or `fetch` — the only needs that execute parent-side
+  ## effects. `llm` is served by the worker's own client, `stateKeys`
+  ## reads the run's own input snapshot, `log` becomes a traced message
+  ## line, and unknown names already enable nothing (`allowed` only
+  ## gates llm/tool/fetch), so there is nothing else to forbid.
+  for decl in nodes:
+    if "tool" in decl.needs or "fetch" in decl.needs:
+      return false
+  true
+
 proc loadPlugin*(path: string, host: ptr HostFns): LoadedPlugin =
   ## Open, gate, init, describe, validate. Raises (never nil) on any
   ## failure; a failed load unloads what it opened. A SUCCESSFUL load

@@ -85,6 +85,7 @@ import ./connect
 import ./config
 import ./db
 import ./delegate
+import ./workers
 import ./discord
 import ./experimental
 import ./factstore
@@ -2794,9 +2795,10 @@ proc reselectGraphTurn*(w: var Waku, source: string,
       proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
         agent[].runFullTurn(st.jget("message").getStr(), n, strm),
       gatherGraphTurn(w),
-      workerAgents(w.settings.agents),
+      workerAgents(w.settings.agents, pluginWorkerNames(w.settings.agents)),
       liveDelegateFor(w.settings.agents, getAppFilename(),
         proc(): string = agent[].tracer.turnId, defaultWorkerRunner,
+        extra = pluginWorkerNames(w.settings.agents),
         contextFn = proc(msg: string): string =
           if agent[].session.retrieve.isNil: "" else: agent[].session.retrieve(msg, nil)))
   except CatchableError:
@@ -2839,9 +2841,10 @@ proc ensureWaku*(box: WakuBox) =
       box.waku.graphTurn = triageGraphTurn(client, s.smallModel, s.home,
         proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
           box.waku.runFullTurn(st.jget("message").getStr(), n, strm),
-        workerAgents(s.agents),
+        workerAgents(s.agents, pluginWorkerNames(s.agents)),
         liveDelegateFor(s.agents, getAppFilename(),
           proc(): string = box.waku.tracer.turnId, defaultWorkerRunner,
+          extra = pluginWorkerNames(s.agents),
           contextFn = proc(msg: string): string =
             if box.waku.session.retrieve.isNil: "" else: box.waku.session.retrieve(msg, nil)))
     box.waku.session.sessionId =
@@ -2990,9 +2993,11 @@ proc runSlashCommand*(message: string, box: WakuBox, emit: SseEmit,
           box.waku.settings.smallModel, box.waku.settings.home,
           proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
             box.waku.runFullTurn(st.jget("message").getStr(), n, strm),
-          workerAgents(box.waku.settings.agents),
+          workerAgents(box.waku.settings.agents,
+            pluginWorkerNames(box.waku.settings.agents)),
           liveDelegateFor(box.waku.settings.agents, getAppFilename(),
             proc(): string = box.waku.tracer.turnId, defaultWorkerRunner,
+            extra = pluginWorkerNames(box.waku.settings.agents),
             contextFn = proc(msg: string): string =
               if box.waku.session.retrieve.isNil: "" else: box.waku.session.retrieve(msg, nil)))
         let (answered, res) = turn(arg,
@@ -4142,9 +4147,11 @@ proc gatewayAgents*(providers: seq[Provider], settings: Settings,
         proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
           box.waku.runFullTurn(st.jget("message").getStr(), n, strm),
         gatherGraphTurn(box.waku),
-        workerAgents(box.waku.settings.agents),
+        workerAgents(box.waku.settings.agents,
+          pluginWorkerNames(box.waku.settings.agents)),
         liveDelegateFor(box.waku.settings.agents, getAppFilename(),
           proc(): string = box.waku.tracer.turnId, defaultWorkerRunner,
+          extra = pluginWorkerNames(box.waku.settings.agents),
           contextFn = proc(msg: string): string =
             if box.waku.session.retrieve.isNil: "" else: box.waku.session.retrieve(msg, nil)))
       box.waku.respond(text, cli.liveObserver, source, false).reply

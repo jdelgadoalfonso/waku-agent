@@ -210,6 +210,11 @@ suite "delegate slice 2b":
     assert not workerRole(@["--role", "worker", "--role", "chat"]).isWorker
     assert workerRole(@["--role", "chat", "--role", "worker"]).isWorker
 
+  test "extra agents ride the gate without touching builtins":
+    assert workerAgents(@["plugin:x"], @["plugin:x"]) == @["plugin:x"]
+    assert workerAgents(@["plugin:x"]) == @[]
+    assert workerAgents(@["gather"], @["plugin:x"]) == @["gather"]
+
   test "T3: workerAgents keeps enabled agents with a worker":
     # `brief` (T3) is the second agent with a real worker: unknown names
     # stay out, order is kept, duplicates collapse.

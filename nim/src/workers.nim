@@ -16,12 +16,16 @@
 import std/json
 import std/strutils
 
+
 import ./delegation
+import ./graph/plugins
 import ./worker_brief
 import ./worker_gather
+import ./worker_plugin
 
 export worker_brief
 export worker_gather
+export worker_plugin
 
 type
   WorkerBody* = proc(task: JsonNode): seq[JsonNode] {.closure.}
@@ -52,6 +56,33 @@ proc workerTable*(gather: GatherFn, brief: BriefFn = nil): seq[tuple[
   result = @[(agent: "gather", body: gatherBody(gather))]
   if not brief.isNil:
     result.add((agent: "brief", body: briefBody(brief)))
+
+proc pluginBody*(agent: string, run: PluginFn): WorkerBody =
+  ## A `plugin:<name>` entry (T2): the injected run closure answers
+  ## through `runPluginWorker` with the entry's agent stamped on every
+  ## line. `runWorkerCmd` binds one entry per delegated plugin turn.
+
+  result = proc(task: JsonNode): seq[JsonNode] {.closure.} =
+    runPluginWorker(agent, task, run)
+
+proc isPluginAgent*(agent: string): bool =
+  ## A worker name routed to a plugin runner: the `plugin:` prefix with
+  ## a non-empty plugin name.
+  agent.startsWith(pluginGraphPrefix) and
+    agent.len > pluginGraphPrefix.len
+
+proc pluginWorkerNames*(enabled: seq[string]): seq[string] =
+  ## Enabled `plugin:<name>` routes whose loaded manifest is worker
+  ## eligible. The parent gate offers a plugin route only when a worker
+  ## stands behind it — the same rule as built-in agents — without
+  ## spawning anything: the module registry already holds every loaded
+  ## plugin, and an unknown or ineligible name simply stays out.
+  for agent in enabled:
+    if isPluginAgent(agent) and agent notin result:
+      let plugin = findLoadedPlugin(
+        agent[pluginGraphPrefix.len .. ^1])
+      if not plugin.isNil and pluginWorkerEligible(plugin.nodes):
+        result.add(agent)
 
 proc runWorkerLines*(agent, stdinLine: string, table: seq[tuple[
     agent: string, body: WorkerBody]]): seq[JsonNode] =

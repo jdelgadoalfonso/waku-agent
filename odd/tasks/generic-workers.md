@@ -15,6 +15,7 @@ delegation contract the orchestrator already speaks.
 - T2 (S1,S3): Worker table en `nim/src/workers.nim` nuevo — una tabla agente→runner con forma común (task→child lines); `workerChildLines` por lookup, `runWorkerCmd` construye contexto (app+model+snapshot); `gather` primera entrada sin cambio — done, see L6
 - T3 (S1,S3): First worker headless (`brief`) con pins — done, see L7
 - T4 (S1): Evals + docs — done, see L8
+- T5 (S1): Third worker (grafo plugin) — el usuario elige grafo plugin; exige antes el diseño de aislamiento fuera-de-proceso; luego mitad headless + pins — in progress, see L10
 
 ## Log
 
@@ -26,3 +27,5 @@ delegation contract the orchestrator already speaks.
 - L6 (T2 in progress 2026-11-09): tabla en `nim/src/workers.nim` con `gather` como primera entrada; `workerChildLines` pasa a lookup; sin cambio de comportamiento.
 - L7 (T3 done 2026-11-09): RED `worker_brief` ausente; GREEN `worker_brief.nim` (`BriefFn`, `runBriefWorker`), `brief.nim` `runBriefHeadless` (override+snapshot, sin outbox), tabla con `brief`, `runWorkerCmd` con ambas closures, `delegateWorkers` +`brief`, pins test_cli/test_delegate actualizados al nuevo comportamiento. Hallazgo: `turn`/`endTurn` escribían con tracer silente — guard `silent` en `trace.nim` + pin actualizado al contrato nuevo (un writer por turno). Pins: workers 11/11, workflows T3 4/4, trace silent OK.
 - L8 (T4 done 2026-11-09): `nimble test` exit 0, 1821 OK (baseline 1806 + 15 nuevos); `make nim-build` exit 0; `test_repo_docs` sin rojos; commits por unidad en `feat/generic-workers`, sin push.
+- L9 (2026-11-09): el usuario elige «tercer worker» como siguiente punto; pendiente elegir el agente (candidatos: loop/full o grafo plugin; triage es el gate y no tiene sentido como worker).
+- L10 (2026-11-09): tercer worker = grafo plugin; los plugins corren in-process por `dlopen` y llaman de vuelta vía HostFns, así que moverlos a proceso worker exige diseñar el aislamiento (qué cruza el wire y qué se queda) antes de picar código.

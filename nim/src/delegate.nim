@@ -36,11 +36,16 @@ const delegateWorkers* = @["gather", "brief"]
   ## one without its `--role worker` behaviour would offer a route that
   ## cannot answer. `brief` (T3) is the second entry with a real worker.
 
-proc workerAgents*(enabled: seq[string]): seq[string] =
+proc workerAgents*(enabled: seq[string],
+    extra: seq[string] = @[]): seq[string] =
   ## The enabled agents that can actually run, in order and deduped —
-  ## what `triageGraphTurn` may offer as an agent route.
+  ## what `triageGraphTurn` may offer as an agent route. Built-ins come
+  ## from `delegateWorkers`; plugin workers ride `extra`, which the
+  ## binder fills from the loaded eligible manifests. Empty keeps
+  ## today's gate byte for byte.
   for agent in enabled:
-    if agent in delegateWorkers and agent notin result:
+    if (agent in delegateWorkers or agent in extra) and
+        agent notin result:
       result.add(agent)
 
 type ContextFn* = proc(message: string): string {.closure.}
@@ -137,7 +142,8 @@ proc makeDelegateFn*(agent, binary, traceId, turnId: string,
     runner: WorkerRunner, timeoutMs = delegateDefaultTimeoutMs,
     maxToolCalls = delegateDefaultMaxToolCalls,
     timeoutSec = -1, model = "",
-    contextFn: ContextFn = nil): DelegateFn =
+    contextFn: ContextFn = nil,
+    extra: seq[string] = @[]): DelegateFn =
   ## Live `DelegateFn` for the triage binder. Builds the task line,
   ## emits the `delegation` edge on the graph `notify` (which already
   ## fans out to `Tracer.event`), supervises one worker, re-emits
@@ -244,7 +250,8 @@ proc liveDelegateFor*(enabled: seq[string], binary: string,
     timeoutMs = delegateDefaultTimeoutMs,
     maxToolCalls = delegateDefaultMaxToolCalls,
     timeoutSec = -1, model = "",
-    contextFn: ContextFn = nil): DelegateFn =
+    contextFn: ContextFn = nil,
+    extra: seq[string] = @[]): DelegateFn =
   ## The seam the CLI binder passes to `triageGraphTurn`: nil unless an
   ## enabled agent has a real worker, else ONE dispatcher holding a live
   ## `DelegateFn` per worker, so the state's `route` decides which agent
@@ -255,8 +262,10 @@ proc liveDelegateFor*(enabled: seq[string], binary: string,
   ## worker in the table: one binder, one override, no per-agent flag to
   ## keep in sync. Empty is today's behaviour — each child inherits the
   ## parent's model. `contextFn` (T21-D) reaches every worker the same
-  ## way; nil keeps today's empty `context`.
-  let workers = workerAgents(enabled)
+  ## way; nil keeps today's empty `context`. `extra` (T2 plugin workers)
+  ## carries enabled `plugin:<name>` routes with a loaded eligible
+  ## manifest; empty keeps today's gate byte for byte.
+  let workers = workerAgents(enabled, extra)
   if workers.len == 0:
     return nil
   var delegates: Delegates = @[]

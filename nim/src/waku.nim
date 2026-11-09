@@ -284,7 +284,8 @@ proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
     # quick|full graph, byte for byte. The seam reads `tracer.turnId`
     # per call (the binder outlives one turn) and spawns this same
     # binary at `getAppFilename()` in the worker role.
-    let workers = workerAgents(setup.settings.agents)
+    let workers = workerAgents(setup.settings.agents,
+      pluginWorkerNames(setup.settings.agents))
     w.graphTurn = triageGraphTurn(setup.client, setup.settings.smallModel,
       setup.settings.home,
       proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
@@ -292,6 +293,7 @@ proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
       workers,
       liveDelegateFor(setup.settings.agents, getAppFilename(),
         proc(): string = w.tracer.turnId, defaultWorkerRunner,
+        extra = pluginWorkerNames(setup.settings.agents),
         contextFn = proc(msg: string): string =
           if w.session.retrieve.isNil: "" else: w.session.retrieve(msg, nil)))
   return w
@@ -735,8 +737,9 @@ proc runWorkerCmd*(args: seq[string], dotenvStart = ""): int =
     return 1
   var gather: GatherFn = nil
   var brief: BriefFn = nil
+  var pluginRun: PluginFn = nil
   var taskLine = ""
-  if role.agent in delegateWorkers:
+  if role.agent in delegateWorkers or isPluginAgent(role.agent):
     var w: Waku
     try:
       w = buildWorkerApp(dotenvStart)
@@ -752,8 +755,27 @@ proc runWorkerCmd*(args: seq[string], dotenvStart = ""): int =
       model = model, memoryText = memoryText)
     brief = proc(): JsonNode = %*{"reply": runBriefHeadless(w, model,
       memoryText), "draft_path": ""}
+    if isPluginAgent(role.agent):
+      let pluginName = role.agent[pluginGraphPrefix.len .. ^1]
+      let home = w.settings.home
+      let client = w.client
+      let overrideModel = if model.len > 0: model
+                          else: w.settings.model
+      pluginRun = proc(): JsonNode =
+        let task = parseJson(taskLine.strip())
+        pluginRunHeadless(home, pluginName, task.jget("message").getStr(),
+          overrideModel, memoryText, client)
   # An unknown agent answers here, without an app and without reading
   # stdin: there is nothing to run, so there is nothing to wait for.
+  # A plugin agent runs through its own table entry, built per turn
+  # because plugin names are dynamic — unlike the static gather/brief
+  # entries `workerChildLines` binds.
+  if isPluginAgent(role.agent):
+    for child in runWorkerLines(role.agent, taskLine,
+        @[(agent: role.agent,
+            body: pluginBody(role.agent, pluginRun))]):
+      stdout.writeLine($child)
+    return 0
   for child in workerChildLines(role.agent, taskLine, gather, brief):
     stdout.writeLine($child)
   return 0

@@ -487,6 +487,17 @@ suite "slice 2b worker role":
     assert lines[0]["type"].getStr() == "error"
     assert "invalid task" in lines[0]["payload"]["message"].getStr()
 
+  test "dispatch: a plugin worker needs an app like gather and brief":
+    # Unknown agents answer without an app; a plugin agent builds one
+    # first (key missing here), so without a key it exits 1 instead.
+    let saved = scrubEnv()
+    let home = freshHome("waku-cli-worker-plugnokey")
+    assert runCommand(@["--role", "worker", "--agent", "plugin:ghost"],
+      home) == 1
+    assert not fileExists(home / "state.db")
+    restoreEnv(saved)
+    removeDir(home)
+
   test "dispatch: a worker for an unknown agent exits 0 without an app":
     let saved = scrubEnv()
     let home = freshHome("waku-cli-worker-unknown")
