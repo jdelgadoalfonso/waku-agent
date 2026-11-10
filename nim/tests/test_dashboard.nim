@@ -1215,6 +1215,48 @@ suite "phase 8b POST /api/voice":
     assert parseJson(body)["text"].getStr() == "heard 5 bytes"
     removeDir(root)
 
+  test "liveVoiceFn refuses empty audio without touching the engine":
+    proc noRun(argv: seq[string], stdin: string): tuple[code: int,
+        output: string] =
+      raise newException(CatchableError, "engine must not run")
+    let fn = liveVoiceFn(nil, noRun)
+    assert fn("")["error"].getStr() == "no audio received"
+
+  test "liveVoiceFn names WAKU_STT_COMMAND when unset":
+    proc noRun(argv: seq[string], stdin: string): tuple[code: int,
+        output: string] =
+      raise newException(CatchableError, "engine must not run")
+    proc emptyEnv(): Table[string, string] = initTable[string, string]()
+    let fn = liveVoiceFn(emptyEnv, noRun)
+    assert "WAKU_STT_COMMAND" in fn("RIFF-bytes")["error"].getStr()
+
+  test "liveVoiceFn transcribes the raw blob through the engine":
+    var seenPath = ""
+    proc fakeRun(argv: seq[string],
+        stdin: string): tuple[code: int, output: string] =
+      assert argv.len == 4
+      assert argv[0] == "whisper-cli"
+      seenPath = argv[^1]
+      assert readFile(seenPath) == "RIFF-bytes"
+      (code: 0, output: "  hola mundo  \n")
+    proc sttEnv(): Table[string, string] =
+      result = initTable[string, string]()
+      result["WAKU_STT_COMMAND"] = "whisper-cli -m base.bin"
+    let fn = liveVoiceFn(sttEnv, fakeRun)
+    assert fn("RIFF-bytes")["text"].getStr() == "hola mundo"
+    assert seenPath.len > 0
+    assert not fileExists(seenPath)
+
+  test "liveVoiceFn surfaces engine failures as JSON errors":
+    proc failRun(argv: seq[string],
+        stdin: string): tuple[code: int, output: string] =
+      (code: 1, output: "boom")
+    proc sttEnv(): Table[string, string] =
+      result = initTable[string, string]()
+      result["WAKU_STT_COMMAND"] = "whisper-cli -m base.bin"
+    let fn = liveVoiceFn(sttEnv, failRun)
+    assert "boom" in fn("RIFF-bytes")["error"].getStr()
+
 suite "phase 8b POST /api/memory":
   test "save_soul writes SOUL.md with a trailing newline":
     let root = freshDir("waku-dash-soul")

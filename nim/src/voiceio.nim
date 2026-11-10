@@ -413,14 +413,18 @@ proc micClose*(m: ExternalMic) =
 
 proc runCommandLive*(argv: seq[string], stdin: string): tuple[
     code: int, output: string] =
-  ## Run one engine and wait: stdout and stderr share a pipe (an engine's
-  ## error is usually on stderr and a person needs it), stdin is the text
-  ## the mouth speaks. Real subprocess — never called in tests, which
-  ## inject `RunCommandFn` scripts and read the argv back.
+  ## Run one engine and wait: stdout and stderr stay on SEPARATE pipes.
+  ## Success answers stdout only, so an engine's own chatter on stderr
+  ## (whisper-cli's `read_audio_data: …` lines, progress, warnings)
+  ## never lands inside a transcription; failure answers stdout plus
+  ## stderr, because an engine's error is usually on stderr and a
+  ## person needs it. Stdin is the text the mouth speaks. Real
+  ## subprocess — never called in tests, which inject `RunCommandFn`
+  ## scripts and read the argv back.
   var child: Process
   try:
     child = startProcess(argv[0], args = argv[1 .. ^1],
-      options = {poUsePath, poStdErrToStdOut})
+      options = {poUsePath})
   except CatchableError as exc:
     return (code: 127, output: exc.msg)
   let toChild = FileStream(child.inputStream)
@@ -431,10 +435,15 @@ proc runCommandLive*(argv: seq[string], stdin: string): tuple[
     except CatchableError:
       discard
   toChild.close()
-  let output = child.outputStream.readAll()
+  let outp = child.outputStream.readAll()
+  let errp = child.errorStream.readAll()
   let code = child.waitForExit()
   child.close()
-  (code: code, output: output)
+  if code == 0:
+    return (code: code, output: outp)
+  if outp.len > 0 and errp.len > 0:
+    return (code: code, output: outp & "\n" & errp)
+  return (code: code, output: outp & errp)
 
 proc startRecorderLive*(argv: seq[string]): MicProcess =
   ## Start a long-running recorder: `argv[0]` is the command, the rest is

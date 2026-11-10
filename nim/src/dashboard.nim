@@ -58,6 +58,7 @@ import std/algorithm
 import std/httpclient
 import std/json
 import std/math
+import std/monotimes
 import std/nativesockets
 import std/sequtils
 import std/net
@@ -120,6 +121,7 @@ import ./telegram
 import ./tools
 import ./triage
 import ./turn_evals
+import ./voiceio
 import ./whatsapp
 import ./wire
 
@@ -3266,6 +3268,41 @@ proc liveSessionFn*(box: WakuBox): SessionFn =
         threadHistory(box.waku.settings.home, sidOr)}
     return %*{"error": "unknown action " & action}
 
+proc liveVoiceFn*(envOf: proc(): Table[string, string] {.closure.} = nil,
+    run: RunCommandFn = nil): VoiceFn =
+  ## `voice` against the external STT engine: the browser already sends a
+  ## WAV blob, so this writes it to a temp file and runs
+  ## `WAKU_STT_COMMAND` over it, like `waku voice` does. Empty audio and
+  ## a missing command answer an honest JSON error (never a 500); an
+  ## engine failure carries the redacted `engineFailure` line. `envOf` is
+  ## the server's live env table when one exists (a Connections save
+  ## applies to the next transcription), the process environment
+  ## otherwise. `run` is the injectable engine seam (tests script it);
+  ## nil means the live subprocess.
+  result = proc(raw: string): JsonNode {.closure.} =
+    if raw.len == 0:
+      return %*{"error": "no audio received"}
+    let env = if envOf.isNil: liveProcessEnv() else: envOf()
+    let command = env.getOrDefault("WAKU_STT_COMMAND", "").strip()
+    if command.len == 0:
+      return %*{"error": externalSttMissing}
+    let tmp = getTempDir() / ("waku-voice-dash-" & $getCurrentProcessId() &
+      "-" & $toUnix(getTime()) & "-" & $getMonoTime().ticks & ".wav")
+    try:
+      writeFile(tmp, raw)
+    except CatchableError as exc:
+      return %*{"error": "transcription failed: " & errorText(exc)}
+    try:
+      let engine = if run.isNil: runCommandLive else: run
+      return %*{"text": externalStt(engine, command, tmp)}
+    except CatchableError as exc:
+      return %*{"error": errorText(exc)}
+    finally:
+      try:
+        removeFile(tmp)
+      except CatchableError:
+        discard
+
 proc liveCatalogFetch*(url, key: string): string =
   ## The catalog `FetchFn` with a live client: stdlib GET with a 15s
   ## timeout. Non-2xx raises, like the transport — `listModels` turns it
@@ -3332,7 +3369,7 @@ proc buildDashboardDeps*(providers: seq[Provider], settings: Settings,
     fetch: liveCatalogFetch, today: "", nowIso: "",
     dotenvPath: dotenvPath, hostOs: "", chatFn: liveChatFn(box),
     chatStreamFn: liveChatStreamFn(box),
-    graphStreamFn: liveGraphStreamFn(box), voiceFn: nil,
+    graphStreamFn: liveGraphStreamFn(box), voiceFn: liveVoiceFn(),
     sessionFn: liveSessionFn(box), revealProbe: nil, revealOpen: nil,
     raceFn: nil, judgeFn: nil, turnJudgeFn: nil, memoryRunFn: nil, judgmentRaceFn: nil,
     hostedListFn: nil, hostedWipeFn: nil,
@@ -4218,6 +4255,7 @@ proc serveDashboardCmd*(providers: seq[Provider], settings: Settings,
     if not srv.deps.box.isNil:
       srv.deps.chatFn = liveChatFn(srv.deps.box, envLive)
       srv.deps.chatStreamFn = liveChatStreamFn(srv.deps.box, envLive)
+      srv.deps.voiceFn = liveVoiceFn(envLive)
     let rig = newGatewayRig(
       liveGatewayHooks(providers, settings, dotenvPath, envLive))
     srv.deps.gatewayStatus = rig.gatewayStatusFn()
