@@ -899,10 +899,7 @@ proc voiceMain*(env: Table[string, string], respond: RespondFn,
       try:
         return externalStt(engine, earsCommand, temp)
       finally:
-        try:
-          removeFile(temp)
-        except CatchableError:
-          discard
+        discard tryRemoveFile(temp)
   let tts: TtsFn =
     if mouth.len == 0:
       proc(text: string) {.closure.} = discard  # text on screen is the mouth

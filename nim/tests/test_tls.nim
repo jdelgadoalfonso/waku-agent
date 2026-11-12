@@ -639,22 +639,14 @@ proc serveWhatsapp(take: TakeConn, owned: Socket) =
     ## only thing that changed, and it was the whole blind spot — this is
     ## the shape `serveWhatsapp` really had before its close went bare.
 
-  KnownFinallyExcept = [
-    "voice.nim:904: except CatchableError:"
-  ]
-    ## The inventory of `src/`, which is ONE entry: the tree carries
-    ## seventeen `finally:` blocks and this is the only `except` any of
-    ## them holds. It is recorded, not allowed — `voiceMain`'s `SttFn`
-    ## seam removes a temp WAV recording in its finally, and "the
-    ## recording is already gone" must not fail the run, which is
-    ## intent. It is also not the shape above: that nested `try` wraps a
-    ## single `removeFile`, whose own error handling makes a raise
-    ## inside the finally's body land in its handler while the in-flight
-    ## exception keeps propagating — measured, not assumed, and the
-    ## reason the entry is a fact about one site rather than a licence
-    ## for the shape. The src fix (drop the `except`, or move the
-    ## removal off the finally) is the honest end of this debt; the pin
-    ## that would carry it lives in a turn that can edit `src/`.
+  KnownFinallyExcept: array[0, string] = []
+    ## The inventory of `src/`: no `finally` block holds an `except`
+    ## anymore. The last one (`voiceMain`'s `SttFn` temp-WAV removal,
+    ## plus its dashboard-STT twin from the `/api/voice` wiring) went
+    ## bare via `tryRemoveFile`, which never raises — so "the recording
+    ## is already gone" cannot fail the run and there is nothing to
+    ## record. The src fix the old comment named as the honest end of
+    ## the debt is what this is.
 
 suite "live TLS, the finally shape":
   test "the scan sees a nested try one level under an if":

@@ -3298,10 +3298,7 @@ proc liveVoiceFn*(envOf: proc(): Table[string, string] {.closure.} = nil,
     except CatchableError as exc:
       return %*{"error": errorText(exc)}
     finally:
-      try:
-        removeFile(tmp)
-      except CatchableError:
-        discard
+      discard tryRemoveFile(tmp)
 
 proc liveCatalogFetch*(url, key: string): string =
   ## The catalog `FetchFn` with a live client: stdlib GET with a 15s
