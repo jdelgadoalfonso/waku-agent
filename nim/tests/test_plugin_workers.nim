@@ -238,3 +238,36 @@ suite "T2 plugin gate and dispatch":
     assert pluginWorkerNames(@["gather",
                                "plugin:workergreet"]) == @["plugin:workergreet"]
     removeDir(dir)
+
+suite "T4 textops-shaped worker proof":
+
+  test "textops shape (pure+llm+router) is eligible and runs headless":
+    let dir = getTempDir() / "waku-pw-textops"
+    discard buildFixture(dir, "textopsfx.so", "fixture_plugin_textops.nim")
+    var host = nullHostFns()
+    let plugin = loadPlugin(dir / "textopsfx.so", addr host)
+    assert pluginWorkerEligible(plugin.nodes)
+    let scripted = LlmClient(create: proc(req: JsonNode): JsonNode {.closure.} =
+      %*{"stop_reason": "end_turn", "usage": {"in": 7, "out": 3},
+         "content": [{"type": "text", "text": "corto"}]},
+      stream: nil)
+    let home = getTempDir() / "waku-pw-textops-home"
+    if dirExists(home):
+      removeDir(home)
+    createDir(home / "plugins")
+    copyFile(dir / "textopsfx.so", home / "plugins" / "textopsfx.so")
+    let state = pluginRunHeadless(home, "textopsfx", "hola mundo", "m",
+      "", scripted)
+    assert state["reply"].getStr() == "corto"
+    assert state["usage"]["in"].getInt() == 7
+    let longText = "esta es una frase deliberadamente larga para superar los ciento veinte caracteres y forzar la rama long del router hacia expand sin duda alguna"
+    assert longText.len > 120
+    let scriptedLong = LlmClient(create: proc(req: JsonNode): JsonNode {.closure.} =
+      %*{"stop_reason": "end_turn", "usage": {"in": 7, "out": 3},
+         "content": [{"type": "text", "text": longText}]},
+      stream: nil)
+    let stateLong = pluginRunHeadless(home, "textopsfx", "hola mundo", "m",
+      "", scriptedLong)
+    assert stateLong["reply"].getStr() == longText & " [...]"
+    removeDir(dir)
+    removeDir(home)

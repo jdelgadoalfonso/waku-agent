@@ -1,6 +1,6 @@
 # Plugin workers (proposal)
 
-Status: implemented 2026-11-09 on `feat/plugin-workers` (T2 eligibility gate + headless runner + triage gate threading). Snapshot semantics confirmed: the task-line snapshot (T21-D) rides for plugins exactly as for `gather`/`brief` — read-only, bounded, no live queries back.
+Status: implemented 2026-11-09 on `feat/plugin-workers` (T2 eligibility gate + headless runner + triage gate threading). T4 proof on `feat/plugin-textops` (2026-11-12): textops-shaped fixture (`textopsfx`: pure + llm + router) runs headless offline short+long; real `textops.so` smoke fail-open with no writes. Snapshot semantics confirmed: the task-line snapshot (T21-D) rides for plugins exactly as for `gather`/`brief` — read-only, bounded, no live queries back.
 
 ## Goal
 
@@ -12,9 +12,9 @@ Plugins run in-process today. The parent loads each `.so` with `dlopen` and hand
 
 ## Proposal
 
-Eligibility first, execution second. A plugin runs as a worker only when every node need fits what a headless worker may touch: `llm` served by the worker's own client, pure plugin-local computation, and routing. Anything else (`toolCall`, `fetch`, `stateKeys` against the parent store) refuses at load with "no worker for this plugin shape", and the parent fails open to the local loop exactly as an unknown agent does. The `needs` manifest the plugin already declares is the gate: no new metadata.
+Eligibility first, execution second. A plugin runs as a worker only when no node need asks for parent-side effects: `tool` or `fetch` in any `needs` refuses at load with "plugin <name> not eligible as worker" (code, `worker_plugin.nim:99`), and the parent fails open to the local loop exactly as an unknown agent does. `llm` is served by the worker's own client, `stateKeys` reads the run's own input snapshot, `log` becomes a traced message line, and unknown need names enable nothing — so there is nothing else to forbid. The `needs` manifest the plugin already declares is the gate: no new metadata.
 
-Concretely, the worker loads the `.so`, builds the manifest graph with a local host scope, and drives one turn: `llm` nodes call the worker's own client and report usage on the `cost` child line (the slice-10 rule); `log` becomes a child `message` line the orchestrator traces; the reply rides `done` like every other worker. The wire does not change, and the slice-9 rules hold: no runtime writes, a silent tracer, no store, no outbox.
+Concretely, the worker loads the `.so`, builds the manifest graph with a local host scope, and drives one turn: `llm` nodes call the worker's own client and report usage on the `cost` child line (the slice-10 rule); `log` becomes a child `message` line the orchestrator traces; the reply rides `done` like every other worker. The wire does not change, and the slice-9 rules hold: no runtime writes, a silent tracer, no store, no outbox. Enrollment: the worker route needs `WAKU_AGENTS=plugin:<name>` plus a triage selector — `WAKU_GRAPH_<SOURCE>=plugin:<name>` alone binds the in-process parent graph, not the worker.
 
 ## Alternatives
 
@@ -27,7 +27,7 @@ Each behavior change gets a deterministic eval: an ineligible manifest refuses w
 ## Rollout
 
 1. The maintainer approves this doc and confirms the eligibility line (`llm`-only plus pure nodes).
-2. The plugin worker lands with `textops` as its first proof.
+2. The plugin worker lands with `textops` as its first proof (T4 `feat/plugin-textops`: `textopsfx` fixture offline short+long, real `textops.so` smoke).
 3. The same PR updates this doc status, the orchestrator design doc, and `odd/tasks/plugin-workers.md`.
 
 Non-goals: callback forwarding over the wire, worker-side tools or stores, remote workers, new default dependencies, and any change to the frozen Python half.
