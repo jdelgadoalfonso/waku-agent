@@ -29,6 +29,7 @@ into four groups.
 | file | what it answers |
 |---|---|
 | [architecture.md](architecture.md) | the four pillars, and which file is which diagram box |
+| [triage-agents.md](triage-agents.md) | how triage routes a message to a worker, and which variable selects each graph |
 | [loop-vs-graph.md](loop-vs-graph.md) | when a turn needs shape, and why the loop never changes |
 | [agent-graphs-design.md](agent-graphs-design.md) | the graph engine's design and its fail-open rule |
 | [graph-plugins-design.md](graph-plugins-design.md) | a graph node from a Nim dynamic library: the C boundary, the host functions, and the trust tiers (proposal) |

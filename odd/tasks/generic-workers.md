@@ -15,7 +15,7 @@ delegation contract the orchestrator already speaks.
 - T2 (S1,S3): Worker table en `nim/src/workers.nim` nuevo — una tabla agente→runner con forma común (task→child lines); `workerChildLines` por lookup, `runWorkerCmd` construye contexto (app+model+snapshot); `gather` primera entrada sin cambio — done, see L6
 - T3 (S1,S3): First worker headless (`brief`) con pins — done, see L7
 - T4 (S1): Evals + docs — done, see L8
-- T5 (S1): Third worker (grafo plugin) — el usuario elige grafo plugin; exige antes el diseño de aislamiento fuera-de-proceso; luego mitad headless + pins — in progress, see L10
+- T5 (S1): Third worker (grafo plugin) — done via `odd/tasks/plugin-workers.md` T2+T3 (isolation design + headless + pins), fix wire `task`, smoke real — see L10 + plugin-workers L5-L8
 
 ## Log
 
