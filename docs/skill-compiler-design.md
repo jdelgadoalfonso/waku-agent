@@ -321,10 +321,14 @@ configured model, and a router fallback makes a call of its own.
 
 ## Known gaps
 
-1. A router fallback's tokens are not metered. The engine's route function
-   carries no observer, so the fallback's model call never reaches the usage
-   node and only the node call's tokens land in `usage.jsonl`. A run that spends
-   tokens and then raises books nothing either.
+1. A run that spends tokens and then raises books nothing: the usage the
+   failed run would have reported is dropped with it. A router fallback is NOT
+   in this list any more. The engine calls the node function and then the route
+   function for one router visit, but the route function carries no observer, so
+   the decision would have been invisible. The memo settles it: the decision is
+   made in the node function, where the observer lives, and the route function
+   reads it back without a second call. A test in `test_skillgen.nim` pins the
+   reported usage to both calls, so the property is checked rather than assumed.
 
 2. The cache never evicts. Every distinct graph leaves one `.so` in
    `<home>/skills-compiled`, and nothing deletes an old one. The key is FNV-1a

@@ -467,3 +467,58 @@ suite "skill Nim generator":
     assert reasons == @["small"]
     assert state["errors"].len == 0
     removeDir(dir)
+
+suite "S17 the router fallback is metered like any other model call":
+
+  test "the routing decision's tokens reach the reported usage":
+    # The engine calls the node fn and then the route fn for one router
+    # visit. The memo (S10) makes the decision once, in the node fn, which
+    # carries the observer. So the routing call's tokens should appear in
+    # the usage the headless run reports - this test exists to prove it,
+    # not to assume it.
+    let graph = validateSkillGraph(%*{
+      "name": "metered",
+      "abi": 1,
+      "nodes": [
+        {"name": "prepare", "kind": "llm", "inKeys": ["message"],
+         "outKey": "reply", "needs": ["llm"], "prompt": "Prepare: {{message}}"},
+        {"name": "route", "kind": "router", "inKeys": ["reply"],
+         "needs": ["llm"],
+         "routes": [{"label": "big", "dst": "END"},
+                    {"label": "small", "dst": "END"}]}
+      ]
+    })
+    let dir = getTempDir() / "waku-skillgen-metered"
+    let home = getTempDir() / "waku-skillgen-metered-home"
+    for d in [dir, home]:
+      if dirExists(d):
+        removeDir(d)
+    createDir(dir)
+    createDir(home)
+    let nimFile = dir / "metered.nim"
+    writeFile(nimFile, generateSkillNim(graph))
+    let nim = findExe("nim")
+    let soFile = dir / "metered.so"
+    let (output, code) = execCmdEx(nim &
+      " c --app:lib --panics:off --hints:off -o:" & soFile & " " & nimFile)
+    assert code == 0, "metered skill failed to compile: " & output
+    createDir(home / "plugins")
+    copyFile(soFile, home / "plugins" / "metered.so")
+
+    var routingCalls = 0
+    let client = LlmClient(create: proc(req: JsonNode): JsonNode {.closure.} =
+      let content = req{"messages"}[0]{"content"}.getStr("")
+      if content.startsWith("You are a routing step"):
+        inc routingCalls
+        return %*{"stop_reason": "end_turn", "usage": {"in": 3, "out": 1},
+                  "content": [{"type": "text", "text": "small"}]}
+      %*{"stop_reason": "end_turn", "usage": {"in": 5, "out": 1},
+         "content": [{"type": "text", "text": "done"}]},
+      stream: nil)
+    let state = pluginRunHeadless(home, "metered", "hola", "m", "", client)
+    assert routingCalls == 1, "the fallback must be decided exactly once"
+    assert state["usage"]["in"].getInt() == 8,
+      "the routing call's tokens are missing: got " & $state["usage"]["in"].getInt()
+    assert state["usage"]["out"].getInt() == 2
+    removeDir(dir)
+    removeDir(home)
