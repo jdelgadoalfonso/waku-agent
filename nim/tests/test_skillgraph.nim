@@ -218,40 +218,46 @@ suite "skill graph validator":
       discard validateSkillGraph(graph)
 
   test "accepts END route":
+    # A router may end the run on an END route, but the graph must still have
+    # answered: the llm node writes `reply` itself, so a router declared last
+    # cannot leave the run silent (S18).
     let graph = %*{
       "name": "simple",
       "abi": 1,
       "nodes": [
         {"name": "summarize", "kind": "llm", "inKeys": ["message"],
-         "outKey": "summary", "needs": ["llm"], "prompt": "x"},
-        {"name": "route", "kind": "router", "inKeys": ["summary"],
+         "outKey": "reply", "needs": ["llm"], "prompt": "x"},
+        {"name": "route", "kind": "router", "inKeys": ["reply"],
          "needs": ["llm"],
          "routes": [{"label": "done", "dst": "END"}]}
       ]
     }
     let g = validateSkillGraph(graph)
     assert g.nodes.len == 2
+    assert g.nodes[0].outKey == "reply"
+    assert g.nodes[1].routes[0].dst == "END"
 
   test "accepts routes with when conditions":
+    # The llm node writes `reply` so this router-ending graph can answer (S18).
     let graph = %*{
       "name": "cond",
       "abi": 1,
       "nodes": [
         {"name": "summarize", "kind": "llm", "inKeys": ["message"],
-         "outKey": "summary", "needs": ["llm"], "prompt": "x"},
-        {"name": "route", "kind": "router", "inKeys": ["summary"],
+         "outKey": "reply", "needs": ["llm"], "prompt": "x"},
+        {"name": "route", "kind": "router", "inKeys": ["reply"],
          "needs": ["llm"],
          "routes": [
            {"label": "long", "dst": "END",
-            "when": {"key": "summary", "op": "len_gt", "value": 120}},
+            "when": {"key": "reply", "op": "len_gt", "value": 120}},
            {"label": "has_error", "dst": "END",
-            "when": {"key": "summary", "op": "contains", "value": "error"}},
+            "when": {"key": "reply", "op": "contains", "value": "error"}},
            {"label": "short", "dst": "END"}]}
       ]
     }
     let g = validateSkillGraph(graph)
     assert g.nodes[1].routes[0].hasWhen
-    assert g.nodes[1].routes[0].condKey == "summary"
+    assert g.nodes[1].routes[0].condKey == "reply"
     assert g.nodes[1].routes[0].condOp == "len_gt"
     assert g.nodes[1].routes[0].condInt == 120
     assert g.nodes[1].routes[1].condOp == "contains"
@@ -259,19 +265,20 @@ suite "skill graph validator":
     assert not g.nodes[1].routes[2].hasWhen
 
   test "accepts eq and len_lt conditions":
+    # The llm node writes `reply` so this router-ending graph can answer (S18).
     let graph = %*{
       "name": "cond2",
       "abi": 1,
       "nodes": [
         {"name": "a", "kind": "llm", "inKeys": ["message"],
-         "outKey": "x", "needs": ["llm"], "prompt": "x"},
-        {"name": "route", "kind": "router", "inKeys": ["x"],
+         "outKey": "reply", "needs": ["llm"], "prompt": "x"},
+        {"name": "route", "kind": "router", "inKeys": ["reply"],
          "needs": ["llm"],
          "routes": [
            {"label": "yes", "dst": "END",
-            "when": {"key": "x", "op": "eq", "value": "yes"}},
+            "when": {"key": "reply", "op": "eq", "value": "yes"}},
            {"label": "tiny", "dst": "END",
-            "when": {"key": "x", "op": "len_lt", "value": 10}},
+            "when": {"key": "reply", "op": "len_lt", "value": 10}},
            {"label": "other", "dst": "END"}]}
       ]
     }
@@ -545,3 +552,94 @@ suite "skill graph validator":
     }
     expect SkillGraphError:
       discard validateSkillGraph(graph)
+
+  # ---- Answerability (S18): a graph that can never answer is refused. ----
+  #
+  # `pluginRunHeadless` answers `state["reply"]`, and the generator writes
+  # that key only for the LAST declared node when it is an llm node — or for
+  # any llm node that declares `outKey: "reply"` itself. A graph whose last
+  # declared node is a router therefore validates, compiles, installs and
+  # answers nothing on every turn, so the loop falls back to text forever.
+  # That must be refused here, not discovered in production.
+
+  test "rejects a graph whose last declared node is a router":
+    let graph = %*{
+      "name": "silent",
+      "abi": 1,
+      "nodes": [
+        {"name": "summarize", "kind": "llm", "inKeys": ["message"],
+         "outKey": "summary", "needs": ["llm"],
+         "prompt": "Summarize: {{message}}"},
+        {"name": "route", "kind": "router", "inKeys": ["summary"],
+         "needs": ["llm"],
+         "routes": [{"label": "done", "dst": "END"}]}
+      ]
+    }
+    var msg = ""
+    try:
+      discard validateSkillGraph(graph)
+    except SkillGraphError as e:
+      msg = e.msg
+    # Refused, and the message names the rule rather than just "invalid":
+    # the offending node, why it cannot answer, and what to change.
+    check msg.len > 0
+    check msg.contains("'route'")   # names the last declared node
+    check msg.contains("router")    # names why nothing writes reply
+    check msg.contains("reply")     # names the key that would be missing
+    check msg.contains("llm")       # names the remedy
+
+  test "rejects a graph with no llm node at all":
+    # Triangulation: nothing but a router validates structurally (its fallback
+    # is an LLM call, so needs [\"llm\"] is satisfied), yet no llm node exists
+    # to write reply — the run could never answer.
+    let graph = %*{
+      "name": "router-only",
+      "abi": 1,
+      "nodes": [
+        {"name": "route", "kind": "router", "needs": ["llm"],
+         "routes": [{"label": "done", "dst": "END"}]}
+      ]
+    }
+    var msg = ""
+    try:
+      discard validateSkillGraph(graph)
+    except SkillGraphError as e:
+      msg = e.msg
+    check msg.contains("reply")
+
+  test "accepts a graph whose last declared node is an llm node":
+    # The ordinary shape: the last llm node carries the run's answer.
+    let graph = %*{
+      "name": "plain",
+      "abi": 1,
+      "nodes": [
+        {"name": "summarize", "kind": "llm", "inKeys": ["message"],
+         "outKey": "summary", "needs": ["llm"],
+         "prompt": "Summarize: {{message}}"},
+        {"name": "translate", "kind": "llm", "inKeys": ["summary"],
+         "outKey": "french", "needs": ["llm"],
+         "prompt": "Translate: {{summary}}"}
+      ]
+    }
+    let g = validateSkillGraph(graph)
+    assert g.nodes[^1].kind == "llm"
+    assert g.nodes[^1].name == "translate"
+
+  test "accepts a router-ending graph when an llm node writes reply":
+    # A router may be declared last as long as some llm node already
+    # declared `outKey: "reply"` — the run has answered before it branches.
+    let graph = %*{
+      "name": "explicit-reply",
+      "abi": 1,
+      "nodes": [
+        {"name": "answer", "kind": "llm", "inKeys": ["message"],
+         "outKey": "reply", "needs": ["llm"],
+         "prompt": "Answer: {{message}}"},
+        {"name": "route", "kind": "router", "inKeys": ["reply"],
+         "needs": ["llm"],
+         "routes": [{"label": "done", "dst": "END"}]}
+      ]
+    }
+    let g = validateSkillGraph(graph)
+    assert g.nodes[^1].kind == "router"
+    assert g.nodes[0].outKey == "reply"

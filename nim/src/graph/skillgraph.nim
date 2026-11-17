@@ -15,6 +15,10 @@
 ##   inKey is written by an earlier node or is input state (S9). Structure
 ##   alone is not enough — a mistyped key must fail here, not interpolate
 ##   an empty string at runtime.
+## - Answerability: the run must produce `reply`, the key
+##   `pluginRunHeadless` answers with (S18). A graph that can never answer
+##   would compile, install and then fall back to text on every turn; it is
+##   refused here instead.
 ##
 ## Edge model: llm nodes flow implicitly to the next declared node;
 ## router nodes branch ONLY to their route destinations (no implicit
@@ -236,6 +240,25 @@ proc checkDataFlow(nodes: seq[SkillNode]) =
         "skill graph node '" & n.name & "': inKey '" & key &
         "' is neither produced by an earlier node nor an input state key")
 
+proc checkCanAnswer(nodes: seq[SkillNode]) =
+  ## S18: the run must have a way to answer. `pluginRunHeadless` answers
+  ## `state["reply"]`, and the generator writes that key in exactly two
+  ## shapes: for the LAST declared node when it is an llm node, and for any
+  ## llm node that declares `outKey: "reply"` itself. A graph whose last
+  ## declared node is a router writes neither, so the skill would validate,
+  ## compile, install and answer nothing on every turn — the loop would
+  ## silently fall back to text forever. Refuse it at the boundary instead.
+  let last = nodes[^1]
+  if last.kind == "llm":
+    return
+  for n in nodes:
+    if n.kind == "llm" and n.outKey == "reply":
+      return
+  raise newException(SkillGraphError,
+    "skill graph last declared node '" & last.name & "' is a router and no llm " &
+    "node declares outKey \"reply\", so the compiled skill would answer " &
+    "nothing: end the graph with an llm node or give an llm node outKey \"reply\"")
+
 proc checkDag(nodes: seq[SkillNode]) =
   ## Verify the graph is a DAG reachable from the first node, using the
   ## shared edge model (see buildAdjacency).
@@ -341,5 +364,6 @@ proc validateSkillGraph*(manifest: JsonNode): SkillGraph =
 
   checkDag(nodes)
   checkDataFlow(nodes)
+  checkCanAnswer(nodes)
 
   result = SkillGraph(name: name.getStr(), nodes: nodes)

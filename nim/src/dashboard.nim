@@ -1981,8 +1981,9 @@ needs "llm".
 
 "message" (what the user typed) and "mem_text" (recalled memory) are
 always readable. Every other key a node reads must be the outKey of a node
-that runs before it. The LAST llm node must also write "reply": that is
-what the plugin answers with.
+that runs before it. A graph has to be able to answer: end it with an llm
+node, or give an llm node outKey "reply" — that is what the plugin answers
+with, so a graph that ends in a router answers nothing and is refused.
 
 The skill to compile:
 """

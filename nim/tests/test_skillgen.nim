@@ -87,18 +87,18 @@ suite "skill Nim generator":
       "abi": 1,
       "nodes": [
         {"name": "a", "kind": "llm", "inKeys": ["message"],
-         "outKey": "x", "needs": ["llm"], "prompt": "x"},
-        {"name": "route", "kind": "router", "inKeys": ["x"],
+         "outKey": "reply", "needs": ["llm"], "prompt": "x"},
+        {"name": "route", "kind": "router", "inKeys": ["reply"],
          "needs": ["llm"],
          "routes": [
            {"label": "big", "dst": "END",
-            "when": {"key": "x", "op": "len_gt", "value": 120}},
+            "when": {"key": "reply", "op": "len_gt", "value": 120}},
            {"label": "tiny", "dst": "END",
-            "when": {"key": "x", "op": "len_lt", "value": 10}},
+            "when": {"key": "reply", "op": "len_lt", "value": 10}},
            {"label": "yes", "dst": "END",
-            "when": {"key": "x", "op": "eq", "value": "yes"}},
+            "when": {"key": "reply", "op": "eq", "value": "yes"}},
            {"label": "err", "dst": "END",
-            "when": {"key": "x", "op": "contains", "value": "error"}},
+            "when": {"key": "reply", "op": "contains", "value": "error"}},
            {"label": "other", "dst": "END"}]}
       ]
     })
@@ -114,8 +114,8 @@ suite "skill Nim generator":
       "abi": 1,
       "nodes": [
         {"name": "a", "kind": "llm", "inKeys": ["message"],
-         "outKey": "x", "needs": ["llm"], "prompt": "x"},
-        {"name": "route", "kind": "router", "inKeys": ["x"],
+         "outKey": "reply", "needs": ["llm"], "prompt": "x"},
+        {"name": "route", "kind": "router", "inKeys": ["reply"],
          "needs": ["llm"],
          "routes": [{"label": "long", "dst": "END"},
                     {"label": "short", "dst": "END"}]}
@@ -367,6 +367,8 @@ suite "skill Nim generator":
       "nodes": [
         {"name": "prepare", "kind": "llm", "inKeys": ["message"],
          "outKey": "x", "needs": ["llm"], "prompt": "Prepare: {{message}}"},
+        {"name": "answer", "kind": "llm", "inKeys": ["x"],
+         "outKey": "reply", "needs": ["llm"], "prompt": "Answer: {{x}}"},
         {"name": "route", "kind": "router", "inKeys": ["x"],
          "needs": ["llm"],
          "routes": [
