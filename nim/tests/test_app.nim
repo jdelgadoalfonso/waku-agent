@@ -3,6 +3,7 @@
 
 import std/json
 import std/os
+import std/osproc
 import std/sequtils
 import std/strutils
 import std/tables
@@ -21,6 +22,7 @@ import ../src/jsondump
 import ../src/memory_live
 import ../src/receipt
 import ../src/reports
+import ../src/session
 import ../src/trace
 
 type
@@ -50,10 +52,12 @@ proc freshHome(name: string): string =
   createDir(result)
 
 proc testSettings(home: string, historyTurns = 12,
-                  graphWorkflows = false): Settings =
+                  graphWorkflows = false,
+                  consolidateEvery = 0): Settings =
   Settings(provider: "openai", apiKey: "", model: "m", home: home,
            smallModel: "mini", maxIterations: 10, maxTokens: 8192,
-           historyTurns: historyTurns, graphWorkflows: graphWorkflows)
+           historyTurns: historyTurns, graphWorkflows: graphWorkflows,
+           consolidateEvery: consolidateEvery)
 
 proc echoRegistry(output: string): ToolRegistry =
   result.register(Tool(name: "echo", description: "e",
@@ -850,5 +854,186 @@ suite "which backend holds the facts":
     var s = defaultSettings()
     s.episodicStore = "notion"
     check episodeStoreFor(s, db).name == "sqlite"
+    db.close()
+    removeDir(home)
+
+# ── S15: an installed skill answers the turn (T7b) ───────────────────────────
+#
+# The loop uses what is installed and never compiles. These tests are the
+# differential S15a asks for: the same seams and the same message, with and
+# without `<home>/plugins/<skill>.so`, comparing the system prompt and the
+# turn's output. Nothing here asserts a compile: the only filesystem
+# question the turn path may ask is whether that file exists.
+
+proc writeSkill(home, name, description, body: string) =
+  createDir(home / "skills" / name)
+  writeFile(home / "skills" / name / "SKILL.md",
+    "---\nname: " & name & "\ndescription: " & description & "\n---\n\n" &
+    body & "\n")
+
+proc buildFixture(dir, name, source: string): string =
+  ## Compile an EXISTING fixture into `dir/name`, once per suite run.
+  ## Same command `test_plugin_workers` uses; the working dir is `nim/`.
+  if not dirExists(dir):
+    createDir(dir)
+  let target = dir / name
+  if fileExists(target):
+    return target
+  let nim = findExe("nim")
+  assert nim.len > 0, "nim must be on PATH to build the fixture"
+  let (output, code) = execCmdEx(nim & " c --app:lib --panics:off " &
+    "--hints:off -o:" & target & " tests/" & source)
+  assert code == 0, "fixture build failed: " & output
+  target
+
+proc installSkillPlugin(home, skill, source: string) =
+  createDir(home / "plugins")
+  copyFile(buildFixture(getTempDir() / "waku-s15-fixtures",
+    skill & ".so", source), home / "plugins" / (skill & ".so"))
+
+proc exchanges(db: DbConn): seq[string] =
+  for row in db.getAllRows(
+      sql"SELECT role, content FROM chat_log ORDER BY id"):
+    result.add(row[0] & ": " & row[1])
+
+proc eventKinds(home: string): seq[string] =
+  for e in traceLines(home):
+    result.add(e["type"].getStr())
+
+proc skillEvents(home: string): seq[JsonNode] =
+  for e in traceLines(home):
+    if e["type"].getStr() == "skill":
+      result.add(e)
+
+suite "S15/S15a an installed skill answers, the text path is untouched":
+
+  test "with no plugin installed the turn is byte-identical to today":
+    # S15a, the differential. Two agents over equivalent homes, the same
+    # seams and the same message. One keeps the seam `wireMemory` fills;
+    # the other has it cleared, which is exactly the wiring this change
+    # started from. Nothing is installed, so every byte the model sees,
+    # the reply, the trace shape and the stored exchange must match.
+    let wired = freshHome("waku-app-s15a-wired")
+    let today = freshHome("waku-app-s15a-today")
+    for home in [wired, today]:
+      writeSkill(home, "swim", "plan Saturday swim sessions", "Bring goggles.")
+    const gate = """{"retrieve": false, "query": "", "reason": "chat"}"""
+    let dbW = connectDb(wired)
+    let setW = testSettings(wired, consolidateEvery = 1000)
+    let scriptW = Script(items: @[textResp(gate), textResp("here is the plan")])
+    let clientW = scriptedClient(scriptW)
+    var w = newWaku(setW, clientW, dbW)
+    wireMemory(w, setW, dbW, clientW, @[])
+    let dbT = connectDb(today)
+    let setT = testSettings(today, consolidateEvery = 1000)
+    let scriptT = Script(items: @[textResp(gate), textResp("here is the plan")])
+    let clientT = scriptedClient(scriptT)
+    var t = newWaku(setT, clientT, dbT)
+    wireMemory(t, setT, dbT, clientT, @[])
+    t.session.skillTurn = nil  # today: the seam did not exist yet
+    let resW = w.respond("plan a swim saturday")
+    let resT = t.respond("plan a swim saturday")
+    assert resW.reply == "here is the plan"
+    assert resT.reply == resW.reply
+    # the skill body still reaches the prompt it always did
+    assert "Relevant skill instructions:" in scriptW.seen[1]["system"].getStr()
+    assert "Bring goggles." in scriptW.seen[1]["system"].getStr()
+    assert scriptT.seen == scriptW.seen,
+      "the seam must not change one byte the model sees"
+    assert exchanges(dbT) == exchanges(dbW)
+    assert eventKinds(today) == eventKinds(wired)
+    assert "skill" notin eventKinds(wired),
+      "no plugin installed is not a fallback: no line, like today"
+    dbW.close()
+    dbT.close()
+    removeDir(wired)
+    removeDir(today)
+
+  test "installing a plugin changes the answer, never the system prompt":
+    # The other half of the differential: the only difference between
+    # these two runs is `<home>/plugins/<skill>.so`. S15 says the skill
+    # then answers; S15a says the prompt stays byte-identical.
+    let plain = freshHome("waku-app-s15b-plain")
+    let compiled = freshHome("waku-app-s15b-compiled")
+    for home in [plain, compiled]:
+      writeSkill(home, "workergreet", "greet the user politely", "Say hello.")
+    installSkillPlugin(compiled, "workergreet", "fixture_plugin_worker.nim")
+    const gate = """{"retrieve": false, "query": "", "reason": "chat"}"""
+    let dbC = connectDb(compiled)
+    let setC = testSettings(compiled, consolidateEvery = 1000)
+    # one gate call for the prompt comparison, one for the turn itself
+    let scriptC = Script(items: @[textResp(gate), textResp(gate)])
+    let clientC = scriptedClient(scriptC)
+    var c = newWaku(setC, clientC, dbC)
+    wireMemory(c, setC, dbC, clientC, @[])
+    let dbP = connectDb(plain)
+    let setP = testSettings(plain, consolidateEvery = 1000)
+    let scriptP = Script(items: @[textResp(gate), textResp(gate),
+      textResp("text answer")])
+    let clientP = scriptedClient(scriptP)
+    var p = newWaku(setP, clientP, dbP)
+    wireMemory(p, setP, dbP, clientP, @[])
+    let sysC = c.session.buildSystem("greet the user politely")
+    let sysP = p.session.buildSystem("greet the user politely")
+    assert sysC == sysP, "an installed plugin must not rewrite the prompt"
+    assert "### workergreet" in sysC
+    let resC = c.respond("greet the user politely")
+    assert resC.reply == "hello: greet the user politely"
+    # the loop never ran for that turn: only gate calls, none of which
+    # carries a system prompt
+    for req in scriptC.seen:
+      assert not req.hasKey("system"), "the loop ran on a skill turn"
+    assert skillEvents(compiled)[0]["mode"].getStr() == "worker"
+    let resP = p.respond("greet the user politely")
+    assert resP.reply == "text answer"
+    assert scriptP.seen[^1]["system"].getStr() == sysP,
+      "without the plugin the same prompt goes to the loop"
+    dbC.close()
+    dbP.close()
+    removeDir(plain)
+    removeDir(compiled)
+
+suite "S15b a compiled skill never fails a turn the text path answers":
+
+  test "a plugin that cannot load falls back inside the same turn":
+    let home = freshHome("waku-app-s15b-broken")
+    writeSkill(home, "workergreet", "greet the user politely", "Say hello.")
+    createDir(home / "plugins")
+    writeFile(home / "plugins" / "workergreet.so", "not a library")
+    const gate = """{"retrieve": false, "query": "", "reason": "chat"}"""
+    let db = connectDb(home)
+    let settings = testSettings(home, consolidateEvery = 1000)
+    let script = Script(items: @[textResp(gate), textResp("text answer")])
+    let client = scriptedClient(script)
+    var w = newWaku(settings, client, db)
+    wireMemory(w, settings, db, client, @[])
+    let res = w.respond("greet the user politely")
+    assert res.reply == "text answer", "the turn fell back within itself"
+    let seen = skillEvents(home)
+    assert seen.len == 1
+    assert seen[0]["skill"].getStr() == "workergreet"
+    assert seen[0]["mode"].getStr() == "text"
+    assert seen[0]["reason"].getStr().len > 0, "the reason must be named"
+    assert eventKinds(home)[^1] == "turn_end", "the turn still closed"
+    db.close()
+    removeDir(home)
+
+  test "a seam that raises still answers from the text path":
+    # Defence in depth: the wiring catches its own failures, but a turn
+    # must survive even a seam that escapes. Same fail-open rule every
+    # optional door in `respond` already follows.
+    let home = freshHome("waku-app-s15b-seam")
+    let db = connectDb(home)
+    let script = Script(items: @[textResp("text answer")])
+    var w = newWaku(testSettings(home, consolidateEvery = 1000),
+      scriptedClient(script), db)
+    w.session.skillTurn = proc(userMessage: string,
+        notify: Observer): SkillTurn =
+      raise newException(CatchableError, "seam exploded")
+    let res = w.respond("greet the user politely")
+    assert res.reply == "text answer"
+    let seen = skillEvents(home)
+    assert seen.len == 1
+    assert "seam exploded" in seen[0]["reason"].getStr()
     db.close()
     removeDir(home)

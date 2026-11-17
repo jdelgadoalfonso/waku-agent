@@ -270,10 +270,40 @@ proc toToolCalls*(calls: seq[JsonNode]): seq[ToolCall] =
 
 proc runFullTurn*(w: var Waku, userMessage: string, notify: Observer,
                   stream: bool): LoopResult =
-  ## The classic turn: assemble working memory, run THE loop. The graph's
-  ## `full_agent` node (4d) calls THIS, so loop-as-a-node can never drift
-  ## from loop-as-default.
+  ## The classic turn: assemble working memory, run THE loop — or let an
+  ## installed compiled skill answer it (S15). The graph's `full_agent`
+  ## node (4d) calls THIS, so loop-as-a-node can never drift from
+  ## loop-as-default.
   var system = w.session.buildSystem(userMessage, notify)
+  # S15: an installed compiled skill answers the turn itself. NOTHING on
+  # this path compiles: the seam asks whether `<home>/plugins/<skill>.so`
+  # exists and, when it does, runs that skill as a headless worker — so no
+  # turn ever waits for a compiler, and the dashboard stays the only
+  # compile trigger (S14). The prompt above is built first and unchanged,
+  # which is what makes a skill with nothing installed byte-identical to
+  # today (S15a). Every other outcome — a load failure, an ineligible
+  # manifest, an empty reply — falls through to the loop below within this
+  # same turn, named on the trace by the seam (S15b).
+  if not w.session.skillTurn.isNil:
+    var turn: SkillTurn = (answered: false, skill: "", reply: "", reason: "")
+    try:
+      turn = w.session.skillTurn(userMessage, notify)
+    except CatchableError as exc:
+      # The same fail-open rule every optional door in `respond` follows:
+      # a broken seam costs one trace line, never the answer.
+      turn.reason = "the compiled-skill seam raised: " & errorText(exc)
+      if not notify.isNil:
+        notify("skill", %*{"skill": "", "mode": "text",
+                           "reason": turn.reason})
+    if turn.answered:
+      # One step ran — the skill, not a loop iteration — and `respond`
+      # persists, consolidates and closes the trace around this reply
+      # exactly as it does around a loop reply. A worker answers in one
+      # piece, so `stream` has nothing to deliver on this path. The
+      # turn-scoped extras the loop consumes — the research brain reads
+      # and the MCP task filter — are skipped with the loop, because a
+      # worker's state carries neither.
+      return LoopResult(reply: turn.reply, iterations: 1)
   # A bounded window: only the last N turns (2 rows each) enter the
   # prompt, so context/cost/latency stay flat no matter how long the
   # thread runs. `history_turns = 0` takes the whole thread — Python's

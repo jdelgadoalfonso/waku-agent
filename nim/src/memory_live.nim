@@ -32,9 +32,12 @@ import db_connector/db_sqlite
 import ./app
 import ./episodes
 import ./factstore
+import ./graph/plugins  # pluginDir: the one filesystem question S15 asks
 import ./loop
+import ./session
 import ./skills
 import ./wire
+import ./worker_plugin  # pluginRunHeadless: a compiled skill as a worker turn
 
 const
   gatePrompt* = """You are a retrieval gate for a personal assistant's long-term memory.
@@ -198,6 +201,11 @@ proc skillWords(text: string): seq[string] =
   if cur.len >= 3:
     result.add(cur)
 
+const skillPromptMax* = 2
+  ## How many matched skills may reach the prompt — and therefore how many
+  ## the installed-plugin search considers. One number for both sides of
+  ## S15, so "a matched skill" can never mean two different lists.
+
 proc scoredSkills*(home: string, bundled: seq[string],
     message: string): seq[(int, string, string)] =
   ## (overlap, name, body), best first: the shared scorer behind
@@ -241,7 +249,7 @@ proc matchingSkillNames*(home: string, bundled: seq[string],
     result.add(name)
 
 proc matchingSkills*(home: string, bundled: seq[string],
-    message: string, maxSkills = 2): string =
+    message: string, maxSkills = skillPromptMax): string =
   ## Port of `Memory.matching_skills`: `### name\\nbody` per skill whose
   ## name+description share 2+ keywords with the message (best first).
   ## `listDistribSkills` reads disk on every call, so an added skill is
@@ -251,6 +259,81 @@ proc matchingSkills*(home: string, bundled: seq[string],
   for i in 0 ..< min(maxSkills, scored.len):
     chunks.add("### " & scored[i][1] & "\n" & scored[i][2])
   return chunks.join("\n\n")
+
+type
+  SkillWorkerRun* = proc(home, skill, message, memText, model: string,
+                         client: LlmClient): JsonNode {.closure.}
+    ## How one installed skill is executed (S15). `headlessSkillRun` is
+    ## the real answer — `pluginRunHeadless`, the same entry point
+    ## `waku --role worker --agent plugin:<name>` uses — and tests inject
+    ## a recording so the decision around it can be pinned without a `.so`.
+
+proc installedSkill*(home, name: string): bool =
+  ## The whole installation signal (S15): the file exists. Nothing here
+  ## compiles and nothing inspects a manifest — the loop uses what is
+  ## installed, and compiling is only ever the dashboard's explicit
+  ## action (S14).
+  ##
+  ## S15d, the namespace caveat: `<home>/plugins` is loaded IN-PROCESS at
+  ## startup (`loadPluginGraphs` in `waku.nim`), so an installed skill also
+  ## becomes the graph node `plugin:<name>`. A skill whose name collides
+  ## with an existing plugin shares that namespace, and the process may
+  ## already hold a library under that name for its whole lifetime: this
+  ## file is not necessarily the loop's own, and the loop must not assume
+  ## it is.
+  fileExists(pluginDir(home) / name & ".so")
+
+proc headlessSkillRun(): SkillWorkerRun =
+  ## The production runner: the skill's compiled graph, headless, through
+  ## the one worker entry point the delegation path already uses.
+  result = proc(home, skill, message, memText, model: string,
+                client: LlmClient): JsonNode {.closure.} =
+    pluginRunHeadless(home, skill, message, model, memText, client)
+
+proc skillWorkerTurn*(home: string, bundled: seq[string], message, memText,
+    model: string, client: LlmClient, run: SkillWorkerRun = nil,
+    notify: Observer = nil): SkillTurn =
+  ## S15/S15b: the first MATCHED skill that has an installed plugin answers
+  ## the turn; every other outcome answers `answered=false` with a reason
+  ## and leaves today's text path to answer it.
+  ##
+  ## The list is `scoredSkills`, capped exactly like `matchingSkills`, so
+  ## "matched" means one thing on both sides. The search takes the first
+  ## *installed* skill rather than only the top match, so a compiled skill
+  ## still runs when a better text match exists — and the line this emits
+  ## names which skill answered, so that choice is never a guess.
+  ##
+  ## Nothing escapes: a load failure, an ineligible manifest, an empty
+  ## reply and any raise all become a reason. S15b forbids a compiled
+  ## skill from failing a turn the text path would have answered, so this
+  ## proc declines instead of raising.
+  let scored = scoredSkills(home, bundled, message)
+  var chosen = ""
+  for i in 0 ..< min(skillPromptMax, scored.len):
+    if installedSkill(home, scored[i][1]):
+      chosen = scored[i][1]
+      break
+  if chosen.len == 0:
+    return  # nothing installed: today's path, and not one word about it
+  let worker = if run.isNil: headlessSkillRun() else: run
+  var turn: SkillTurn = (answered: false, skill: chosen, reply: "",
+                         reason: "")
+  try:
+    let answer = worker(home, chosen, message, memText, model, client)
+    if not answer.isNil and answer.kind == JObject:
+      turn.reply = answer.jget("reply").getStr()
+    if turn.reply.strip().len == 0:
+      turn.reason = "the skill answered nothing"
+      turn.reply = ""
+    else:
+      turn.answered = true
+  except CatchableError as exc:
+    turn.reason = "the plugin failed: " & errorText(exc)
+  if not notify.isNil:
+    notify("skill", %*{"skill": chosen,
+                       "mode": (if turn.answered: "worker" else: "text"),
+                       "reason": turn.reason})
+  result = turn
 
 proc opsState*(fact: JsonNode): bool =
   ## True when a proposed fact is about the assistant's own
@@ -497,7 +580,8 @@ proc exportMarkdown*(db: DbConn, home: string) =
 proc wireMemory*(w: var Waku, settings: Settings, db: DbConn,
     client: LlmClient, bundled: seq[string]) =
   ## Fill the seams the session/app modules declared for this phase:
-  ## gated retrieval + skill matching behind the prompt, consolidation +
+  ## gated retrieval + skill matching behind the prompt, an installed
+  ## compiled skill as the turn's answer (S15), consolidation +
   ## MEMORY.md sync behind `afterTurn`. Builders (CLI, dashboard,
   ## gateways) call this once per agent; tests keep building unwired
   ## agents straight from `newWaku`.
@@ -511,6 +595,7 @@ proc wireMemory*(w: var Waku, settings: Settings, db: DbConn,
   var recalledCell = ""
   let home = settings.home
   let smallModel = settings.smallModel
+  let model = settings.model
   let topK = settings.retrievalTopK
   let everyN = settings.consolidateEvery
   w.session.retrieve =
@@ -522,6 +607,15 @@ proc wireMemory*(w: var Waku, settings: Settings, db: DbConn,
   w.session.skillsFor =
     proc(userMessage: string, notify: Observer): string {.closure.} =
       matchingSkills(home, bundled, userMessage)
+  w.session.skillTurn =
+    proc(userMessage: string, notify: Observer): SkillTurn {.closure.} =
+      # S15: a matched skill with an installed plugin answers the turn
+      # instead of the loop. `recalledCell` is this turn's memory — the
+      # gate's answer, filled by `buildSystem` a moment before the turn
+      # asks — and it rides in as `mem_text`, the only memory channel a
+      # compiled skill has (a worker runs no system prompt).
+      skillWorkerTurn(home, bundled, userMessage, recalledCell, model,
+        client, notify = notify)
   w.session.researchNames =
     proc(message: string): seq[string] {.closure.} =
       matchingSkillNames(home, bundled, message)

@@ -211,3 +211,26 @@ suite "phase 4b config fields":
     for (n, v, was) in saved:
       if was: putEnv(n, v)
       else: delEnv(n)
+
+suite "S15 the compiled-skill seam is a turn concern, not a prompt one":
+
+  test "an unwired session has no compiled-skill seam":
+    # A test-built agent (never `wireMemory`d) can never take the worker
+    # path, exactly like every other seam that starts nil.
+    let home = freshHome("waku-sess-skillseam")
+    let s = newSession(testSettings(home))
+    assert s.skillTurn.isNil
+    removeDir(home)
+
+  test "build_system never runs a compiled skill":
+    # The seam answers the TURN; the prompt is built from text only. A
+    # system prompt that executed a worker would spend money before the
+    # turn decided anything.
+    let home = freshHome("waku-sess-skillbuild")
+    var s = newSession(testSettings(home))
+    s.skillTurn = proc(msg: string, n: Observer): SkillTurn =
+      raise newException(CatchableError, "buildSystem must not run a worker")
+    let sys = s.buildSystem("plan a swim Saturday")
+    assert "Relevant skill" notin sys
+    assert "You are Waku" in sys
+    removeDir(home)

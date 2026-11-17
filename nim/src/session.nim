@@ -79,11 +79,27 @@ type
   Turn* = tuple[role: string, content: string]
     ## One history row (Python's `{"role": ..., "content": ...}` dict).
 
+  SkillTurn* = tuple[answered: bool, skill, reply, reason: string]
+    ## One compiled skill's answer for a turn (S15). `answered` decides
+    ## whether the turn keeps it as the reply; `skill` names the skill
+    ## that ran or failed; `reason` explains a fallback to the text path
+    ## and is "" when no compiled skill was involved at all (nothing
+    ## installed is not a failure).
+
+  SkillTurnFn* = proc(userMessage: string, notify: Observer): SkillTurn {.closure.}
+    ## `<home>/plugins/<skill>.so` seam: a matched skill that is installed
+    ## answers the turn itself. Nil until `wireMemory` fills it, and nil
+    ## means today's path exactly — the same rule as every other seam.
+
   Session* = object
     settings*: Settings
     db*: DbConn          ## nil until memory is wired (Python: memory=None)
     retrieve*: RetrieveFn
     skillsFor*: RetrieveFn
+    skillTurn*: SkillTurnFn
+      ## Answers the turn from an installed compiled skill, or declines
+      ## and lets the text path answer (S15/S15b). `buildSystem` never
+      ## reads it: the prompt stays text-only.
     researchNames*: proc(message: string): seq[string] {.closure.} = nil
     sessionId*: string
     history*: seq[Turn]

@@ -5,6 +5,7 @@
 
 import std/json
 import std/os
+import std/osproc
 import std/sets
 import std/strutils
 import std/unittest
@@ -18,6 +19,7 @@ import ../src/episodes
 import ../src/factstore
 import ../src/loop
 import ../src/memory
+import ../src/session
 import ../src/memory_live
 import ../src/wire
 
@@ -475,5 +477,204 @@ suite "wiring":
       kind & ":" & $ev.jget("new_facts").getInt(0)))
     assert "consolidation:1" in kinds
     assert listFacts(db).len == 1
+    db.close()
+    removeDir(home)
+
+# ── S15: installed skills answer the turn (T7b) ──────────────────────────────
+#
+# Two layers are proven here. `skillWorkerTurn` is the decision itself:
+# which matched skill has an installed plugin, what the worker gets, and
+# every way it can decline. The wiring below is the other half — the same
+# body must still reach `buildSystem` through `wireMemory` (S15c), which
+# until now was pinned only in pieces.
+
+proc writeSkill(home, name, description, body: string) =
+  ## One home skill exactly as the existing "skill matching" pin writes it.
+  createDir(home / "skills" / name)
+  writeFile(home / "skills" / name / "SKILL.md",
+    "---\nname: " & name & "\ndescription: " & description & "\n---\n\n" &
+    body & "\n")
+
+proc deadClient(): LlmClient =
+  ## A compiled skill that never calls the model must never reach it.
+  LlmClient(create: proc(req: JsonNode): JsonNode =
+    raise newException(CatchableError, "no model call expected here"))
+
+proc buildFixture(dir, name, source: string): string =
+  ## Compile an EXISTING fixture into `dir/name`, once per suite run (two
+  ## `.so` builds are the slowest thing in this file, so the second test
+  ## reuses the first). Same command `test_plugin_workers` uses; the
+  ## working directory is `nim/`.
+  if not dirExists(dir):
+    createDir(dir)
+  let target = dir / name
+  if fileExists(target):
+    return target
+  let nim = findExe("nim")
+  assert nim.len > 0, "nim must be on PATH to build the fixture"
+  let (output, code) = execCmdEx(nim & " c --app:lib --panics:off " &
+    "--hints:off -o:" & target & " tests/" & source)
+  assert code == 0, "fixture build failed: " & output
+  target
+
+proc install(home, skill, source: string) =
+  ## `<home>/plugins/<skill>.so` — the whole installation signal (S15).
+  createDir(home / "plugins")
+  copyFile(buildFixture(getTempDir() / "waku-s15-fixtures",
+    skill & ".so", source), home / "plugins" / (skill & ".so"))
+
+suite "S15 a compiled skill answers the turn":
+
+  test "no installed plugin answers nothing, and stays silent":
+    # S15a's rule at the decision point: the absence of a `.so` is not a
+    # failure, so it must not colour the turn with a line.
+    let home = freshHome("waku-s15-none")
+    writeSkill(home, "workergreet", "greet the user politely", "Say hello.")
+    var lines: seq[JsonNode] = @[]
+    var kinds: seq[string] = @[]
+    let turn = skillWorkerTurn(home, @[], "greet the user politely", "", "m",
+      deadClient(), notify = proc(kind: string, ev: JsonNode) {.closure.} =
+        kinds.add(kind)
+        lines.add(ev))
+    assert not turn.answered
+    assert turn.skill == ""
+    assert turn.reason == "", "nothing installed is not a failure"
+    assert kinds.len == 0, "the text path must stay exactly as silent"
+    removeDir(home)
+
+  test "an installed plugin answers the turn headless":
+    # The real thing: a `.so` in `<home>/plugins`, loaded and run through
+    # `pluginRunHeadless` against a fixture that answers without a model.
+    let home = freshHome("waku-s15-live")
+    install(home, "workergreet", "fixture_plugin_worker.nim")
+    writeSkill(home, "workergreet", "greet the user politely", "Say hello.")
+    var lines: seq[JsonNode] = @[]
+    let turn = skillWorkerTurn(home, @[], "greet the user politely", "", "m",
+      deadClient(), notify = proc(kind: string, ev: JsonNode) {.closure.} =
+        lines.add(ev))
+    assert turn.answered
+    assert turn.skill == "workergreet"
+    assert turn.reply == "hello: greet the user politely"
+    assert lines.len == 1
+    assert lines[0]["skill"].getStr() == "workergreet"
+    assert lines[0]["mode"].getStr() == "worker"
+    assert lines[0]["reason"].getStr() == ""
+    removeDir(home)
+
+  test "the worker gets the turn's message, memory and model":
+    # What crosses into the plugin: the user's text, the memory this turn
+    # read, and the brain the turn is running on. Pinned with a recording
+    # runner, because no fixture reads `mem_text`.
+    let home = freshHome("waku-s15-args")
+    writeSkill(home, "workergreet", "greet the user politely", "Say hello.")
+    createDir(home / "plugins")
+    writeFile(home / "plugins" / "workergreet.so", "a file is the signal")
+    var got: seq[string] = @[]
+    let turn = skillWorkerTurn(home, @[], "greet the user politely",
+      "alex likes mornings", "m", deadClient(),
+      run = proc(home, skill, message, memText, model: string,
+                 client: LlmClient): JsonNode {.closure.} =
+        got = @[home, skill, message, memText, model]
+        %*{"reply": "worker answer"})
+    assert turn.answered
+    assert turn.reply == "worker answer"
+    assert got == @[home, "workergreet", "greet the user politely",
+      "alex likes mornings", "m"]
+    removeDir(home)
+
+  test "an empty reply falls back, naming the skill and the reason":
+    let home = freshHome("waku-s15-empty")
+    writeSkill(home, "workergreet", "greet the user politely", "Say hello.")
+    createDir(home / "plugins")
+    writeFile(home / "plugins" / "workergreet.so", "a file is the signal")
+    var lines: seq[JsonNode] = @[]
+    let turn = skillWorkerTurn(home, @[], "greet the user politely", "", "m",
+      deadClient(),
+      run = proc(home, skill, message, memText, model: string,
+                 client: LlmClient): JsonNode {.closure.} =
+        %*{"reply": "   "},
+      notify = proc(kind: string, ev: JsonNode) {.closure.} =
+        lines.add(ev))
+    assert not turn.answered, "an empty answer must never win the turn"
+    assert turn.skill == "workergreet"
+    assert turn.reason.len > 0
+    assert lines.len == 1
+    assert lines[0]["skill"].getStr() == "workergreet"
+    assert lines[0]["mode"].getStr() == "text"
+    assert lines[0]["reason"].getStr() == turn.reason
+    removeDir(home)
+
+  test "a raising plugin falls back, naming the skill and the reason":
+    let home = freshHome("waku-s15-raise")
+    writeSkill(home, "workergreet", "greet the user politely", "Say hello.")
+    createDir(home / "plugins")
+    writeFile(home / "plugins" / "workergreet.so", "a file is the signal")
+    var lines: seq[JsonNode] = @[]
+    let turn = skillWorkerTurn(home, @[], "greet the user politely", "", "m",
+      deadClient(),
+      run = proc(home, skill, message, memText, model: string,
+                 client: LlmClient): JsonNode {.closure.} =
+        raise newException(CatchableError, "the graph blew up"),
+      notify = proc(kind: string, ev: JsonNode) {.closure.} =
+        lines.add(ev))
+    assert not turn.answered
+    assert "blew up" in turn.reason, turn.reason
+    assert lines.len == 1
+    assert lines[0]["skill"].getStr() == "workergreet"
+    assert lines[0]["reason"].getStr() == turn.reason
+    removeDir(home)
+
+  test "an ineligible manifest falls back, and the turn survives it":
+    # A real `.so` whose manifest needs a parent-side tool: the worker
+    # gate refuses it and `pluginRunHeadless` raises. S15b's other half.
+    let home = freshHome("waku-s15-ineligible")
+    install(home, "toolhungry", "fixture_plugin_toolneeds.nim")
+    writeSkill(home, "toolhungry", "fetch data needing tools", "Fetch it.")
+    var lines: seq[JsonNode] = @[]
+    let turn = skillWorkerTurn(home, @[], "fetch data", "", "m", deadClient(),
+      notify = proc(kind: string, ev: JsonNode) {.closure.} =
+        lines.add(ev))
+    assert not turn.answered
+    assert "not eligible" in turn.reason, turn.reason
+    assert lines.len == 1
+    assert lines[0]["skill"].getStr() == "toolhungry"
+    assert lines[0]["mode"].getStr() == "text"
+    removeDir(home)
+
+  test "the best-ranked matched skill that has a plugin answers":
+    # The choice is "the first matched skill with a plugin", over the same
+    # capped, ranked list `matchingSkills` builds. Here the top match has
+    # no plugin and the second does, so the second answers.
+    let home = freshHome("waku-s15-rank")
+    writeSkill(home, "pool", "plan swim sessions for saturday", "Book a lane.")
+    writeSkill(home, "swim", "plan swim sessions", "Bring goggles.")
+    createDir(home / "plugins")
+    writeFile(home / "plugins" / "swim.so", "a file is the signal")
+    let turn = skillWorkerTurn(home, @[], "plan a swim saturday", "", "m",
+      deadClient(),
+      run = proc(home, skill, message, memText, model: string,
+                 client: LlmClient): JsonNode {.closure.} =
+        %*{"reply": "goggles: " & skill})
+    assert turn.answered
+    assert turn.skill == "swim", "swim is the installed one, pool is not"
+    assert turn.reply == "goggles: swim"
+    removeDir(home)
+
+suite "S15c a matched skill reaches the prompt through the wiring":
+
+  test "wireMemory and buildSystem carry a non-empty skill body":
+    # The chain end to end: the seam `wireMemory` fills answers a body,
+    # and `buildSystem` splices it under the heading the model reads.
+    let home = freshHome("waku-s15c")
+    writeSkill(home, "swim", "plan Saturday swim sessions", "Bring goggles.")
+    let db = connectDb(home)
+    let client = scriptedClient(
+      """{"retrieve": false, "query": "", "reason": "chat"}""")
+    var w = newWaku(liveSettings(home), client, db)
+    wireMemory(w, liveSettings(home), db, client, @[])
+    let sys = w.session.buildSystem("plan a swim Saturday")
+    assert "Relevant skill instructions:" in sys
+    assert "### swim" in sys
+    assert "Bring goggles." in sys
     db.close()
     removeDir(home)
