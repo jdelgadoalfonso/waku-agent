@@ -45,6 +45,24 @@ async function saveSkill(i){
 // propose reads <home>/skills/<slug>/SKILL.md, so a bundled skill would
 // only ever answer with the route's honest refusal.
 var skillGraphDrafts = {};
+// Pending-state ticker for long authoring calls (S21): a single await
+// has no intermediate events, so the honest feedback is liveness plus
+// elapsed seconds — never invented progress. The caret is the existing
+// pulse from compare.js; the seconds appear only if the call actually
+// outlasts one of them, so fast calls never flash. The ticker dies on
+// every exit path, and results never land on a span a refresh replaced.
+function pendingStart(msg, base){
+  pendingStop(msg);
+  msg.innerHTML = esc(base) + ' <span class="caret"></span>';
+  const t0 = Date.now();
+  msg._ticker = setInterval(() => {
+    const s = Math.round((Date.now() - t0) / 1000);
+    msg.innerHTML = esc(base) + " (" + s + "s) <span class=\"caret\"></span>";
+  }, 1000);
+}
+function pendingStop(msg){
+  if (msg && msg._ticker){ clearInterval(msg._ticker); msg._ticker = null; }
+}
 function skillSlugFromPath(p){
   const parts = String(p == null ? "" : p).replace(/\\/g, "/").split("/").filter(s => s.length);
   if (parts.length >= 2 && parts[parts.length-1] === "SKILL.md") return parts[parts.length-2];
@@ -56,14 +74,15 @@ async function proposeSkillGraph(i){
   const btn = document.getElementById("skgraph-btn-"+i);
   const ta = document.getElementById("sk-"+i);
   const slug = ta ? skillSlugFromPath(ta.dataset.path) : "";
-  if (msg) msg.textContent = "Asking the model to draft a graph…";
+  if (msg) pendingStart(msg, "Asking the model to draft a graph…");
   if (btn) btn.disabled = true;
   let r;
   try {
     r = await postJSON("/api/memory", {action:"skill_graph_propose", skill: slug});
   } catch(e) { r = {error: String((e && e.message) || e)}; }
   if (btn) btn.disabled = false;
-  if (!msg || !box) return;
+  if (msg) pendingStop(msg);
+  if (!msg || !box || !msg.isConnected) return;
   if (r.error){ msg.textContent = "Error: "+r.error; return; }
   skillGraphDrafts[i] = r.graph;
   msg.textContent = "Draft ready — review it, then approve to compile and install.";
@@ -75,13 +94,14 @@ async function approveSkillGraph(i){
   const btn = document.getElementById("skgraph-ok-"+i);
   const graph = skillGraphDrafts[i];
   if (!graph){ if (msg) msg.textContent = "Nothing to approve — propose a graph first."; return; }
-  if (msg) msg.textContent = "Compiling and installing…";
+  if (msg) pendingStart(msg, "Compiling and installing…");
   if (btn) btn.disabled = true;
   let r;
   try {
     r = await postJSON("/api/memory", {action:"skill_graph_approve", graph});
   } catch(e) { r = {error: String((e && e.message) || e)}; }
-  if (!msg) return;
+  if (msg) pendingStop(msg);
+  if (!msg || !msg.isConnected) return;
   if (r.error){ msg.textContent = "Error: "+r.error; if (btn) btn.disabled = false; return; }
   delete skillGraphDrafts[i];
   msg.textContent = "Installed at "+r.plugin_path+" (compiled: "+r.compiled+", replaced: "+r.replaced+").";
@@ -91,13 +111,14 @@ async function forkSkill(i){
   const btn = document.getElementById("skfork-btn-"+i);
   const ta = document.getElementById("sk-"+i);
   const slug = ta ? skillSlugFromPath(ta.dataset.path) : "";
-  if (msg) msg.textContent = "Copying into your skills…";
+  if (msg) pendingStart(msg, "Copying into your skills…");
   if (btn) btn.disabled = true;
   let r;
   try {
     r = await postJSON("/api/memory", {action:"skill_fork", skill: slug});
   } catch(e) { r = {error: String((e && e.message) || e)}; }
-  if (!msg) return;
+  if (msg) pendingStop(msg);
+  if (!msg || !msg.isConnected){ if (btn) btn.disabled = false; return; }
   if (r.error){ msg.textContent = "Error: "+r.error; if (btn) btn.disabled = false; return; }
   // The new editable card is the confirmation: refresh re-reads the
   // skills from disk, so the fork appears with its Propose button.
