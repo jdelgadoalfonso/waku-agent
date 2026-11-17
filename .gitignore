@@ -68,6 +68,13 @@ waku/_c1_context_probe/
 nim/tests/factstore_fakes
 nim/tests/fixture_plugin
 nim/tests/fixture_graph_plugin
+nim/tests/fixture_plugin_worker
+nim/tests/fixture_plugin_toolneeds
+nim/tests/fixture_plugin_textops
+
+# a developer's local environment file: it holds real keys, so it stays out of
+# the tree and out of every diff, exactly like the deploy keys above.
+WAKU_ENV
 
 # local JSON-vs-msgpack benchmark reference: deliberately uncommitted
 nim/measure_state_sizes.nim
