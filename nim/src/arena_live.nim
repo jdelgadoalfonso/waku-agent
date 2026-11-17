@@ -275,10 +275,14 @@ proc makeLiveTurnJudge*(deps: ArenaDeps,
     %*{"text": textOf(resp.jget("content")),
       "in": usage.jget("in"), "out": usage.jget("out")}
 
-const skillGraphDraftMaxTokens* = 2000
-  ## Output ceiling for one drafted graph. A manifest is several prompt
+const skillGraphDraftMaxTokens* = 8192
+  ## Output ceiling for one drafted graph, the same ceiling a turn call
+  ## has. It was 2000, and a reasoning model spent that whole budget on
+  ## reasoning before emitting a byte of manifest: the live smoke saw
+  ## out=2000 twice with empty content. A manifest is several prompt
   ## strings long, so the judge's 300 tokens would cut a three-node skill
-  ## into JSON the route cannot parse.
+  ## into JSON the route cannot parse, and a reasoning authoring model
+  ## needs the headroom to finish thinking first.
 
 proc makeLiveSkillGraphDraft*(deps: ArenaDeps,
     provider: string): turn_evals.JudgeCallFn =

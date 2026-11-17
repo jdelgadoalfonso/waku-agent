@@ -287,9 +287,10 @@ suite "live skill graph draft":
     let resp = draft("draft a graph for tidy", "small-1")
     assert seen.len == 1
     assert seen[0]["model"].getStr() == "small-1"
-    # A manifest is several prompt strings long: the judge's 300 would
-    # truncate it into JSON the route cannot parse.
-    assert seen[0]["max_tokens"].getInt() >= 1000
+    # The draft cap is the settings output ceiling, not a smaller private
+    # number: a reasoning model burns tokens before it emits the manifest,
+    # and 2000 was exhausted by reasoning alone with an empty answer.
+    assert seen[0]["max_tokens"].getInt() == 8192
     assert seen[0]["messages"].len == 1
     assert seen[0]["messages"][0]["role"].getStr() == "user"
     assert seen[0]["messages"][0]["content"].getStr() ==
