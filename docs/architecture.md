@@ -229,6 +229,26 @@ Each tool card shows `cost_usd` and the provider when the result carries them
 not offer, and the system prompt says not to call them; hosted containers set
 it to treg's `balance` and `resources_list`, which the relay refuses.
 
+### A skill can compile to a plugin
+
+Skills are procedural memory: `matching_skills` copies a matched body into the
+system prompt. The Nim half adds a second stage that the frozen Python half does
+not have. `nim/src/graph/skillgraph.nim` validates a graph JSON in the plugin
+schema, restricted to `llm` and `router` nodes; `skillgen.nim` writes one Nim
+file from a fixed template; `skillcompile.nim` runs `nim c --app:lib` as a child
+process with `PATH` and `HOME` only; `skillcache.nim` keys the `.so` by the
+graph's canonical content under `<home>/skills-compiled/`; `skillinstall.nim`
+publishes it into `<home>/plugins/<name>.so`; and `skillmode.nim` names the text
+fallback when a step fails. The dashboard's `skill_graph_propose` and
+`skill_graph_approve` actions on `POST /api/memory` are the only entry point:
+the model drafts, a human submits, and the loop never compiles.
+`Session.skillTurn` (filled by `wireMemory`) answers a matching turn from the
+installed plugin in `runFullTurn`, after the system prompt is built, so a skill
+with no plugin behaves as before and a compiled one skips the loop, its
+streaming, the research reads and the MCP task filter.
+[skill-compiler-design.md](skill-compiler-design.md) holds the schema rules, the
+router contract and the known gaps.
+
 ### The turn receipt
 
 Every reply in the chat ends with one line that says what the turn did and

@@ -37,6 +37,7 @@ into four groups.
 | [orchestrator-memory-context-design.md](orchestrator-memory-context-design.md) | read-only memory for delegated workers: the bounded task snapshot without a worker store (proposal) |
 | [generic-workers-design.md](generic-workers-design.md) | any loop or graph as a same-binary worker process behind the delegation contract (proposal) |
 | [plugin-workers-design.md](plugin-workers-design.md) | graph plugins as worker processes: eligibility by manifest needs, effects owned by the orchestrator (proposal) |
+| [skill-compiler-design.md](skill-compiler-design.md) | a skill compiled to a plugin: the graph schema, the compiler stages, the router contract, what the loop skips, and the known gaps |
 | [mcp-per-turn-filter-design.md](mcp-per-turn-filter-design.md) | selective MCP tools: the per-turn filter and its `tasks`/`when` config |
 | [gmail-integration-design.md](gmail-integration-design.md) | Gmail as a capability: the three tools, the draft-first send guard, and its open decisions |
 | [providers-registry.md](providers-registry.md) | adding a model provider: one table in `data/providers.toml` |

@@ -6,7 +6,7 @@
 Read this before opening a PR or filing an issue: most of what is already
 known-broken is below, and half of it already has a fix in flight.
 
-**Last updated:** 2026-10-19
+**Last updated:** 2026-11-17
 
 ---
 
@@ -53,6 +53,11 @@ until the separate `WAKU_GMAIL_SEND` switch turns real delivery on.
 `waku connect google` grants mail in its own `~/.waku/gmail-token.json`, so
 revoking it leaves the calendar alone.
 
+**Skills can compile to a plugin.** `skill_graph_propose` drafts the graph and
+`skill_graph_approve` compiles it into `.waku/plugins/<name>.so`; a matching
+turn runs it headless instead of the loop. Open: no Memory-tab control yet, and
+a compiled skill skips streaming, the research reads and the MCP task filter.
+
 ## Known broken
 
 Nothing here is a surprise. If you hit one of these, the issue exists.
@@ -73,15 +78,11 @@ things that *might* work.
 
 Not a framework, not multi-agent, not production — true of `waku/`, see
 [architecture.md](architecture.md). `hosted/` runs that same code as a
-deployment instead; spec 001 designs it, and none of it exists in this repo
-yet.
-
-Additionally, and worth stating because people ask:
+deployment instead; spec 001 designs it, and none of it exists in this repo yet.
 
 - **No Windows CI.** The Windows bugs so far (#140, #141, both fixed) were
   found by contributors, not by us. Every Windows claim in this repo is
   untested.
-
 - **The Nim port's live Google calls need a TLS build.** `nim/src/gmail.nim`
   carries `gmail_search`, `gmail_read` and `gmail_send` behind `WAKU_GMAIL` and
   `WAKU_GMAIL_SEND`, and `nim/src/google_calendar.nim` answers `list_events`

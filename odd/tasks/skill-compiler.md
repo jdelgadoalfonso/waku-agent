@@ -11,15 +11,15 @@ S2: The validator (T1) is the security boundary: it checks schema, allowed kinds
 
 S3: Compilation uses a fixed Nim template (mirroring fixture_plugin_textops.nim ABI: waku_plugin_init/describe/node_run/string_free). The LLM never writes Nim code — only the JSON manifest changes between skills.
 
-S4: Compilation runs in a child process with timeout, minimal env, no network. Output: ~/.waku/skills-compiled/<name>-<hash>.so where hash is of the canonical graph JSON.
+S4 (corrected): Compilation runs in a child process with a timeout and a minimal environment: PATH and HOME, nothing else, so no key or WAKU_* variable reaches the compiler. It does NOT restrict the network - the child runs as the user on their own machine, and a socket sandbox was never implemented. Anyone reading the earlier wording would have believed a guarantee that does not exist. Output: ~/.waku/skills-compiled/<name>-<hash>.so where hash is of the canonical graph JSON.
 
 S5: If a .so for the graph hash already exists, load it directly (no recompile). Loaded .so files are never unloaded (process lifetime, per plugin contract). New skill version = new hash = new .so file.
 
-S6: Skills run as headless plugin workers (runPluginWorker) by default. In-process loading only for explicitly approved skills.
+S6 (corrected): A compiled skill runs as a headless plugin worker through `pluginRunHeadless`; `runPluginWorker` is the worker-role child-line wrapper, not the call the loop makes. In-process loading only when a human selects the assembled `plugin:<name>` graph.
 
 S7: If Nim is not available at runtime, skills fall back to text mode (current behavior). No hard dependency on the Nim toolchain.
 
-S8: Shadow mode for loops: first turn runs skill as text while compiling in background; subsequent turns use the compiled .so if compilation succeeded and eval passed.
+S8 (SUPERSEDED by S15, not implemented): shadow mode would have compiled out of band. The binary is synchronous and single-threaded by policy, so S15 replaced it: the loop uses an installed plugin and never compiles. Keep this line only to explain why nothing in the loop starts a compiler.
 
 S9: The validator also checks data flow, not just structure: every `{{key}}` in a prompt must be a key the node reads (`inKeys`) or `message`; every `inKeys` entry must be produced by an earlier node's `outKey` or be an input state key (`message`, `mem_text`); a node whose `outKey` is empty must not be read by anyone. An incoherent graph is refused loudly instead of interpolating an empty string.
 
@@ -116,3 +116,8 @@ S17: The router fallback's model call is metered too. The engine asks a router t
 
 L32: T7c done and verified by the parent: memory_live 43, app 47, worker_gather 10; diff purely additive (18 source lines, 151 test lines, zero deletions). The emission reuses the existing flat `cost` event that the worker/delegate path already produces, with `kind: "skill:<name>"`, and sits after the unchanged `skill` line but before returning to runFullTurn, so respond's endTurn still closes the turn afterwards. Guard is `turn.answered and usage.kind == JObject`: an empty reply that still reports usage books nothing, which is what S16 asks.
 L33: Residual cost gap recorded, not closed (found by the T7c worker and confirmed here): a router fallback LLM call inside a compiled graph is still unmetered, because the RouteFn call has a nil observer and its tokens are absent from the usage node the headless run returns. Pre-existing property of the engine (L8), now the last invisible spend in the feature. Opened as T7d/S17. Also recorded: a run that spends tokens and then raises books nothing by design, so that partial spend is invisible too.
+
+S18: The validator refuses a graph that can never answer. `pluginRunHeadless` answers `state["reply"]`, and the generator writes that key only for the last DECLARED node when it is an `llm` node; a graph whose last declared node is a `router` therefore validates, compiles, installs, and then answers nothing, so S15b silently falls back to text on every turn. A skill that can never run is worse than one that was refused.
+
+L34: T8 done and reviewed by the parent. The docs worker found three claims in this document that the code contradicts, all now corrected in place: S4 promised no network and only minimises the environment; S6 named the wrong function for what the loop calls; S8 described a shadow mode that S15 superseded and that is not implemented. That is the value of making a writer read the code instead of my summary.
+L35: Two real defects the docs pass exposed, verified by the parent. (1) A graph whose last declared node is a router compiles and can never answer: the generator writes `reply` only for a last declared llm node, and `pluginRunHeadless` reads `reply`, so such a skill falls back to text on every turn - a silent no-op the validator should refuse (opened as T1e/S18). (2) `nim/src/graph/skillmode.nim` has no importer anywhere in `nim/src`: the loop answered the plugin-or-text question by checking whether the plugin file exists, which left the module and its 6 tests as dead code (opened as a user decision: delete or wire).
