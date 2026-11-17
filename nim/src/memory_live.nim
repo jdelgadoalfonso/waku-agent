@@ -318,10 +318,16 @@ proc skillWorkerTurn*(home: string, bundled: seq[string], message, memText,
   let worker = if run.isNil: headlessSkillRun() else: run
   var turn: SkillTurn = (answered: false, skill: chosen, reply: "",
                          reason: "")
+  ## S16: the run's own token counts. `pluginRunHeadless` answers them in
+  ## `usage`, but only an ANSWERED run is a charge — a raise, an ineligible
+  ## manifest, an empty reply and a run that reported no llm call all book
+  ## nothing (`worker_plugin`'s no-invented-charge rule).
+  var usage = newJNull()
   try:
     let answer = worker(home, chosen, message, memText, model, client)
     if not answer.isNil and answer.kind == JObject:
       turn.reply = answer.jget("reply").getStr()
+      usage = answer.jget("usage")
     if turn.reply.strip().len == 0:
       turn.reason = "the skill answered nothing"
       turn.reply = ""
@@ -333,6 +339,18 @@ proc skillWorkerTurn*(home: string, bundled: seq[string], message, memText,
     notify("skill", %*{"skill": chosen,
                        "mode": (if turn.answered: "worker" else: "text"),
                        "reason": turn.reason})
+    # S16: the skill's tokens reach the SAME ledger as the loop, through
+    # the flat `cost` event the delegated worker path already emits (the
+    # tracer's `cost` branch books it and stamps `cost_usd`). `kind` names
+    # the skill, so `usage.jsonl` says which compiled skill spent the
+    # tokens. Emitted HERE, beside the `skill` line, because the tracer is
+    # turn-scoped: `endTurn` blanks the turn id, so a row written after
+    # the turn closes would carry no `turn_id`.
+    if turn.answered and usage.kind == JObject:
+      notify("cost", %*{"kind": "skill:" & chosen,
+                        "model": usage.jget("model").getStr(model),
+                        "in": usage.jget("in").getInt(0),
+                        "out": usage.jget("out").getInt(0)})
   result = turn
 
 proc opsState*(fact: JsonNode): bool =

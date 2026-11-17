@@ -21,6 +21,7 @@ import ../src/loop
 import ../src/memory
 import ../src/session
 import ../src/memory_live
+import ../src/trace
 import ../src/wire
 
 proc store(db: DbConn): FactStore = sqliteFactStore(db)
@@ -523,6 +524,14 @@ proc install(home, skill, source: string) =
   copyFile(buildFixture(getTempDir() / "waku-s15-fixtures",
     skill & ".so", source), home / "plugins" / (skill & ".so"))
 
+proc ledgerRows(home: string): seq[JsonNode] =
+  ## The permanent spend ledger, read exactly as `test_trace` and
+  ## `test_app` read it: one parsed row per model call.
+  if not fileExists(home / "usage.jsonl"):
+    return @[]
+  for line in lines(home / "usage.jsonl"):
+    result.add(parseJson(line))
+
 suite "S15 a compiled skill answers the turn":
 
   test "no installed plugin answers nothing, and stays silent":
@@ -658,6 +667,148 @@ suite "S15 a compiled skill answers the turn":
     assert turn.answered
     assert turn.skill == "swim", "swim is the installed one, pool is not"
     assert turn.reply == "goggles: swim"
+    removeDir(home)
+
+# ── S16: a compiled skill's model calls reach the ledger (T7c) ───────────────
+#
+# The headless run already answers its token counts in `state["usage"]`;
+# until T7c that node died at the seam, so the most expensive path in the
+# feature booked only its gate call. These tests assert on `usage.jsonl`
+# through a real `Tracer`, the same surface the loop and delegated-worker
+# tests read, and on the flat `cost` event shape that path already emits.
+
+suite "S16 a compiled skill's run is metered":
+
+  test "an llm skill turn books the skill's tokens on the live turn":
+    # The real path: a `.so` whose graph runs an llm node against a
+    # scripted client, under a real tracer. Two claims at once — the row
+    # carries the skill's counts and its kind names the skill, and it is
+    # written while the turn is live (`endTurn` is what blanks the id).
+    let home = freshHome("waku-s16-llm")
+    install(home, "textopsfx", "fixture_plugin_textops.nim")
+    writeSkill(home, "textopsfx", "summarise text operations",
+      "Summarise it.")
+    let client = LlmClient(create: proc(req: JsonNode): JsonNode =
+      %*{"stop_reason": "end_turn", "usage": {"in": 7, "out": 3},
+         "content": [{"type": "text", "text": "corto"}]})
+    var t = newTracer(home, "openai", "m")
+    t.turn("summarise text operations")
+    let turnId = t.turnId
+    let turn = skillWorkerTurn(home, @[], "summarise text operations", "",
+      "m", client, notify = t.tracerEvent())
+    assert turn.answered
+    assert turn.reply == "corto"
+    t.endTurn(turn.reply, 1)
+    let rows = ledgerRows(home)
+    assert rows.len == 1, "one skill call, one row: " & $rows
+    assert rows[0]["kind"].getStr() == "skill:textopsfx"
+    assert rows[0]["model"].getStr() == "m"
+    assert rows[0]["in"].getInt() == 7
+    assert rows[0]["out"].getInt() == 3
+    assert rows[0]["turn_id"].getStr() == turnId,
+      "the row must land inside the turn, not after endTurn"
+    # The existing `skill` line keeps its current fields; the cost row is
+    # added beside it, never instead of it.
+    var skillRows, costRows: seq[JsonNode] = @[]
+    for line in lines(t.path):
+      let row = parseJson(line)
+      if row["type"].getStr() == "skill":
+        skillRows.add(row)
+      elif row["type"].getStr() == "cost":
+        costRows.add(row)
+    assert skillRows.len == 1
+    assert skillRows[0]["skill"].getStr() == "textopsfx"
+    assert skillRows[0]["mode"].getStr() == "worker"
+    assert skillRows[0]["reason"].getStr() == ""
+    assert costRows.len == 1
+    assert costRows[0]["kind"].getStr() == "skill:textopsfx"
+    assert costRows[0]["in"].getInt() == 7
+    assert costRows[0]["out"].getInt() == 3
+    removeDir(home)
+
+  test "an empty reply books nothing, even when the run reports usage":
+    # S16's other half: a skill that answered nothing did not run. Its
+    # usage node, however plausible, must not become a charge.
+    let home = freshHome("waku-s16-empty")
+    writeSkill(home, "workergreet", "greet the user politely", "Say hello.")
+    createDir(home / "plugins")
+    writeFile(home / "plugins" / "workergreet.so", "a file is the signal")
+    var t = newTracer(home, "openai", "m")
+    t.turn("greet the user politely")
+    let turn = skillWorkerTurn(home, @[], "greet the user politely", "",
+      "m", deadClient(),
+      run = proc(home, skill, message, memText, model: string,
+                 client: LlmClient): JsonNode {.closure.} =
+        %*{"reply": "   ",
+           "usage": {"kind": "plugin", "model": model, "in": 9,
+                     "out": 4}},
+      notify = t.tracerEvent())
+    assert not turn.answered
+    t.endTurn("", 0)
+    assert ledgerRows(home).len == 0,
+      "a skill that answered nothing is not a cost"
+    var skillRows: seq[JsonNode] = @[]
+    for line in lines(t.path):
+      let row = parseJson(line)
+      if row["type"].getStr() == "skill":
+        skillRows.add(row)
+    assert skillRows.len == 1
+    assert skillRows[0]["skill"].getStr() == "workergreet"
+    assert skillRows[0]["mode"].getStr() == "text"
+    assert skillRows[0]["reason"].getStr() == turn.reason
+    removeDir(home)
+
+  test "a run that raises books nothing":
+    let home = freshHome("waku-s16-raise")
+    writeSkill(home, "workergreet", "greet the user politely", "Say hello.")
+    createDir(home / "plugins")
+    writeFile(home / "plugins" / "workergreet.so", "a file is the signal")
+    var t = newTracer(home, "openai", "m")
+    t.turn("greet the user politely")
+    let turn = skillWorkerTurn(home, @[], "greet the user politely", "",
+      "m", deadClient(),
+      run = proc(home, skill, message, memText, model: string,
+                 client: LlmClient): JsonNode {.closure.} =
+        raise newException(CatchableError, "the graph blew up"),
+      notify = t.tracerEvent())
+    assert not turn.answered
+    t.endTurn("", 0)
+    assert ledgerRows(home).len == 0, "a run that raised is not a cost"
+    var skillRows: seq[JsonNode] = @[]
+    for line in lines(t.path):
+      let row = parseJson(line)
+      if row["type"].getStr() == "skill":
+        skillRows.add(row)
+    assert skillRows.len == 1
+    assert skillRows[0]["skill"].getStr() == "workergreet"
+    assert skillRows[0]["mode"].getStr() == "text"
+    assert skillRows[0]["reason"].getStr() == turn.reason
+    removeDir(home)
+
+  test "an ineligible skill books nothing":
+    # The real `.so` gate: `pluginRunHeadless` refuses a manifest that
+    # needs a parent-side tool before running anything, so no model was
+    # called and no row may appear.
+    let home = freshHome("waku-s16-ineligible")
+    install(home, "toolhungry", "fixture_plugin_toolneeds.nim")
+    writeSkill(home, "toolhungry", "fetch data needing tools", "Fetch it.")
+    var t = newTracer(home, "openai", "m")
+    t.turn("fetch data")
+    let turn = skillWorkerTurn(home, @[], "fetch data", "", "m",
+      deadClient(), notify = t.tracerEvent())
+    assert not turn.answered
+    assert "not eligible" in turn.reason, turn.reason
+    t.endTurn("", 0)
+    assert ledgerRows(home).len == 0, "an ineligible skill never ran"
+    var skillRows: seq[JsonNode] = @[]
+    for line in lines(t.path):
+      let row = parseJson(line)
+      if row["type"].getStr() == "skill":
+        skillRows.add(row)
+    assert skillRows.len == 1
+    assert skillRows[0]["skill"].getStr() == "toolhungry"
+    assert skillRows[0]["mode"].getStr() == "text"
+    assert skillRows[0]["reason"].getStr() == turn.reason
     removeDir(home)
 
 suite "S15c a matched skill reaches the prompt through the wiring":
