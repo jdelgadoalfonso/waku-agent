@@ -21,6 +21,7 @@ import ../src/loop
 import ../src/integrations
 import ../src/factstore
 import ../src/graph/skillgraph
+from ../src/graph/registry import pluginGraph
 import ../src/memory
 import factstore_fakes
 import ../src/pricing
@@ -1343,6 +1344,47 @@ suite "phase 8b POST /api/memory":
     assert forkBundledSkill(home, @[bundled], "nosuch").error.len > 0
     assert forkBundledSkill(home, @[], "tidy").error.len > 0
     removeDir(root)
+
+  test "approving a refused graph registers nothing for the chart":
+    let root = freshDir("waku-dash-hotrefuse")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    let bad = %*{"name": "hotregbad", "abi": 1, "nodes": [
+      {"name": "x", "kind": "tool", "inKeys": ["message"],
+       "outKey": "y", "needs": []}]}
+    let (_, _, body) = handlePost(d, "/api/memory",
+      $(%*{"action": "skill_graph_approve", "graph": $bad}))
+    assert not parseJson(body).getOrDefault("ok").getBool(false)
+    assert pluginGraph("plugin:hotregbad").isNil
+    removeDir(root)
+
+  test "hotRegisterSkillGraph charts a fresh skill and keeps the running one on replace":
+    # Process-global registry: unique names, and these tests stay below
+    # the strict engine-topology count above, which pins a pristine process.
+    let first = hotRegisterSkillGraph(%*{"name": "hotregfx", "abi": 1,
+      "nodes": [{"name": "greet", "kind": "llm", "inKeys": ["message"],
+                 "outKey": "reply", "needs": ["llm"],
+                 "prompt": "Hi: {{message}}"}]})
+    assert first.len == 0, "register failed: " & first
+    let topo = pluginGraph("plugin:hotregfx")
+    assert topo.kind == JObject
+    var names: seq[string] = @[]
+    for n in topo["nodes"]:
+      names.add(n["name"].getStr())
+    assert "plugin:hotregfx/greet" in names
+    # A replaced skill keeps showing the running code until a restart:
+    # same name, different nodes, registration untouched.
+    let second = hotRegisterSkillGraph(%*{"name": "hotregfx", "abi": 1,
+      "nodes": [{"name": "other", "kind": "llm", "inKeys": ["message"],
+                 "outKey": "reply", "needs": ["llm"],
+                 "prompt": "Yo: {{message}}"}]})
+    assert second.len == 0
+    var names2: seq[string] = @[]
+    for n in pluginGraph("plugin:hotregfx")["nodes"]:
+      names2.add(n["name"].getStr())
+    assert names2 == names
+    assert hotRegisterSkillGraph(%*{"name": "", "abi": 1,
+      "nodes": []}).len > 0
 
   test "fact and episode crud moves sqlite rows":
     let root = freshDir("waku-dash-memcrud")

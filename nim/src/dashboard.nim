@@ -108,13 +108,14 @@ import ./memory_live
 import ./pricing
 import ./providers
 import ./registry
-from ./graph/registry import enabledWorkflows, defaultPlugins, parsePluginList
+from ./graph/registry import enabledWorkflows, defaultPlugins, parsePluginList,
+  pluginGraph, registerPluginGraph
 from ./graph/agents import agentKind
 import ./graph/hostfns
 import ./graph/plugins
 import ./graph/skillgraph
 import ./graph/skillinstall
-from ./graph/engine import runGraph
+from ./graph/engine import runGraph, describe
 import ./search
 import ./session
 import ./supervisor
@@ -2058,6 +2059,36 @@ proc skillGraphInstallFailure(message: string): JsonNode =
   %*{"ok": false, "plugin_path": "", "compiled": false, "replaced": false,
      "error": message}
 
+proc hotRegisterSkillGraph*(manifest: JsonNode): string =
+  ## S22: describe-and-register a freshly approved skill graph without
+  ## loading its library, so the Graph tab lists it with no restart.
+  ## Returns "" when the chart now lists the skill — a fresh registration
+  ## or an already-running name — else the reason, and the caller treats
+  ## any reason as fail-open: the install already succeeded, the chart
+  ## just doesn't list it yet.
+  ##
+  ## Only a missing name is ever added: a replaced skill keeps showing
+  ## the running code until a restart (process lifetime, S15d), and
+  ## showing the new shape over old code would be the lie this registry
+  ## exists to avoid. The shell plugin below is describe-only — its run
+  ## closures would call into a nil library — and nothing executes from
+  ## the registry: it stores describe payloads, never runnables. Turns
+  ## keep loading the real library per call through `pluginRunHeadless`.
+  let mname = jsonStr(manifest.jget("name"))
+  if mname.len == 0:
+    return "the approved graph has no name"
+  let name = pluginGraphPrefix & mname
+  if not pluginGraph(name).isNil:
+    return ""
+  var decls: seq[PluginNodeDecl]
+  try:
+    decls = manifestDecls(manifest, "skill graph '" & mname & "'")
+    let g = buildPluginGraph(LoadedPlugin(name: mname, nodes: decls), decls)
+    registerPluginGraph(name, g.describe())
+  except CatchableError as exc:
+    return exc.msg
+  return ""
+
 proc skillGraphApprove*(d: DashboardDeps, payload: JsonNode): JsonNode =
   ## S14b: compile and install exactly the graph JSON the human submitted,
   ## and say whether a compile happened and whether an existing plugin was
@@ -2086,6 +2117,13 @@ proc skillGraphApprove*(d: DashboardDeps, payload: JsonNode): JsonNode =
     d.home / "skills-build")
   if not installed.ok:
     return skillGraphInstallFailure(installed.error)
+  # S22, hot and fail-open: the fresh skill lists on the Graph tab with
+  # no restart. The chart is data, so no library is loaded here — and a
+  # replaced skill keeps showing the running code until a restart, which
+  # is what `hotRegisterSkillGraph` preserves by only adding new names.
+  let regErr = hotRegisterSkillGraph(manifest)
+  if regErr.len > 0:
+    stderr.writeLine("(skill-graph) chart registration skipped: " & regErr)
   %*{"ok": true, "plugin_path": installed.soPath,
      "compiled": installed.recentlyCompiled, "replaced": installed.replaced,
      "error": ""}
@@ -2094,7 +2132,6 @@ type ForkSkillResult* = object
   ok*: bool
   path*: string   ## home-relative dest of the fork, set when ok
   error*: string
-
 proc forkBundledSkill*(home: string, bundled: seq[string],
     slug: string): ForkSkillResult =
   ## S20: copy a shipped skill into `<home>/skills/<slug>/SKILL.md` as an

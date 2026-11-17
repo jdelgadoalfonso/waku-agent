@@ -165,6 +165,45 @@ proc pluginWorkerEligible*(nodes: seq[PluginNodeDecl]): bool =
       return false
   true
 
+proc manifestDecls*(manifest: JsonNode, label: string): seq[PluginNodeDecl] =
+  ## A manifest's node declarations, validated structurally — the same
+  ## shape `loadPlugin` builds after opening the library, minus the
+  ## library. Raises like the loader on refusal; the caller unloads.
+  ## Separated so the dashboard can chart a freshly approved skill
+  ## without loading it (S22): the chart is data, and data needs no dlopen.
+  if manifest.kind != JObject or
+      manifest.jget("name").kind != JString or
+      manifest.jget("name").getStr().len == 0:
+    raise newException(CatchableError,
+      label & " manifest needs a non-empty name")
+  if manifest.jget("abi").getInt(-1) != int(pluginAbiVersion):
+    raise newException(CatchableError,
+      label & " manifest abi is not " & $pluginAbiVersion)
+  let defs = manifest.jget("nodes")
+  if defs.kind != JArray:
+    raise newException(CatchableError,
+      label & " manifest needs a nodes array")
+  var names: seq[string] = @[]
+  for def in items(defs):
+    let n = def.jget("name").getStr()
+    let k = def.jget("kind").getStr()
+    if n.len == 0:
+      raise newException(CatchableError,
+        label & " has a node without a name")
+    if not isKnownPluginKind(k):
+      raise newException(CatchableError,
+        label & " declares unknown kind '" & k & "'")
+    result.add(PluginNodeDecl(name: n, kind: k, inKeys: strSeq(def, "inKeys"),
+                              outKey: def.jget("outKey").getStr(),
+                              needs: strSeq(def, "needs")))
+    names.add(n)
+  # Routes come second on purpose: a `dst` may name a node declared LATER in
+  # the manifest (the diamond shape does exactly that), so every name has to
+  # be known before the first edge is checked.
+  let pluginName = manifest["name"].getStr()
+  for i in 0 ..< result.len:
+    result[i].routes = routeList(defs[i], pluginName, names)
+
 proc loadPlugin*(path: string, host: ptr HostFns): LoadedPlugin =
   ## Open, gate, init, describe, validate. Raises (never nil) on any
   ## failure; a failed load unloads what it opened. A SUCCESSFUL load
@@ -213,38 +252,13 @@ proc loadPlugin*(path: string, host: ptr HostFns): LoadedPlugin =
     unloadLib(lib)
     raise newException(CatchableError,
       "plugin " & path & " manifest abi is not " & $pluginAbiVersion)
-  let defs = manifest.jget("nodes")
-  if defs.kind != JArray:
-    unloadLib(lib)
-    raise newException(CatchableError,
-      "plugin " & path & " manifest needs a nodes array")
-  var nodes: seq[PluginNodeDecl] = @[]
-  var names: seq[string] = @[]
-  for def in items(defs):
-    let n = def.jget("name").getStr()
-    let k = def.jget("kind").getStr()
-    if n.len == 0:
-      unloadLib(lib)
-      raise newException(CatchableError,
-        "plugin " & path & " has a node without a name")
-    if not isKnownPluginKind(k):
-      unloadLib(lib)
-      raise newException(CatchableError,
-        "plugin " & path & " declares unknown kind '" & k & "'")
-    nodes.add(PluginNodeDecl(name: n, kind: k, inKeys: strSeq(def, "inKeys"),
-                             outKey: def.jget("outKey").getStr(),
-                             needs: strSeq(def, "needs")))
-    names.add(n)
-  # Routes come second on purpose: a `dst` may name a node declared LATER in
-  # the manifest (the diamond shape does exactly that), so every name has to
-  # be known before the first edge is checked.
+  var nodes: seq[PluginNodeDecl]
+  try:
+    nodes = manifestDecls(manifest, "plugin " & path)
+  except CatchableError:
+    unloadLib(lib)  # a refused manifest unloads what it opened
+    raise
   let pluginName = manifest["name"].getStr()
-  for i in 0 ..< nodes.len:
-    try:
-      nodes[i].routes = routeList(defs[i], pluginName, names)
-    except CatchableError:
-      unloadLib(lib)  # a refused manifest unloads what it opened
-      raise
   LoadedPlugin(name: pluginName, path: path, lib: lib,
                nodeRun: nodeRunFn, stringFree: freeFn, nodes: nodes)
 
