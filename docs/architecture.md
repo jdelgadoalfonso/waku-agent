@@ -238,7 +238,7 @@ schema, restricted to `llm` and `router` nodes; `skillgen.nim` writes one Nim
 file from a fixed template; `skillcompile.nim` runs `nim c --app:lib` as a child
 process with `PATH` and `HOME` only; `skillcache.nim` keys the `.so` by the
 graph's canonical content under `<home>/skills-compiled/`; `skillinstall.nim`
-publishes it into `<home>/plugins/<name>.so`; and `skillmode.nim` names the text
+publishes it into `<home>/plugins/<name>.so`; and the loop names the text
 fallback when a step fails. The dashboard's `skill_graph_propose` and
 `skill_graph_approve` actions on `POST /api/memory` are the only entry point:
 the model drafts, a human submits, and the loop never compiles.

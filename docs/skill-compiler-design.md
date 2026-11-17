@@ -127,7 +127,6 @@ with an HTTP call to `POST /api/memory` until one ships.
 | Compile | `nim/src/graph/skillcompile.nim` | Runs `nim c --app:lib` as a child process with a timeout and a minimal environment. |
 | Reuse | `nim/src/graph/skillcache.nim` | Keys the `.so` by the graph's canonical content and publishes it atomically. |
 | Install | `nim/src/graph/skillinstall.nim` | Copies the cached library into `<home>/plugins/<name>.so` under a lock. |
-| Decide | `nim/src/graph/skillmode.nim` | Answers plugin or text in one place, with the reason for a fallback. |
 
 ### Validate
 
@@ -224,16 +223,17 @@ restarts.
 
 ### Decide
 
-`resolveSkillExecution` (`nim/src/graph/skillmode.nim`) answers the plugin-or-text
-question in one place, and `describeExecution` writes the answer as one line that
-never hides a fallback. Every compile failure becomes text mode with a reason: no
-compiler, an invalid graph, a non-zero exit, a timeout, an install error.
+There is no separate resolver module: the question is too small to deserve one.
+`runFullTurn` asks `installedSkill` whether `<home>/plugins/<skill>.so` exists.
+If it does, the skill runs as a worker; if not, its body reaches the prompt as
+before. Nothing on this path compiles, so no skill ever makes a turn wait for a
+compiler.
 
-The loop does not call it. The loop uses what is installed and compiles nothing,
-so `runFullTurn` asks `installedSkill` whether the file exists.
-`resolveSkillExecution` is the same decision for a caller that does want to
-compile, and its six tests pin the fallbacks.
-
+Every failure declines with a reason rather than failing the turn: no compiler,
+an invalid graph, a non-zero exit, a timeout, an install error, a plugin that
+cannot load, an ineligible manifest, an empty reply. The reason is written to the
+trace as one line that names the skill, so a skill that is silently staying in
+text mode can be found.
 ## The router contract
 
 A route carries an optional `when` condition with a key, an op and a value. The
