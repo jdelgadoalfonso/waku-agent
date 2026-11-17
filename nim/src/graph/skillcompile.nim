@@ -132,8 +132,15 @@ proc compileSkillGraph*(manifest: JsonNode, workDir: string,
   except OSError as exc:
     return SkillCompileResult(error: "cannot create work dir: " & exc.msg)
 
-  let nimFile = workDir / graph.name & ".nim"
-  let soFile = workDir / graph.name & ".so"
+  # The child runs with `workDir` as its working directory, so every path
+  # handed to it must be absolute: a relative one resolves inside the work
+  # dir, where the parent never wrote the source. The dashboard's default
+  # home is ".waku", and the live smoke hit exactly this shape -
+  # "cannot open '.waku/skills-build/…/greeter.nim'" — because the test
+  # suites always used temp-dir absolute homes.
+  let absWorkDir = absolutePath(workDir)
+  let nimFile = absWorkDir / graph.name & ".nim"
+  let soFile = absWorkDir / graph.name & ".so"
   try:
     writeFile(nimFile, generateSkillNim(graph))
   except IOError as exc:

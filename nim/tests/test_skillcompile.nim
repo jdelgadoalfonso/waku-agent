@@ -138,6 +138,45 @@ exit 3
     assert not fileExists(dir / "compiledfx.so")
     removeDir(dir)
 
+  test "a relative work dir compiles: the child gets absolute paths":
+    # The dashboard's default home is ".waku", so production allocates
+    # "<cwd>/.waku/skills-build/<graph>-<hash>-<pid>-<serial>" and starts
+    # the child with THAT dir as its working directory. Every path argument
+    # must therefore be absolute: a relative one resolves inside the work
+    # dir, where the parent never wrote the source. The live smoke hit
+    # exactly this: "cannot open '.waku/skills-build/…/greeter.nim'".
+    # The suites always used temp-dir absolute homes, so the default
+    # relative home was never compiled until a real model drafted a graph.
+    let base = getTempDir() / "waku-skillcompile-relwd"
+    if dirExists(base):
+      removeDir(base)
+    createDir(base / "wd")
+    let seenPath = base / "seen"
+    let scriptPath = base / "probe"
+    writeFile(scriptPath, "#!/bin/sh\npwd > " & seenPath &
+      "\nprintf '%s\\n' \"$@\" >> " & seenPath & "\nexit 3\n")
+    setFilePermissions(scriptPath, {fpUserRead, fpUserWrite, fpUserExec})
+    let saved = getCurrentDir()
+    setCurrentDir(base)
+    defer:
+      setCurrentDir(saved)
+      removeDir(base)
+    let res = compileSkillGraph(validManifest(), "wd", nimExe = scriptPath)
+    assert not res.ok
+    let seen = readFile(seenPath).strip().split('\n')
+    assert seen.len >= 2
+    # The child's working directory is the work dir itself.
+    assert seen[0] == base / "wd"
+    # Every path the parent hands over is absolute, so the child resolves
+    # them the same way no matter what its working directory is. (The
+    # probe writes one argument per line, so scan them all.)
+    for tok in seen[1 .. ^1].join(" ").splitWhitespace():
+      if tok.contains(".nim") or tok.contains(".so"):
+        # Nim's `-o:<path>` flag glues the option to the path; the path
+        # part is what must be absolute.
+        let path = if tok.startsWith("-o:"): tok[3 .. ^1] else: tok
+        assert path.startsWith("/"), "child got a relative path: " & tok
+
   test "captured compiler output is bounded and says it was truncated":
     let dir = getTempDir() / "waku-skillcompile-bound"
     if dirExists(dir):
