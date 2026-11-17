@@ -134,7 +134,8 @@ ${sk.body}`;
         <span class="meta" id="skmsg-${i}" style="margin-left:var(--space-2)">${esc(sk.rel)}</span></div>
       ${sk.editable ? `<div style="margin-top:var(--space-2)">${uiButton("Propose graph", {level: "secondary", onclick: `proposeSkillGraph(${i})`, attrs: `id="skgraph-btn-${i}"`})}
         <span class="meta" id="skgraph-msg-${i}" style="margin-left:var(--space-2)"></span></div>
-      <div id="skgraph-${i}" style="margin-top:var(--space-2)"></div>` : ""}`);
+      <div id="skgraph-${i}" style="margin-top:var(--space-2)"></div>` : `<div style="margin-top:var(--space-2)">${uiButton("Copy to my skills", {level: "secondary", onclick: `forkSkill(${i})`, attrs: `id="skfork-btn-${i}"`})}
+        <span class="meta" id="skfork-msg-${i}" style="margin-left:var(--space-2)"></span></div>`}`);
   }).join("") || uiCard(`<span class="empty">no skills loaded</span>`);
   return h;
 }

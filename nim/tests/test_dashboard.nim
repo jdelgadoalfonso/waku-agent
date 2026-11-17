@@ -1313,6 +1313,37 @@ suite "phase 8b POST /api/memory":
       parseJson(handlePost(d, "/api/memory", esc)[2])["error"].getStr()
     removeDir(root)
 
+  test "skill_fork refuses a bad slug and an unknown skill without touching home":
+    let root = freshDir("waku-dash-forkbad")
+    createDir(root / "static")
+    var d = testDeps(root, root / "static")
+    let bad = $(%*{"action": "skill_fork", "skill": "../evil"})
+    assert "folder name" in
+      parseJson(handlePost(d, "/api/memory", bad)[2])["error"].getStr()
+    let unknown = $(%*{"action": "skill_fork", "skill": "nosuchskill"})
+    assert "no bundled skill" in
+      parseJson(handlePost(d, "/api/memory", unknown)[2])["error"].getStr()
+    assert not dirExists(root / "skills")
+    removeDir(root)
+
+  test "forkBundledSkill copies a shipped skill byte-identical and refuses a second fork":
+    let root = freshDir("waku-dash-forkproc")
+    let bundled = root / "bundled"
+    createDir(bundled / "tidy")
+    let text = "---\nname: tidy\ndescription: tidies\n---\n# Tidy\n"
+    writeFile(bundled / "tidy" / "SKILL.md", text)
+    let home = root / "home"
+    let first = forkBundledSkill(home, @[bundled], "tidy")
+    assert first.ok, "fork failed: " & first.error
+    assert first.path == "skills" / "tidy" / "SKILL.md"
+    assert readFile(home / first.path) == text.strip() & "\n"
+    let second = forkBundledSkill(home, @[bundled], "tidy")
+    assert not second.ok
+    assert "already" in second.error
+    assert forkBundledSkill(home, @[bundled], "nosuch").error.len > 0
+    assert forkBundledSkill(home, @[], "tidy").error.len > 0
+    removeDir(root)
+
   test "fact and episode crud moves sqlite rows":
     let root = freshDir("waku-dash-memcrud")
     createDir(root / "static")

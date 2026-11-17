@@ -2090,6 +2090,55 @@ proc skillGraphApprove*(d: DashboardDeps, payload: JsonNode): JsonNode =
      "compiled": installed.recentlyCompiled, "replaced": installed.replaced,
      "error": ""}
 
+type ForkSkillResult* = object
+  ok*: bool
+  path*: string   ## home-relative dest of the fork, set when ok
+  error*: string
+
+proc forkBundledSkill*(home: string, bundled: seq[string],
+    slug: string): ForkSkillResult =
+  ## S20: copy a shipped skill into `<home>/skills/<slug>/SKILL.md` as an
+  ## explicit fork — the step a bundled skill needs before propose can
+  ## draft it. The slug rule is propose's own (one folder name, never a
+  ## path), the read is byte-identical, and an existing home copy always
+  ## wins: forking twice is a sentence naming the copy, never an
+  ## overwrite. Nothing here compiles or installs; approve stays the
+  ## only path to a plugin.
+  let why = skillGraphSlugError(slug)
+  if why.len > 0:
+    return ForkSkillResult(error: why)
+  var src = ""
+  for dir in bundled:
+    let cand = absolutePath(dir) / slug / "SKILL.md"
+    if fileExists(cand):
+      src = cand
+      break
+  if src.len == 0:
+    return ForkSkillResult(
+      error: "no bundled skill named '" & slug & "'")
+  let dest = absolutePath(home) / "skills" / slug / "SKILL.md"
+  let rel = "skills" / slug / "SKILL.md"
+  if fileExists(dest):
+    return ForkSkillResult(
+      error: "already in your skills: edit " & rel & " there")
+  var text: string
+  try:
+    text = readFile(src)
+  except IOError as exc:
+    return ForkSkillResult(
+      error: "cannot read the bundled skill: " & exc.msg)
+  if not validSkillDoc(text):
+    return ForkSkillResult(
+      error: "the bundled skill is not a valid SKILL.md")
+  try:
+    createDir(parentDir(dest))
+    writeFile(dest, text.strip() & "\n")
+  except OSError as exc:
+    return ForkSkillResult(error: "cannot write the fork: " & exc.msg)
+  except IOError as exc:
+    return ForkSkillResult(error: "cannot write the fork: " & exc.msg)
+  ForkSkillResult(ok: true, path: rel)
+
 proc memoryAction*(d: DashboardDeps, payload: JsonNode): JsonNode =
   ## Port of `memory_action`: SOUL.md + SKILL.md writes plus sqlite
   ## fact/episode CRUD against the same state.db the agent uses.
@@ -2123,6 +2172,12 @@ proc memoryAction*(d: DashboardDeps, payload: JsonNode): JsonNode =
     return skillGraphPropose(d, payload)
   if action == "skill_graph_approve":
     return skillGraphApprove(d, payload)
+  if action == "skill_fork":
+    let res = forkBundledSkill(d.home, bundledSkillDirs(),
+      jsonStr(payload.jget("skill")).strip())
+    if not res.ok:
+      return %*{"ok": false, "error": res.error}
+    return %*{"ok": true, "path": res.path}
   if action == "delete_episode" and
       d.env.getOrDefault("WAKU_EPISODIC_STORE", "") == "notion":
     return %*{"error": "notion episodes are not supported in the Nim port"}

@@ -56,7 +56,8 @@ revoking it leaves the calendar alone.
 **Skills can compile to a plugin.** `skill_graph_propose` drafts the graph and
 `skill_graph_approve` compiles it into `.waku/plugins/<name>.so`; a matching
 turn runs it headless instead of the loop. The Memory tab's Skills list proposes
-the graph per home skill and approves the reviewed draft; a compiled skill skips
+the graph per home skill and approves the reviewed draft; a shipped skill is
+copied home first with Copy to my skills. A compiled skill skips
 streaming, the research reads and the MCP task filter.
 
 ## Known broken

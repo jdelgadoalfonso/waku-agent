@@ -86,3 +86,20 @@ async function approveSkillGraph(i){
   delete skillGraphDrafts[i];
   msg.textContent = "Installed at "+r.plugin_path+" (compiled: "+r.compiled+", replaced: "+r.replaced+").";
 }
+async function forkSkill(i){
+  const msg = document.getElementById("skfork-msg-"+i);
+  const btn = document.getElementById("skfork-btn-"+i);
+  const ta = document.getElementById("sk-"+i);
+  const slug = ta ? skillSlugFromPath(ta.dataset.path) : "";
+  if (msg) msg.textContent = "Copying into your skills…";
+  if (btn) btn.disabled = true;
+  let r;
+  try {
+    r = await postJSON("/api/memory", {action:"skill_fork", skill: slug});
+  } catch(e) { r = {error: String((e && e.message) || e)}; }
+  if (!msg) return;
+  if (r.error){ msg.textContent = "Error: "+r.error; if (btn) btn.disabled = false; return; }
+  // The new editable card is the confirmation: refresh re-reads the
+  // skills from disk, so the fork appears with its Propose button.
+  editing = false; refresh();
+}
