@@ -112,6 +112,8 @@ from ./graph/registry import enabledWorkflows, defaultPlugins, parsePluginList
 from ./graph/agents import agentKind
 import ./graph/hostfns
 import ./graph/plugins
+import ./graph/skillgraph
+import ./graph/skillinstall
 from ./graph/engine import runGraph
 import ./search
 import ./session
@@ -250,6 +252,14 @@ type
     ## (`makeLiveTurnJudge`); nil is the in-process deps case
     ## (validate-only callers), where the route answers the honest
     ## error instead of a 500.
+  SkillGraphDraftFn* = turn_evals.JudgeCallFn
+    ## One model call behind `skill_graph_propose`: the prompt carries the
+    ## skill's SKILL.md and the schema, the answer's `text` is the draft
+    ## graph. The same shape as the turn judge's call because it asks a
+    ## backend the same thing — one prompt in, the answer out — and only
+    ## `text` is read here. Nil answers the honest error, like the judge
+    ## route: a deployment that has not wired a model backend must say so,
+    ## never compile a guess.
   HostedListFn* = memory_arena.HostedListFn
     ## One hosted store's facts behind `/api/memory-arena/stores`.
   HostedWipeFn* = memory_arena.HostedWipeFn
@@ -332,6 +342,7 @@ type
     raceFn*: RaceFn
     judgeFn*: JudgeFn
     turnJudgeFn*: TurnJudgeCallFn
+    skillGraphDraftFn*: SkillGraphDraftFn
     memoryRunFn*: MemoryRunFn
     judgmentRaceFn*: JudgmentRaceFn
     hostedListFn*: HostedListFn
@@ -1939,12 +1950,154 @@ proc validSkillDoc*(text: string): bool =
       hasDesc = true
   hasName and hasDesc
 
+const skillGraphDraftPrompt* = """You draft a Waku skill graph: a JSON
+manifest that a fixed Nim template compiles into a plugin.
+
+Answer with ONE JSON object and nothing else — no prose, no code fence.
+
+The manifest:
+- "name": the skill slug, lowercase with hyphens.
+- "abi": 1
+- "nodes": a non-empty array. Execution starts at the first node, every
+  node must be reachable from it, and a cycle is refused.
+
+A node:
+- "name": unique in the graph.
+- "kind": "llm" or "router" — a skill may declare nothing else.
+- "inKeys": the state keys this node reads.
+- "outKey": the state key this node writes, or "" for none.
+- "needs": only "llm" is allowed, and a router MUST declare ["llm"].
+- "prompt": llm nodes only, a plain string. Every {{key}} placeholder in
+  it must be one of that node's inKeys.
+
+An llm node flows to the next node in the array. A router branches and
+must carry a non-empty "routes" array of {"label", "dst"} objects: the
+label is unique inside the node, the dst is a node name or "END". A route
+may add "when": {"key", "op", "value"} with op one of "len_gt",
+"len_lt" (integer value), "eq", "contains" (string value). Routes are
+tried in declaration order and the first match wins; when none matches, a
+model call picks one of the declared labels — which is why the router
+needs "llm".
+
+"message" (what the user typed) and "mem_text" (recalled memory) are
+always readable. Every other key a node reads must be the outKey of a node
+that runs before it. The LAST llm node must also write "reply": that is
+what the plugin answers with.
+
+The skill to compile:
+"""
+  ## What `skill_graph_propose` asks the model for. It describes what
+  ## compilation accepts — the validator's schema (kinds, needs, route
+  ## conditions, data flow) plus the `reply` the last llm node has to
+  ## write — because a prompt that contradicts the validator only wastes
+  ## the human's time on a draft that cannot compile.
+
+proc skillGraphSlugError(slug: string): string =
+  ## Why `slug` cannot name a skill folder, or "" when it can: one plain
+  ## path part under `<home>/skills`, the same rule `save_skill` enforces
+  ## on the file it writes.
+  if slug.len == 0:
+    return "a skill slug (the folder name under skills/) is required"
+  if slug != lastPathPart(slug) or slug in [".", ".."]:
+    return "a skill slug is one folder name under skills/, not a path: '" &
+      slug & "'"
+
+proc skillGraphPropose*(d: DashboardDeps, payload: JsonNode): JsonNode =
+  ## S14a: draft a skill graph from `<home>/skills/<slug>/SKILL.md`.
+  ## The model writes the graph and `validateSkillGraph` — the same
+  ## boundary compilation runs — decides whether the draft is shown, so a
+  ## refused draft carries the validator's own sentence back to the human.
+  ## Nothing here compiles or writes a plugin: the plugin comes from
+  ## `skill_graph_approve` and the JSON a human submitted there.
+  let slug = jsonStr(payload.jget("skill")).strip()
+  let why = skillGraphSlugError(slug)
+  if why.len > 0:
+    return %*{"ok": false, "error": why}
+  let doc = absolutePath(d.home) / "skills" / slug / "SKILL.md"
+  if not fileExists(doc):
+    return %*{"ok": false, "error": "no skill named '" & slug &
+      "' in this home: there is no " & doc}
+  if d.skillGraphDraftFn.isNil:
+    return %*{"ok": false, "error": "no model backend is wired in the Nim " &
+      "port — the graph draft behind \"Propose a graph\" is not connected " &
+      "in this process"}
+  # `small_model or model`, like the judge's `judge_client`: a home with
+  # no small model still drafts with the model every turn already uses.
+  let model = if d.smallModel.len > 0: d.smallModel else: d.model
+  # Read outside the call: a SKILL.md that cannot be read is not a model
+  # failure, and it must not be reported as one.
+  let skillDoc = readFile(doc)
+  var answer: JsonNode
+  try:
+    answer = d.skillGraphDraftFn(skillGraphDraftPrompt & skillDoc, model)
+  except CatchableError as exc:
+    return %*{"ok": false, "error": "the graph draft failed: " &
+      errorText(exc)}
+  let draft = jsonStr(answer.jget("text"))
+  if draft.strip().len == 0:
+    return %*{"ok": false, "error": "the model answered without a graph"}
+  var graph: JsonNode
+  try:
+    graph = parseJson(draft)
+  except JsonParsingError as exc:
+    return %*{"ok": false, "error": "the draft is not JSON: " & exc.msg}
+  try:
+    discard validateSkillGraph(graph)
+  except SkillGraphError as exc:
+    return %*{"ok": false, "error": exc.msg}
+  # The draft travels back EXACTLY as the model wrote it (the raw text,
+  # not a re-serialized node): the human reviews that text, and `approve`
+  # compiles that text.
+  %*{"ok": true, "skill": slug, "graph": draft}
+
+proc skillGraphInstallFailure(message: string): JsonNode =
+  ## The approve failure shape: the same keys a success carries, so the
+  ## frontend reads one shape, with no plugin path because nothing was
+  ## installed.
+  %*{"ok": false, "plugin_path": "", "compiled": false, "replaced": false,
+     "error": message}
+
+proc skillGraphApprove*(d: DashboardDeps, payload: JsonNode): JsonNode =
+  ## S14b: compile and install exactly the graph JSON the human submitted,
+  ## and say whether a compile happened and whether an existing plugin was
+  ## replaced. No model is consulted — there is no draft to regenerate,
+  ## repair or default here — and both validator calls (this one and the
+  ## one inside the install) read the same node, so neither can pass a
+  ## graph the other refuses. A refused graph compiles nothing.
+  let raw = jsonStr(payload.jget("graph")).strip()
+  if raw.len == 0:
+    return skillGraphInstallFailure(
+      "skill_graph_approve needs the graph JSON the human approved")
+  var manifest: JsonNode
+  try:
+    manifest = parseJson(raw)
+  except JsonParsingError as exc:
+    return skillGraphInstallFailure(
+      "the submitted graph is not JSON: " & exc.msg)
+  try:
+    discard validateSkillGraph(manifest)
+  except SkillGraphError as exc:
+    return skillGraphInstallFailure(exc.msg)
+  # Scratch lives under the home, beside `skills-compiled`: a compile's
+  # work directory is allocated per call, so two approvals never share a
+  # source or an output path.
+  let installed = installCompiledSkill(manifest, d.home,
+    d.home / "skills-build")
+  if not installed.ok:
+    return skillGraphInstallFailure(installed.error)
+  %*{"ok": true, "plugin_path": installed.soPath,
+     "compiled": installed.recentlyCompiled, "replaced": installed.replaced,
+     "error": ""}
+
 proc memoryAction*(d: DashboardDeps, payload: JsonNode): JsonNode =
   ## Port of `memory_action`: SOUL.md + SKILL.md writes plus sqlite
   ## fact/episode CRUD against the same state.db the agent uses.
   ## `save_skill` admits SKILL.md files under `home/skills` only (Python
   ## also admits the bundled repo skills — read-only here, since the port
   ## ships one binary); the Notion episode path stays an honest error.
+  ## The two `skill_graph_*` actions ride this dispatcher for the same
+  ## reason `save_skill` does: authoring a skill lives on this route, so
+  ## the served POST surface does not grow a second one.
   let action = jsonStr(payload.jget("action"))
   if action == "save_soul":
     let text = jsonStr(payload.jget("content")).strip()
@@ -1965,6 +2118,10 @@ proc memoryAction*(d: DashboardDeps, payload: JsonNode): JsonNode =
     createDir(parentDir(dest))
     writeFile(dest, text.strip() & "\n")
     return %*{"ok": true}
+  if action == "skill_graph_propose":
+    return skillGraphPropose(d, payload)
+  if action == "skill_graph_approve":
+    return skillGraphApprove(d, payload)
   if action == "delete_episode" and
       d.env.getOrDefault("WAKU_EPISODIC_STORE", "") == "notion":
     return %*{"error": "notion episodes are not supported in the Nim port"}
@@ -3359,6 +3516,20 @@ proc buildDashboardDeps*(providers: seq[Provider], settings: Settings,
   let box = WakuBox(providers: providers, dotenvPath: dotenvPath,
     settings: settings)
   let staticDir = findStaticDir()
+  # S14d: `skill_graph_propose` drafts with the dashboard's own model call,
+  # built from the configured provider the way the turn judge is
+  # (`makeLiveTurnJudge` in `serveDashboardCmd`). The arena box here carries
+  # only what a one-prompt call reads — the home for the ledger, the
+  # registry rows and the key lookup — so it stays free of the contest
+  # seams (github, apple, MCP, the Jev caller) the process entry builds for
+  # a race. No provider means nil: the route answers its honest "no model
+  # backend" sentence rather than drafting against a provider nobody
+  # configured.
+  var draftFn: SkillGraphDraftFn = nil
+  if settings.provider.len > 0:
+    draftFn = makeLiveSkillGraphDraft(ArenaDeps(home: settings.home,
+      providers: providers, dotenvPath: dotenvPath,
+      apiKey: settings.apiKey), settings.provider)
   DashboardDeps(home: settings.home, staticDir: staticDir, box: box,
     provider: settings.provider, model: settings.model,
     smallModel: settings.smallModel, baseUrl: settings.baseUrl,
@@ -3368,7 +3539,8 @@ proc buildDashboardDeps*(providers: seq[Provider], settings: Settings,
     chatStreamFn: liveChatStreamFn(box),
     graphStreamFn: liveGraphStreamFn(box), voiceFn: liveVoiceFn(),
     sessionFn: liveSessionFn(box), revealProbe: nil, revealOpen: nil,
-    raceFn: nil, judgeFn: nil, turnJudgeFn: nil, memoryRunFn: nil, judgmentRaceFn: nil,
+    raceFn: nil, judgeFn: nil, turnJudgeFn: nil, skillGraphDraftFn: draftFn,
+    memoryRunFn: nil, judgmentRaceFn: nil,
     hostedListFn: nil, hostedWipeFn: nil,
     judgmentSuites: suiteList(allSuites()),
     memoryExample: memoryExampleFor(staticDir), store: nil,
@@ -4271,6 +4443,9 @@ proc serveDashboardCmd*(providers: seq[Provider], settings: Settings,
     srv.deps.raceFn = makeLiveRace(adeps)
     srv.deps.judgeFn = makeLiveJudge(adeps)
     srv.deps.turnJudgeFn = makeLiveTurnJudge(adeps, settings.provider)
+    # `srv.deps.skillGraphDraftFn` is already live: `buildDashboardDeps`
+    # wired it from the configured provider, because a draft needs nothing
+    # but the model call this block's box gives a race (spec S14d).
     srv.deps.memoryRunFn = makeLiveMemoryRun(adeps)
     srv.deps.judgmentRaceFn = makeLiveJudgmentRace(adeps)
     return runDashboardCmd(srv, rig.reconcileHook(), rig.shutdownHook(),

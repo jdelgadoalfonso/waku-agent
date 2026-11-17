@@ -48,6 +48,7 @@ import ./scoring
 import ./search
 import ./session
 import ./skills
+import ./trace
 import ./wire
 
 type
@@ -270,6 +271,47 @@ proc makeLiveTurnJudge*(deps: ArenaDeps,
     let resp = client.create(%*{"model": model,
       "max_tokens": turn_evals.judgeMaxTokens,
       "messages": @[%*{"role": "user", "content": prompt}]})
+    let usage = resp.jget("usage")
+    %*{"text": textOf(resp.jget("content")),
+      "in": usage.jget("in"), "out": usage.jget("out")}
+
+const skillGraphDraftMaxTokens* = 2000
+  ## Output ceiling for one drafted graph. A manifest is several prompt
+  ## strings long, so the judge's 300 tokens would cut a three-node skill
+  ## into JSON the route cannot parse.
+
+proc makeLiveSkillGraphDraft*(deps: ArenaDeps,
+    provider: string): turn_evals.JudgeCallFn =
+  ## The `skillGraphDraftFn` seam behind `skill_graph_propose` (spec
+  ## S14d): one prompt-carrying call to the provider in use, answering the
+  ## same `{text, in, out}` shape `makeLiveTurnJudge` answers with. The
+  ## route reads `text` as the draft graph and `validateSkillGraph` — not
+  ## this call — decides whether the human ever sees it.
+  ##
+  ## Built exactly like the turn judge: same `Settings` literal, same
+  ## `liveClientFor`, same request keys. The one difference is metering:
+  ## `turn_evals.judgeTurn` writes the judge's own ledger row from this
+  ## answer's tokens, while nothing writes a draft's, so the client is
+  ## wrapped in `meteredClient` and its `llm` event goes to this home's
+  ## tracer — one `skill_graph` row in usage.jsonl, like every other
+  ## model call a home pays for.
+  ##
+  ## A call that raises propagates as it is: the route turns it into "the
+  ## graph draft failed: <reason>" (the no-key and unknown-provider
+  ## sentences included), so a proposal never becomes a silent no-op.
+  result = proc(prompt, model: string): JsonNode {.closure.} =
+    var s = Settings(provider: provider, apiKey: "", model: model,
+      home: deps.home, smallModel: "", baseUrl: "", maxIterations: 10,
+      maxTokens: 8192, historyTurns: 12, graphWorkflows: false,
+      consolidateEvery: 6, retrievalTopK: 4, experimental: false,
+      appleTools: false, ghTool: false, ghRepo: "")
+    let client = liveClientFor(deps, s)
+    # A fresh tracer per call: a draft belongs to no turn (its `turn_id` is
+    # empty in both rows), and one press of "Propose a graph" is one line.
+    let notify = tracerEvent(newTracer(deps.home, provider, model))
+    let resp = meteredClient(client, "skill_graph", model, notify).create(
+      %*{"model": model, "max_tokens": skillGraphDraftMaxTokens,
+         "messages": @[%*{"role": "user", "content": prompt}]})
     let usage = resp.jget("usage")
     %*{"text": textOf(resp.jget("content")),
       "in": usage.jget("in"), "out": usage.jget("out")}

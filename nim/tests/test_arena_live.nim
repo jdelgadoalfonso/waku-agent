@@ -266,6 +266,63 @@ suite "live turn judge":
       discard call("grade this turn", "small-1")
     removeDir(home)
 
+const draftGraph = """{"name": "tidy", "abi": 1, "nodes": [
+  {"name": "tidy", "kind": "llm", "inKeys": ["message"],
+   "outKey": "reply", "needs": ["llm"],
+   "prompt": "Tidy this text: {{message}}"}]}"""
+  ## What a well-behaved model answers a draft prompt with: the route reads
+  ## this text as the graph, so the shape is the validator's, not ours.
+
+suite "live skill graph draft":
+  test "one model call carries the prompt and lands in the ledger":
+    let home = freshHome("waku-skilldraft-live")
+    var deps = stubDeps(home, Bank(scripts: initTable[string, seq[JsonNode]](),
+      pos: initTable[string, int]()))
+    var seen: seq[JsonNode] = @[]
+    deps.buildClient = proc(provider, model: string): LlmClient {.closure.} =
+      LlmClient(create: proc(req: JsonNode): JsonNode {.closure.} =
+        seen.add(req)
+        textResp(draftGraph, 340, 90))
+    let draft = makeLiveSkillGraphDraft(deps, "prov")
+    let resp = draft("draft a graph for tidy", "small-1")
+    assert seen.len == 1
+    assert seen[0]["model"].getStr() == "small-1"
+    # A manifest is several prompt strings long: the judge's 300 would
+    # truncate it into JSON the route cannot parse.
+    assert seen[0]["max_tokens"].getInt() >= 1000
+    assert seen[0]["messages"].len == 1
+    assert seen[0]["messages"][0]["role"].getStr() == "user"
+    assert seen[0]["messages"][0]["content"].getStr() ==
+      "draft a graph for tidy"
+    assert resp["text"].getStr() == draftGraph
+    assert resp["in"].getInt() == 340
+    assert resp["out"].getInt() == 90
+    # Metered, not merely called: the draft's tokens reach this home's
+    # spend ledger, the ground truth the arena runner reads through
+    # `ledgerTokens`, so a proposal is never a free model call.
+    assert ledgerTokens(home) == (340, 90)
+    let rows = readFile(home / "usage.jsonl").strip().splitLines()
+    assert rows.len == 1, $rows.len
+    let row = parseJson(rows[0])
+    assert row["kind"].getStr() == "skill_graph"
+    assert row["provider"].getStr() == "prov"
+    assert row["model"].getStr() == "small-1"
+    assert row["in"].getInt() == 340
+    assert row["out"].getInt() == 90
+    removeDir(home)
+
+  test "a call that raises propagates and books nothing":
+    let home = freshHome("waku-skilldraft-dead")
+    var deps = stubDeps(home, Bank(scripts: initTable[string, seq[JsonNode]](),
+      pos: initTable[string, int]()))
+    deps.buildClient = proc(provider, model: string): LlmClient {.closure.} =
+      raise newException(CatchableError, "bad key")
+    let draft = makeLiveSkillGraphDraft(deps, "prov")
+    expect CatchableError:
+      discard draft("draft a graph for tidy", "small-1")
+    assert ledgerTokens(home) == (0, 0)
+    removeDir(home)
+
 suite "live probes and graph stream":
   test "provider probe passes silently without a matching key":
     let probe = liveProviderProbe(@[], freshHome("waku-probe-none"),

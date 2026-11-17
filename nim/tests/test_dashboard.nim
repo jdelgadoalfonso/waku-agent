@@ -20,6 +20,7 @@ import ../src/db
 import ../src/loop
 import ../src/integrations
 import ../src/factstore
+import ../src/graph/skillgraph
 import ../src/memory
 import factstore_fakes
 import ../src/pricing
@@ -78,7 +79,8 @@ proc testDeps(home, staticDir: string): DashboardDeps =
     dotenvPath: "", hostOs: "linux",
     chatFn: nil, chatStreamFn: nil, graphStreamFn: nil, voiceFn: nil,
     sessionFn: nil, revealProbe: nil, revealOpen: nil, raceFn: nil,
-    judgeFn: nil, memoryRunFn: nil, judgmentRaceFn: nil,
+    judgeFn: nil, skillGraphDraftFn: nil, memoryRunFn: nil,
+    judgmentRaceFn: nil,
     hostedListFn: nil, hostedWipeFn: nil, judgmentSuites: newJArray(),
     memoryExample: "", store: nil,
     probes: initTable[string, ProbeFn](), providerProbe: nil,
@@ -2450,3 +2452,336 @@ suite "phase 15 turn-evals judge route":
     assert absolutePath(memoryExampleFor(assets)) ==
         repo / "evals" / "memory_arena.json",
       "memoryExampleFor() resolved " & memoryExampleFor(assets)
+
+# ---------------------------------------------------------------------------
+# T7a (S14a/S14b): authoring a skill graph is two explicit steps. Propose
+# asks the model to draft a graph from the skill's SKILL.md and validates
+# it; approve compiles EXACTLY the JSON the human submitted. Both ride the
+# `memory_action` dispatcher where `save_skill` already lives, so the
+# served POST route surface never moves (S14c).
+
+const tidyDraft = """
+{"name": "tidy", "abi": 1, "nodes": [
+  {"name": "tidy", "kind": "llm", "inKeys": ["message"],
+   "outKey": "reply", "needs": ["llm"],
+   "prompt": "Tidy this text: {{message}}"}]}"""
+  ## A valid single-node graph: one llm node reads `message`, writes
+  ## `reply`, and its prompt reads only a key it declares.
+
+const tidyDraftV2 = """
+{"name": "tidy", "abi": 1, "nodes": [
+  {"name": "tidy", "kind": "llm", "inKeys": ["message"],
+   "outKey": "reply", "needs": ["llm"],
+   "prompt": "Tidy this text in two short lines: {{message}}"}]}"""
+  ## Same name, different prompt: a different graph, hence a different .so.
+
+const toolDraft = """
+{"name": "tidy", "abi": 1, "nodes": [
+  {"name": "sum", "kind": "tool", "inKeys": ["message"],
+   "outKey": "reply", "needs": ["llm"], "prompt": "{{message}}"}]}"""
+  ## The validator's first refusal: a kind no skill may declare.
+
+proc validatorMessage(draft: string): string =
+  ## What the validator says about `draft` — the exact sentence a refused
+  ## proposal has to carry back to the human.
+  try:
+    discard validateSkillGraph(parseJson(draft))
+  except SkillGraphError as exc:
+    return exc.msg
+
+proc skillHome(name: string): string =
+  ## A temp home with one authored skill: `skills/tidy/SKILL.md`.
+  result = freshDir(name)
+  createDir(result / "static")
+  createDir(result / "skills" / "tidy")
+  writeFile(result / "skills" / "tidy" / "SKILL.md",
+    "---\nname: tidy\ndescription: tidies text\n---\n\nTidy any text.\n")
+
+proc pluginFiles(root: string): seq[string] =
+  ## Every file under `<home>/plugins` as path and bytes, so a caller can
+  ## assert the folder is byte-for-byte what it was. The marker stands in
+  ## for "the folder does not exist", which is not the same as "empty".
+  let dir = root / "plugins"
+  if not dirExists(dir):
+    return @["<no plugins folder>"]
+  for path in walkDirRec(dir):
+    result.add(path & "=" & readFile(path))
+
+suite "T7a skill graph authoring":
+  test "propose without a model backend answers honestly and writes nothing":
+    let root = skillHome("waku-dash-graphpropose-none")
+    var d = testDeps(root, root / "static")
+    let (status, _, body) = handlePost(d, "/api/memory",
+      """{"action": "skill_graph_propose", "skill": "tidy"}""")
+    assert status == 200
+    let node = parseJson(body)
+    assert not node["ok"].getBool()
+    assert "no model backend" in node["error"].getStr().toLowerAscii()
+    assert pluginFiles(root) == @["<no plugins folder>"]
+    assert not dirExists(root / "skills-compiled")
+    removeDir(root)
+
+  test "propose refuses an unknown skill and a slug that escapes skills/":
+    let root = skillHome("waku-dash-graphpropose-slug")
+    var d = testDeps(root, root / "static")
+    let missing = parseJson(handlePost(d, "/api/memory",
+      """{"action": "skill_graph_propose", "skill": "nope"}""")[2])
+    assert not missing["ok"].getBool()
+    assert "nope" in missing["error"].getStr()
+    let escape = parseJson(handlePost(d, "/api/memory",
+      """{"action": "skill_graph_propose", "skill": "../../etc"}""")[2])
+    assert not escape["ok"].getBool()
+    assert "slug" in escape["error"].getStr()
+    let blank = parseJson(handlePost(d, "/api/memory",
+      """{"action": "skill_graph_propose", "skill": "  "}""")[2])
+    assert not blank["ok"].getBool()
+    removeDir(root)
+
+  test "approve compiles the submitted JSON and reports the plugin path":
+    let root = skillHome("waku-dash-graphapprove")
+    var d = testDeps(root, root / "static")
+    let (status, _, body) = handlePost(d, "/api/memory",
+      $(%*{"action": "skill_graph_approve", "graph": tidyDraft}))
+    assert status == 200
+    let node = parseJson(body)
+    assert node["ok"].getBool(), node["error"].getStr()
+    assert node["plugin_path"].getStr() == root / "plugins" / "tidy.so"
+    # The submission was compiled, not replayed from a cache.
+    assert node["compiled"].getBool()
+    assert not node["replaced"].getBool()
+    assert node["error"].getStr() == ""
+    assert fileExists(node["plugin_path"].getStr())
+    removeDir(root)
+
+  test "approve of an invalid graph compiles nothing and touches no plugin":
+    let root = skillHome("waku-dash-graphapprove-bad")
+    createDir(root / "plugins")
+    writeFile(root / "plugins" / "keep.txt", "existing plugin folder\n")
+    let before = pluginFiles(root)
+    var d = testDeps(root, root / "static")
+    let (status, _, body) = handlePost(d, "/api/memory",
+      $(%*{"action": "skill_graph_approve", "graph": toolDraft}))
+    assert status == 200
+    let node = parseJson(body)
+    assert not node["ok"].getBool()
+    assert node["error"].getStr() == validatorMessage(toolDraft)
+    assert node["plugin_path"].getStr() == ""
+    assert not node["compiled"].getBool()
+    assert pluginFiles(root) == before
+    assert not fileExists(root / "plugins" / "tidy.so")
+    assert not dirExists(root / "skills-compiled")
+    assert not dirExists(root / "skills-build")
+    # Broken JSON is refused the same way, before anything is compiled.
+    let broken = parseJson(handlePost(d, "/api/memory",
+      """{"action": "skill_graph_approve", "graph": "{not json"}""")[2])
+    assert not broken["ok"].getBool()
+    assert "not JSON" in broken["error"].getStr()
+    assert pluginFiles(root) == before
+    removeDir(root)
+
+  test "approve of a changed graph for the same name reports a replacement":
+    let root = skillHome("waku-dash-graphapprove-replace")
+    var d = testDeps(root, root / "static")
+    let first = parseJson(handlePost(d, "/api/memory",
+      $(%*{"action": "skill_graph_approve", "graph": tidyDraft}))[2])
+    assert first["ok"].getBool(), first["error"].getStr()
+    assert first["compiled"].getBool() and not first["replaced"].getBool()
+    let target = first["plugin_path"].getStr()
+    let before = readFile(target)
+    let second = parseJson(handlePost(d, "/api/memory",
+      $(%*{"action": "skill_graph_approve", "graph": tidyDraftV2}))[2])
+    assert second["ok"].getBool(), second["error"].getStr()
+    assert second["plugin_path"].getStr() == target
+    assert second["compiled"].getBool()
+    assert second["replaced"].getBool()
+    assert readFile(target) != before
+    # The same graph a second time is a cache hit, not a replacement.
+    let third = parseJson(handlePost(d, "/api/memory",
+      $(%*{"action": "skill_graph_approve", "graph": tidyDraftV2}))[2])
+    assert third["ok"].getBool(), third["error"].getStr()
+    assert not third["compiled"].getBool()
+    assert not third["replaced"].getBool()
+    removeDir(root)
+
+suite "T7a the graph draft and its prompt":
+  test "propose returns the draft the model wrote, untouched":
+    let root = skillHome("waku-dash-graphpropose-draft")
+    var d = testDeps(root, root / "static")
+    var seen: seq[string] = @[]
+    d.skillGraphDraftFn = proc(prompt, model: string): JsonNode {.closure.} =
+      seen.add(prompt)
+      %*{"text": tidyDraft, "in": 900, "out": 220}
+    let (status, _, body) = handlePost(d, "/api/memory",
+      """{"action": "skill_graph_propose", "skill": "tidy"}""")
+    assert status == 200
+    let node = parseJson(body)
+    assert node["ok"].getBool(), node["error"].getStr()
+    assert node["skill"].getStr() == "tidy"
+    # Byte-for-byte what the model wrote: not re-serialized, not stripped.
+    assert node["graph"].getStr() == tidyDraft
+    assert seen.len == 1
+    assert "Tidy any text." in seen[0],
+      "the SKILL.md text never reached the model"
+    # Proposing is a read: no plugin, no cache entry, no compile.
+    assert pluginFiles(root) == @["<no plugins folder>"]
+    assert not dirExists(root / "skills-compiled")
+    assert not dirExists(root / "skills-build")
+    removeDir(root)
+
+  test "propose carries the validator's refusal verbatim":
+    let root = skillHome("waku-dash-graphpropose-refused")
+    var d = testDeps(root, root / "static")
+    d.skillGraphDraftFn = proc(prompt, model: string): JsonNode {.closure.} =
+      %*{"text": toolDraft, "in": 900, "out": 200}
+    let node = parseJson(handlePost(d, "/api/memory",
+      """{"action": "skill_graph_propose", "skill": "tidy"}""")[2])
+    assert not node["ok"].getBool()
+    assert node["error"].getStr() == validatorMessage(toolDraft)
+    assert "forbidden kind" in node["error"].getStr()
+    assert not node.hasKey("graph"),
+      "a refused draft must not travel as if it were valid"
+    assert pluginFiles(root) == @["<no plugins folder>"]
+    removeDir(root)
+
+  test "propose refuses a draft that is not JSON, without compiling":
+    let root = skillHome("waku-dash-graphpropose-notjson")
+    var d = testDeps(root, root / "static")
+    d.skillGraphDraftFn = proc(prompt, model: string): JsonNode {.closure.} =
+      %*{"text": "Sure! Here is your graph: sorry, no.", "in": 900, "out": 20}
+    let node = parseJson(handlePost(d, "/api/memory",
+      """{"action": "skill_graph_propose", "skill": "tidy"}""")[2])
+    assert not node["ok"].getBool()
+    assert "not JSON" in node["error"].getStr()
+    assert not dirExists(root / "skills-compiled")
+    removeDir(root)
+
+  test "the draft prompt states what the validator accepts":
+    let root = skillHome("waku-dash-graphpropose-prompt")
+    var d = testDeps(root, root / "static")
+    var prompts: seq[string] = @[]
+    d.skillGraphDraftFn = proc(prompt, model: string): JsonNode {.closure.} =
+      prompts.add(prompt)
+      %*{"text": tidyDraft, "in": 900, "out": 220}
+    discard handlePost(d, "/api/memory",
+      """{"action": "skill_graph_propose", "skill": "tidy"}""")
+    assert prompts.len == 1
+    let prompt = prompts[0]
+    # The schema the validator enforces, field by field.
+    for key in ["name", "abi", "nodes", "kind", "inKeys", "outKey", "needs",
+        "prompt", "routes", "label", "dst", "when"]:
+      assert "\"" & key & "\"" in prompt, "the prompt never names " & key
+    # The closed catalogs: a prompt naming an op the validator refuses
+    # sends the human down a dead end.
+    for word in ["llm", "router", "len_gt", "len_lt", "eq", "contains", "END",
+        "reply", "message", "mem_text"]:
+      assert word in prompt, "the prompt never mentions " & word
+    assert "JSON" in prompt and "nothing else" in prompt
+    removeDir(root)
+
+  test "propose drafts with the small model, or the home's model without one":
+    var seen: seq[string] = @[]
+    let record = proc(prompt, model: string): JsonNode {.closure.} =
+      seen.add(model)
+      %*{"text": tidyDraft, "in": 1, "out": 1}
+    let small = skillHome("waku-dash-graphpropose-model-small")
+    var withSmall = testDeps(small, small / "static")
+    withSmall.smallModel = "small-1"
+    withSmall.skillGraphDraftFn = record
+    discard handlePost(withSmall, "/api/memory",
+      """{"action": "skill_graph_propose", "skill": "tidy"}""")
+    let bare = skillHome("waku-dash-graphpropose-model-bare")
+    var withoutSmall = testDeps(bare, bare / "static")
+    withoutSmall.skillGraphDraftFn = record
+    discard handlePost(withoutSmall, "/api/memory",
+      """{"action": "skill_graph_propose", "skill": "tidy"}""")
+    assert seen == @["small-1", "test-model"], $seen
+    removeDir(small)
+    removeDir(bare)
+
+  test "approve never asks the model: the submitted JSON is the whole input":
+    let root = skillHome("waku-dash-graphapprove-nomodel")
+    var d = testDeps(root, root / "static")
+    var drafts = 0
+    d.skillGraphDraftFn = proc(prompt, model: string): JsonNode {.closure.} =
+      inc drafts
+      %*{"text": "not a graph at all", "in": 1, "out": 1}
+    let node = parseJson(handlePost(d, "/api/memory",
+      $(%*{"action": "skill_graph_approve", "graph": tidyDraft}))[2])
+    assert node["ok"].getBool(), node["error"].getStr()
+    assert drafts == 0, "approve consulted a model: it is not compiling " &
+      "what the human submitted"
+    assert node["plugin_path"].getStr() == root / "plugins" / "tidy.so"
+    assert fileExists(node["plugin_path"].getStr())
+    removeDir(root)
+
+  test "the ops the prompt offers are the ops the validator accepts":
+    # The prompt names the op catalog in prose, so nothing structurally
+    # ties the two lists together. This pairs each declared op with a
+    # router graph the validator has to accept: an op the validator drops
+    # (or spells differently) fails here, and the prompt gets fixed in the
+    # same change instead of sending the model down a dead end.
+    let ops = {
+      "len_gt": """{"key": "message", "op": "len_gt", "value": 10}""",
+      "len_lt": """{"key": "message", "op": "len_lt", "value": 10}""",
+      "eq": """{"key": "message", "op": "eq", "value": "hi"}""",
+      "contains": """{"key": "message", "op": "contains", "value": "hi"}""",
+    }.toTable
+    for op, cond in ops:
+      let graph = parseJson("""{"name": "tidy", "abi": 1, "nodes": [
+        {"name": "route", "kind": "router", "inKeys": ["message"],
+         "outKey": "", "needs": ["llm"],
+         "routes": [{"label": "yes", "dst": "answer", "when": """ & cond & """},
+                    {"label": "no", "dst": "answer"}]},
+        {"name": "answer", "kind": "llm", "inKeys": ["message"],
+         "outKey": "reply", "needs": ["llm"],
+         "prompt": "Answer {{message}}"}]}""")
+      discard validateSkillGraph(graph)
+      assert "\"" & op & "\"" in skillGraphDraftPrompt
+
+suite "T7a2 the dashboard's own draft backend":
+  test "a configured provider wires a draft that is a model call":
+    let root = freshDir("waku-dash-graphwired")
+    var settings = defaultSettings()
+    settings.home = root
+    settings.provider = "anthropic"
+    settings.model = "test-model"
+    var wired = buildDashboardDeps(@[], settings, "")
+    assert not wired.skillGraphDraftFn.isNil,
+      "a configured provider left the draft backend unwired: in a shipped " &
+      "binary propose could only answer \"no model backend\""
+    createDir(root / "static")
+    createDir(root / "skills" / "tidy")
+    writeFile(root / "skills" / "tidy" / "SKILL.md",
+      "---\nname: tidy\ndescription: tidies text\n---\n\nTidy any text.\n")
+    # The wired call is a model call, never the unwired refusal: with no
+    # registry row and no key it fails where every client does, and the
+    # route reports that as a failed draft.
+    let node = parseJson(handlePost(wired, "/api/memory",
+      """{"action": "skill_graph_propose", "skill": "tidy"}""")[2])
+    assert not node["ok"].getBool()
+    let said = node["error"].getStr()
+    assert "no model backend" notin said.toLowerAscii(),
+      "a wired draft still answered the unwired sentence: " & said
+    assert "the graph draft failed" in said, said
+    # A draft is a read: nothing is compiled and no plugin appears.
+    assert pluginFiles(root) == @["<no plugins folder>"]
+    assert not dirExists(root / "skills-compiled")
+    removeDir(root)
+
+  test "no provider configured leaves the draft unwired and honest":
+    let root = freshDir("waku-dash-graphwired-none")
+    var settings = defaultSettings()
+    settings.home = root
+    settings.provider = ""
+    var bare = buildDashboardDeps(@[], settings, "")
+    assert bare.skillGraphDraftFn.isNil,
+      "no provider configured must leave the draft unwired, never a guess"
+    createDir(root / "static")
+    createDir(root / "skills" / "tidy")
+    writeFile(root / "skills" / "tidy" / "SKILL.md",
+      "---\nname: tidy\ndescription: tidies text\n---\n\nTidy any text.\n")
+    let node = parseJson(handlePost(bare, "/api/memory",
+      """{"action": "skill_graph_propose", "skill": "tidy"}""")[2])
+    assert not node["ok"].getBool()
+    assert "no model backend" in node["error"].getStr().toLowerAscii()
+    removeDir(root)
