@@ -131,7 +131,10 @@ ${sk.body}`;
       <textarea class="editor" id="sk-${i}" style="min-height:150px;margin-top:var(--space-2)" data-path="${esc(sk.path)}"
         oninput="dirty('sksave-${i}')" onfocus="markEditing()">${esc(full)}</textarea>
       <div style="margin-top:var(--space-2)">${uiButton("Save SKILL.md", {level: "primary", onclick: `saveSkill(${i})`, attrs: `id="sksave-${i}" disabled`})}
-        <span class="meta" id="skmsg-${i}" style="margin-left:var(--space-2)">${esc(sk.rel)}</span></div>`);
+        <span class="meta" id="skmsg-${i}" style="margin-left:var(--space-2)">${esc(sk.rel)}</span></div>
+      ${sk.editable ? `<div style="margin-top:var(--space-2)">${uiButton("Propose graph", {level: "secondary", onclick: `proposeSkillGraph(${i})`, attrs: `id="skgraph-btn-${i}"`})}
+        <span class="meta" id="skgraph-msg-${i}" style="margin-left:var(--space-2)"></span></div>
+      <div id="skgraph-${i}" style="margin-top:var(--space-2)"></div>` : ""}`);
   }).join("") || uiCard(`<span class="empty">no skills loaded</span>`);
   return h;
 }
