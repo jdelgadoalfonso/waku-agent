@@ -318,10 +318,10 @@ proc skillWorkerTurn*(home: string, bundled: seq[string], message, memText,
   let worker = if run.isNil: headlessSkillRun() else: run
   var turn: SkillTurn = (answered: false, skill: chosen, reply: "",
                          reason: "")
-  ## S16: the run's own token counts. `pluginRunHeadless` answers them in
-  ## `usage`, but only an ANSWERED run is a charge — a raise, an ineligible
-  ## manifest, an empty reply and a run that reported no llm call all book
-  ## nothing (`worker_plugin`'s no-invented-charge rule).
+  ## S16 + S23: the run's own token counts. `pluginRunHeadless` answers them in
+  ## `usage`. S23: a run that spent tokens then raised or answered nothing
+  ## still books what it spent — only ineligible manifests and runs that
+  ## reported no llm call book nothing (`worker_plugin`'s no-invented-charge rule).
   var usage = newJNull()
   try:
     let answer = worker(home, chosen, message, memText, model, client)
@@ -333,6 +333,10 @@ proc skillWorkerTurn*(home: string, bundled: seq[string], message, memText,
       turn.reply = ""
     else:
       turn.answered = true
+  except PluginFailed as pf:
+    turn.reason = "the plugin failed: " & errorText(pf)
+    if pf.usage.kind == JObject:
+      usage = pf.usage
   except CatchableError as exc:
     turn.reason = "the plugin failed: " & errorText(exc)
   if not notify.isNil:
@@ -346,7 +350,7 @@ proc skillWorkerTurn*(home: string, bundled: seq[string], message, memText,
     # tokens. Emitted HERE, beside the `skill` line, because the tracer is
     # turn-scoped: `endTurn` blanks the turn id, so a row written after
     # the turn closes would carry no `turn_id`.
-    if turn.answered and usage.kind == JObject:
+    if usage.kind == JObject:
       notify("cost", %*{"kind": "skill:" & chosen,
                         "model": usage.jget("model").getStr(model),
                         "in": usage.jget("in").getInt(0),

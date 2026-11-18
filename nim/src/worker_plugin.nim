@@ -27,6 +27,9 @@ import ./tools
 import ./wire
 
 type
+  PluginFailed* = object of CatchableError
+    usage*: JsonNode
+
   PluginFn* = proc(): JsonNode {.closure.}
     ## Run one plugin turn and return its final state (`reply`,
     ## `draft_path`, and — like slice 10 — `usage` when an `llm` node
@@ -47,6 +50,14 @@ proc runPluginWorker*(agent: string, task: JsonNode,
   var state: JsonNode
   try:
     state = run()
+  except PluginFailed as pf:
+    # S23: a run that spent tokens then raised still books what it spent.
+    if pf.usage.kind == JObject:
+      return @[makeChildLine("cost", traceId, turnId, agent, 0, pf.usage),
+        makeChildLine("error", traceId, turnId, agent, 0,
+          %*{"message": "plugin failed: " & pf.msg})]
+    return @[makeChildLine("error", traceId, turnId, agent, 0,
+      %*{"message": "plugin failed: " & pf.msg})]
   except CatchableError as exc:
     return @[makeChildLine("error", traceId, turnId, agent, 0,
       %*{"message": "plugin failed: " & exc.msg})]
@@ -54,6 +65,12 @@ proc runPluginWorker*(agent: string, task: JsonNode,
   if reply.strip().len == 0:
     # An empty reply would read as success: say so instead, and the
     # parent fails open on the missing claim like any error line.
+    # S23: an empty reply that still reports usage books it.
+    let usage = state.jget("usage")
+    if usage.kind == JObject:
+      return @[makeChildLine("cost", traceId, turnId, agent, 0, copy(usage)),
+        makeChildLine("error", traceId, turnId, agent, 0,
+          %*{"message": "plugin answered nothing"})]
     return @[makeChildLine("error", traceId, turnId, agent, 0,
       %*{"message": "plugin answered nothing"})]
   let draft = state.jget("draft_path").getStr()
@@ -115,6 +132,15 @@ proc pluginRunHeadless*(home, pluginName, message, model,
   try:
     discard runGraph(buildPluginGraph(plugin, plugin.nodes, handle),
       state, collect)
+  except CatchableError as exc:
+    # S23: a run that spent tokens then raised keeps its partial spend.
+    # Load/eligibility failures raise before any llm call (no usage).
+    if sawLlm:
+      var pf = newException(PluginFailed, "plugin failed: " & exc.msg)
+      pf.usage = %*{"kind": "plugin", "model": model,
+        "in": totalIn, "out": totalOut}
+      raise pf
+    raise exc
   finally:
     expireHandle(handle)
   var reply = ""

@@ -23,6 +23,7 @@ import ../src/session
 import ../src/memory_live
 import ../src/trace
 import ../src/wire
+import ../src/worker_plugin
 
 proc store(db: DbConn): FactStore = sqliteFactStore(db)
 
@@ -726,9 +727,9 @@ suite "S16 a compiled skill's run is metered":
     assert costRows[0]["out"].getInt() == 3
     removeDir(home)
 
-  test "an empty reply books nothing, even when the run reports usage":
-    # S16's other half: a skill that answered nothing did not run. Its
-    # usage node, however plausible, must not become a charge.
+  test "an empty reply still books its reported usage":
+    # S23 supersedes S16's other half: an empty reply that spent tokens
+    # still books what it spent — only missing usage books nothing.
     let home = freshHome("waku-s16-empty")
     writeSkill(home, "workergreet", "greet the user politely", "Say hello.")
     createDir(home / "plugins")
@@ -745,8 +746,10 @@ suite "S16 a compiled skill's run is metered":
       notify = t.tracerEvent())
     assert not turn.answered
     t.endTurn("", 0)
-    assert ledgerRows(home).len == 0,
-      "a skill that answered nothing is not a cost"
+    let rows = ledgerRows(home)
+    assert rows.len == 1, "an empty reply with usage still books its cost"
+    assert rows[0]["kind"].getStr() == "skill:workergreet"
+    assert rows[0]["in"].getInt() == 9
     var skillRows: seq[JsonNode] = @[]
     for line in lines(t.path):
       let row = parseJson(line)
@@ -758,7 +761,7 @@ suite "S16 a compiled skill's run is metered":
     assert skillRows[0]["reason"].getStr() == turn.reason
     removeDir(home)
 
-  test "a run that raises books nothing":
+  test "a run that raises without usage books nothing":
     let home = freshHome("waku-s16-raise")
     writeSkill(home, "workergreet", "greet the user politely", "Say hello.")
     createDir(home / "plugins")
@@ -783,6 +786,30 @@ suite "S16 a compiled skill's run is metered":
     assert skillRows[0]["skill"].getStr() == "workergreet"
     assert skillRows[0]["mode"].getStr() == "text"
     assert skillRows[0]["reason"].getStr() == turn.reason
+    removeDir(home)
+
+  test "a run that raises with partial usage still books it":
+    # S23: a raise after llm calls keeps its spend.
+    let home = freshHome("waku-s23-raise-usage")
+    writeSkill(home, "workergreet", "greet the user politely", "Say hello.")
+    createDir(home / "plugins")
+    writeFile(home / "plugins" / "workergreet.so", "a file is the signal")
+    var t = newTracer(home, "openai", "m")
+    t.turn("greet the user politely")
+    let turn = skillWorkerTurn(home, @[], "greet the user politely", "",
+      "m", deadClient(),
+      run = proc(home, skill, message, memText, model: string,
+                 client: LlmClient): JsonNode {.closure.} =
+        var pf = newException(PluginFailed, "the graph blew up mid-run")
+        pf.usage = %*{"kind": "plugin", "model": model, "in": 6, "out": 2}
+        raise pf,
+      notify = t.tracerEvent())
+    assert not turn.answered
+    t.endTurn("", 0)
+    let prows = ledgerRows(home)
+    assert prows.len == 1, "a raise with usage still books its cost"
+    assert prows[0]["kind"].getStr() == "skill:workergreet"
+    assert prows[0]["in"].getInt() == 6
     removeDir(home)
 
   test "an ineligible skill books nothing":

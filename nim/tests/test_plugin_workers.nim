@@ -89,6 +89,28 @@ suite "T2 plugin runner":
     assert lines.len == 1
     assert lines[0]["type"].getStr() == "error"
 
+  test "a failing run with partial usage still books cost":
+    let task = makeTaskLine("t_a", "t_b", "summarize this", "", 1000, 1)
+    var err = newException(PluginFailed, "plugin boom")
+    err.usage = %*{"kind": "plugin", "model": "m", "in": 4, "out": 2}
+    let boom: PluginFn = proc(): JsonNode =
+      raise err
+    let lines = runPluginWorker("plugin:textops", task, boom)
+    assert lines.len == 2
+    assert lines[0]["type"].getStr() == "cost"
+    assert lines[0]["payload"]["in"].getInt() == 4
+    assert lines[1]["type"].getStr() == "error"
+
+  test "an empty reply with usage still books cost":
+    let task = makeTaskLine("t_a", "t_b", "summarize this", "", 1000, 1)
+    let fake: PluginFn = proc(): JsonNode = %*{"reply": "",
+      "draft_path": "",
+      "usage": {"kind": "plugin", "model": "m", "in": 5, "out": 1}}
+    let lines = runPluginWorker("plugin:textops", task, fake)
+    assert lines.len == 2
+    assert lines[0]["type"].getStr() == "cost"
+    assert lines[1]["type"].getStr() == "error"
+
   test "logged lines ride message lines before done":
     let task = makeTaskLine("t_a", "t_b", "summarize this", "", 1000, 1)
     let fake: PluginFn = proc(): JsonNode = %*{"reply": "brief digest",
