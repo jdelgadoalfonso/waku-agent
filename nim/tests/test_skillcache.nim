@@ -365,6 +365,21 @@ suite "skill compile cache":
     assert toSeq(walkFiles(home / "skills-compiled" / "*.so")).len == maxCachedSkills
     removeDir(home)
 
+  test "prune reaps only stale publish temporaries":
+    # A concurrent publish may be mid-copy into its *.tmp-* when prune runs
+    # after another compile: only temporaries past the staleness bound go.
+    let home = freshHome("prunetmp")
+    createDir(home / "skills-compiled")
+    let fresh = home / "skills-compiled" / "cachefx-abc.so.tmp-4242"
+    let stale = home / "skills-compiled" / "cachefx-def.so.tmp-99"
+    writeFile(fresh, "mid-copy")
+    writeFile(stale, "abandoned")
+    setLastModificationTime(stale, getTime() - initDuration(seconds = 300))
+    discard pruneSkillCache(home)
+    assert fileExists(fresh), "prune yanked a live publish temporary"
+    assert not fileExists(stale), "prune kept an abandoned temporary"
+    removeDir(home)
+
   test "a failed compile leaves no cache entry":
     let home = getTempDir() / "waku-skillcache-fail"
     let work = home / "work"
@@ -467,6 +482,22 @@ suite "skill install lock (S12)":
     let second = installCompiledSkill(other, home, home / "build")
     assert second.ok, "a self-upgrade after eviction was refused: " & second.error
     assert second.replaced
+    removeDir(home)
+
+  test "targetFromSkillCache sanitizes the name like the cache path":
+    # The cache stores the sanitized stem ("my skill" -> "myskill"); the
+    # fallback glob must sanitize the same way or old installs look manual.
+    # (Names needing sanitization fail codegen today, so this pins the
+    # fallback directly instead of going through a full install.)
+    let home = freshHome("spaced")
+    createDir(home / "skills-compiled")
+    createDir(home / "plugins")
+    writeFile(home / "skills-compiled" / "myskill-0123456789abcdef.so",
+      "bytes of v1")
+    let target = home / "plugins" / "my skill.so"
+    writeFile(target, "bytes of v1")
+    assert targetFromSkillCache(target, home, "my skill"),
+      "sanitized cache entry did not prove provenance"
     removeDir(home)
 
   test "an install needs no lock when the target holds this library":

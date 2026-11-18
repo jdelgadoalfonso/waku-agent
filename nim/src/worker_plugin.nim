@@ -52,7 +52,9 @@ proc runPluginWorker*(agent: string, task: JsonNode,
     state = run()
   except PluginFailed as pf:
     # S23: a run that spent tokens then raised still books what it spent.
-    if pf.usage.kind == JObject:
+    # The usage field is nil unless the raiser assigns it: guard it, or the
+    # nil dereference escapes this never-raises proc as a Defect.
+    if not pf.usage.isNil and pf.usage.kind == JObject:
       return @[makeChildLine("cost", traceId, turnId, agent, 0, pf.usage),
         makeChildLine("error", traceId, turnId, agent, 0,
           %*{"message": "plugin failed: " & pf.msg})]

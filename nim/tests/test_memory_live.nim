@@ -788,6 +788,24 @@ suite "S16 a compiled skill's run is metered":
     assert skillRows[0]["reason"].getStr() == turn.reason
     removeDir(home)
 
+  test "a bare PluginFailed without usage fails open with no cost":
+    let home = freshHome("waku-s23-bare")
+    writeSkill(home, "workergreet", "greet the user politely", "Say hello.")
+    createDir(home / "plugins")
+    writeFile(home / "plugins" / "workergreet.so", "a file is the signal")
+    var t = newTracer(home, "openai", "m")
+    t.turn("greet the user politely")
+    let turn = skillWorkerTurn(home, @[], "greet the user politely", "",
+      "m", deadClient(),
+      run = proc(home, skill, message, memText, model: string,
+                 client: LlmClient): JsonNode {.closure.} =
+        raise newException(PluginFailed, "bare boom"),
+      notify = t.tracerEvent())
+    assert not turn.answered
+    t.endTurn("", 0)
+    assert ledgerRows(home).len == 0
+    removeDir(home)
+
   test "a run that raises with partial usage still books it":
     # S23: a raise after llm calls keeps its spend.
     let home = freshHome("waku-s23-raise-usage")

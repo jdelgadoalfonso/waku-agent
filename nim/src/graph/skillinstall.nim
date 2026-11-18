@@ -123,7 +123,11 @@ proc targetFromSkillCache*(target, home, name: string): bool =
     if not fileExists(target):
       return false
     let want = readFile(target)
-    for path in walkFiles(home / "skills-compiled" / (name & "-*.so")):
+    # Sanitize exactly like skillCachePath does (skillName): the cache stem
+    # drops everything but alnum/-/_ — and glob metacharacters with it — so
+    # the raw name must never reach the pattern.
+    let stem = skillName(%*{"name": name})
+    for path in walkFiles(home / "skills-compiled" / (stem & "-*.so")):
       try:
         if readFile(path) == want:
           return true

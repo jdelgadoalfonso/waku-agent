@@ -94,7 +94,7 @@ proc canonicalGraphJson*(manifest: JsonNode): string =
   result = ""
   canonicalWrite(manifest, result)
 
-proc skillName(manifest: JsonNode): string =
+proc skillName*(manifest: JsonNode): string =
   ## The manifest name, or "skill" when absent (validation reports the
   ## real problem; the cache path just needs a file-safe stem).
   let n = manifest["name"]
@@ -174,9 +174,14 @@ proc pruneSkillCache*(home: string, keepMax: int = maxCachedSkills): int =
   let dir = home / "skills-compiled"
   if not dirExists(dir):
     return 0
+  # Reap only abandoned temporaries: a concurrent publish may be mid-copy
+  # into its own sibling temporary while this prune runs (S12/S13). The
+  # install lock uses the same staleness reasoning for the same reason.
+  const tmpStaleSec = 60
   for tmp in walkFiles(dir / "*.tmp-*"):
     try:
-      removeFile(tmp)
+      if getLastModificationTime(tmp) < getTime() - initDuration(seconds = tmpStaleSec):
+        removeFile(tmp)
     except IOError, OSError:
       discard
   var sos: seq[(string, Time)] = @[]

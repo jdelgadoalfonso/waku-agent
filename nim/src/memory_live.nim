@@ -335,7 +335,7 @@ proc skillWorkerTurn*(home: string, bundled: seq[string], message, memText,
       turn.answered = true
   except PluginFailed as pf:
     turn.reason = "the plugin failed: " & errorText(pf)
-    if pf.usage.kind == JObject:
+    if not pf.usage.isNil and pf.usage.kind == JObject:
       usage = pf.usage
   except CatchableError as exc:
     turn.reason = "the plugin failed: " & errorText(exc)

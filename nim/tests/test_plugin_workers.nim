@@ -101,6 +101,16 @@ suite "T2 plugin runner":
     assert lines[0]["payload"]["in"].getInt() == 4
     assert lines[1]["type"].getStr() == "error"
 
+  test "a bare PluginFailed without usage still answers one error line":
+    # The usage field is nil unless the raiser assigns it; dereferencing
+    # it must not escape the documented never-raises contract.
+    let task = makeTaskLine("t_a", "t_b", "summarize this", "", 1000, 1)
+    let fake: PluginFn = proc(): JsonNode =
+      raise newException(PluginFailed, "bare boom")
+    let lines = runPluginWorker("plugin:textops", task, fake)
+    assert lines.len == 1
+    assert lines[0]["type"].getStr() == "error"
+
   test "an empty reply with usage still books cost":
     let task = makeTaskLine("t_a", "t_b", "summarize this", "", 1000, 1)
     let fake: PluginFn = proc(): JsonNode = %*{"reply": "",
