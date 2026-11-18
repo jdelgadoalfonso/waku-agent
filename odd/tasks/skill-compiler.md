@@ -51,6 +51,12 @@ S15c: The existing gap is closed in the same change: one test asserts a non-empt
 
 S15d: Namespace caution recorded: `<home>/plugins` is loaded in-process at startup, so an installed skill also becomes the graph `plugin:<name>`. A skill whose name collides with an existing plugin shares that name space, and the loop must not assume the installed file is exclusively its own.
 
+S23: A skill run that spends tokens and then raises still books what it spent. Both paths (headless child cost line and in-process skill:<name> ledger row) must emit the accumulated usage even when the run answers nothing, instead of booking nothing.
+
+S24: The skill cache is bounded. skills-compiled keeps only live hashes (LRU/size cap with prune path) and per-compile skills-build work dirs are cleaned, so disk does not grow without bound.
+
+S25: Installing a skill never silently overwrites a hand-written plugin. If <home>/plugins/<name>.so already exists and did not come from the skill cache, approve refuses with a sentence naming the collision instead of replacing it.
+
 ## Tasks
 
 - T1: Graph JSON validator (S1, S2) — route: inline, commit: pending — DONE: 22/22 tests GREEN, module nim/src/graph/skillgraph.nim
@@ -67,6 +73,11 @@ S15d: Namespace caution recorded: `<home>/plugins` is loaded in-process at start
 - T7c: Meter a compiled skill's model calls, so its turn books its real cost (S16) — DONE: 43/47/10 GREEN
 - T7d: Meter a router fallback's model call inside a compiled graph (S17) — CLOSED BY EVIDENCE: already metered since T2c's memo; test_skillgen pins it, no code change needed
 - T8: Design doc and the docs the change makes false: docs/skill-compiler-design.md, docs/status.md, docs/architecture.md — DONE: rulebook 17 passed, repo_docs 15
+- T13: Book partial cost on skill raise (S23) — route: inline — DONE
+- T14: Bound skill cache + clean work dirs (S24) — route: inline — DONE
+- T15: Refuse install on plugin-name collision (S25) — route: inline — DONE
+
+S26: A compiled skill runs with no streaming, no research-brain reads and no MCP task filter by design. The worker answers in one piece with an empty ToolRegistry and mem_text only (worker_plugin, app). Eligibility refuses tool/fetch manifests outright, so this is the contract, not a gap.
 - T1c: Data-flow validation: prompt placeholders, inKeys production, unused outKey (S9) — DONE: 42/42
 - T2c: Memoize the router fallback decision per (handle, node) (S10) — DONE: 21/21
 - T3b: Drain the compiler child's output while it runs (S11) — DONE: 10/10
@@ -147,3 +158,6 @@ L43: User asked for dashboard approve without curl (propose needed it equally, s
 L44: User asked for the bundled-half of the flow (T10/S20): Copy to my skills on every non-editable card, backed by a new skill_fork action (forkBundledSkill proc + thin route; bundled dirs stay CWD-resolved like the rest, so route tests pin refusal shapes and proc tests pin the copy). Byte-identical fork, existing home copy wins, second fork names the copy. TDD RED (undeclared identifier) then GREEN: test_dashboard 157 OK. status.md extended to name the fork step. Live proof on a temp WAKU_HOME (port 7779, since removed): fork of the real research-report skill ok:true byte-identical, second fork refused; real home untouched.
 L45: User tested T9 and reported the dead silence problem: propose burns ~1 min of reasoning with a frozen message. T11/S21 opened: elapsed-seconds ticker beside the existing caret pulse on propose/approve/fork, dying on every exit path and never writing into a refresh-replaced span; honest liveness, zero invented progress. Static evals green.
 L46: User asked how to see the compiled graph from the dashboard (T12/S22): plugin graphs were already designed to list with no dashboard change, but the dashboard serve path never calls loadPluginGraphs (it lives in buildCliApp; the box builds lazily in ensureWaku), so the chart stayed at triage+gather until the first chat. Fix: approve describes the approved manifest and registers the topology hot — no dlopen (chart is data), only missing names added so a replace keeps showing the running code. Loader untouched in behavior: manifest parsing extracted as manifestDecls with identical messages, guarded by the plugin suites (5/19/19 OK). TDD RED (undeclared pluginGraph in tests) then GREEN: test_dashboard 159 OK forceBuild.
+L47: Point 4 done with assumed divergence (user decision 2026-11-18): wire.nim fromOpenAi maps finish_reason honestly (length→max_tokens, tool_calls/function_call→tool_use, stop→end_turn, unknown passthrough) instead of collapsing to end_turn. Loop/waterfall neutral (only tool_use branches). Recorded as Nim-official divergence from frozen waku/loop/models.py; Python will be removed. Tests: 5 new in test_wire, suite 2000 OK 0 FAILED.
+L48: Point 5 triaged (user decision 2026-11-18): 1-3 become tasks (T13 cost-on-raise, T14 cache bound, T15 namespace guard), 4 stays document-only (no streaming/brain/MCP is the eligibility contract).
+L49: T13 done: PluginFailed carries usage from pluginRunHeadless through runPluginWorker cost+error and skillWorkerTurn skill:<name> ledger, so raises and empty replies with spend still book; no-usage and ineligible still book nothing. T14 done: per-compile work dirs removed best-effort, pruneSkillCache keeps 32 newest .so plus tmp cleanup. T15 done: install refuses over manual <name>.so (provenance = match in skills-compiled/<name>-*.so), upgrades of own installs still replace. Item 4 recorded as S26 contract.
