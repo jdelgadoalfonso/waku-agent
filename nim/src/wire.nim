@@ -140,7 +140,22 @@ proc fromOpenAi*(model: string, response: JsonNode): JsonNode =
         toolBlock["extra"] = c["extra_content"]
       blocks.add(toolBlock)
   let usage = response.jget("usage")
-  result = %*{"stop_reason": "end_turn", "content": blocks,
+  # Divergence from the frozen Python oracle (`waku/loop/models.py`): the
+  # Nim port is the official implementation (Python will be removed), so
+  # `finish_reason` maps honestly instead of collapsing to `end_turn`.
+  let finishNode = choices[0].jget("finish_reason")
+  let finish = if finishNode.kind == JString: finishNode.getStr() else: ""
+  var stopReason = "end_turn"
+  case finish
+  of "tool_calls", "function_call":
+    stopReason = "tool_use"
+  of "length":
+    stopReason = "max_tokens"
+  of "stop", "":
+    stopReason = "end_turn"
+  else:
+    stopReason = finish
+  result = %*{"stop_reason": stopReason, "content": blocks,
     "usage": {"in": 0, "out": 0}}
   if calls.kind == JArray and calls.len > 0:
     result["stop_reason"] = % "tool_use"

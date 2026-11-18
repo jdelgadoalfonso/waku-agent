@@ -72,6 +72,38 @@ suite "phase 3a openai to anthropic":
     assert msg["content"] == %*[{"type": "text", "text": "hello"}]
     assert msg["usage"] == %*{"in": 3, "out": 5}
 
+  test "finish_reason length maps to max_tokens":
+    let msg = fromOpenAi("m", %*{
+      "choices": [{"message": {"content": "partial", "tool_calls": nil},
+                     "finish_reason": "length"}],
+      "usage": {"prompt_tokens": 3, "completion_tokens": 5}})
+    assert msg["stop_reason"].getStr() == "max_tokens"
+
+  test "finish_reason stop maps to end_turn":
+    let msg = fromOpenAi("m", %*{
+      "choices": [{"message": {"content": "hello", "tool_calls": nil},
+                     "finish_reason": "stop"}]})
+    assert msg["stop_reason"].getStr() == "end_turn"
+
+  test "finish_reason tool_calls maps to tool_use even without calls":
+    let msg = fromOpenAi("m", %*{
+      "choices": [{"message": {"content": nil, "tool_calls": nil},
+                     "finish_reason": "tool_calls"}]})
+    assert msg["stop_reason"].getStr() == "tool_use"
+
+  test "unknown finish_reason passes through honestly":
+    let msg = fromOpenAi("m", %*{
+      "choices": [{"message": {"content": "blocked", "tool_calls": nil},
+                     "finish_reason": "content_filter"}]})
+    assert msg["stop_reason"].getStr() == "content_filter"
+
+  test "tool calls win over finish_reason stop":
+    let msg = fromOpenAi("m", %*{
+      "choices": [{"message": {"content": nil, "tool_calls": [
+        {"id": "t1", "function": {"name": "ping", "arguments": "{}"}}]},
+                     "finish_reason": "stop"}]})
+    assert msg["stop_reason"].getStr() == "tool_use"
+
   test "empty choices surface the endpoint error":
     try:
       discard fromOpenAi("openrouter/x",
