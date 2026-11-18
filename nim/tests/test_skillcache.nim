@@ -444,6 +444,31 @@ suite "skill install lock (S12)":
     assert second.replaced, "a skill upgrade should replace its own install"
     removeDir(home)
 
+  test "an install records provenance beside the target":
+    let home = freshHome("marker")
+    let res = installCompiledSkill(manifest(), home, home / "build")
+    assert res.ok, res.error
+    assert fileExists(home / "plugins" / "cachefx.so.skill"),
+      "install wrote no provenance marker"
+    removeDir(home)
+
+  test "an upgrade survives cache eviction of its own entry":
+    # HIGH OCR finding: pruneSkillCache deletes the old entry that proved
+    # a previous install was ours, so a later self-upgrade looked manual.
+    # Provenance must live beside the target, not in the evictable cache.
+    let home = freshHome("pruneupgrade")
+    let first = installCompiledSkill(manifest(), home, home / "build")
+    assert first.ok and not first.replaced, first.error
+    # Evict everything the prune would eventually take, marker included
+    # only if the implementation wrongly keeps it in the cache dir.
+    removeDir(home / "skills-compiled")
+    var other = manifest()
+    other["nodes"][0]["prompt"] = %"Other: {{message}}"
+    let second = installCompiledSkill(other, home, home / "build")
+    assert second.ok, "a self-upgrade after eviction was refused: " & second.error
+    assert second.replaced
+    removeDir(home)
+
   test "an install needs no lock when the target holds this library":
     let home = freshHome("lockfree")
     let first = installCompiledSkill(manifest(), home, home / "build")

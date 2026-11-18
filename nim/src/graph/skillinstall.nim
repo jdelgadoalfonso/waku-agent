@@ -133,6 +133,20 @@ proc targetFromSkillCache*(target, home, name: string): bool =
   except OSError:
     false
 
+proc installMarkerPath*(pluginsDir, name: string): string =
+  ## `<plugins>/<name>.so.skill`: written by our installs under the lock,
+  ## so provenance survives pruneSkillCache evictions (the HIGH OCR finding:
+  ## the cache entry proving an install was ours is exactly what S24 evicts).
+  pluginsDir / (name & ".so.skill")
+
+proc installedBySkill*(target, home, pluginsDir, name: string): bool =
+  ## True when the installed `<name>.so` came from a skill install: the
+  ## marker beside the target says so, or — for installs predating markers —
+  ## the target matches a cached build. A hand-written plugin matches neither.
+  if fileExists(installMarkerPath(pluginsDir, name)):
+    return true
+  targetFromSkillCache(target, home, name)
+
 proc holdsSameContent(target, source: string): bool =
   ## True when the target already carries exactly this library: the cheap
   ## path that must not take the lock at all.
@@ -165,9 +179,10 @@ proc installCompiledSkill*(manifest: JsonNode, home, workDir: string,
       return SkillInstallResult(ok: true, soPath: target,
         recentlyCompiled: compiled.recentlyCompiled, replaced: false)
     # S25: never silently overwrite a hand-written plugin. A previous skill
-    # install matches a cached build of the same name and may be replaced;
-    # anything else is a manual file and the install refuses instead.
-    if fileExists(target) and not targetFromSkillCache(target, home, graph.name):
+    # install carries the marker (or, pre-marker, matches a cached build)
+    # and may be replaced; anything else is a manual file and refuses.
+    if fileExists(target) and
+        not installedBySkill(target, home, pluginsDir, graph.name):
       return SkillInstallResult(error: "cannot install skill '" & graph.name &
         "': plugins/" & graph.name &
         ".so already exists and did not come from the skill cache" &
@@ -186,13 +201,24 @@ proc installCompiledSkill*(manifest: JsonNode, home, workDir: string,
     if holdsSameContent(target, compiled.soPath):
       return SkillInstallResult(ok: true, soPath: target,
         recentlyCompiled: compiled.recentlyCompiled, replaced: false)
-    if fileExists(target) and not targetFromSkillCache(target, home, graph.name):
+    if fileExists(target) and
+        not installedBySkill(target, home, pluginsDir, graph.name):
       return SkillInstallResult(error: "cannot install skill '" & graph.name &
         "': plugins/" & graph.name &
         ".so already exists and did not come from the skill cache" &
         " (manual plugin with the same name)")
     let replaced = fileExists(target)
     publishArtifact(compiled.soPath, target)
+    # Record provenance beside the target, under the same lock: the marker
+    # is what future upgrades check first, so pruning the cache entry can
+    # never turn a self-upgrade into a refusal. Best-effort: the copy above
+    # already succeeded, so a marker failure degrades to the cache fallback
+    # instead of failing the install.
+    try:
+      writeFile(installMarkerPath(pluginsDir, graph.name),
+        skillCacheHash(manifest))
+    except IOError, OSError:
+      discard
     return SkillInstallResult(ok: true, soPath: target,
       recentlyCompiled: compiled.recentlyCompiled, replaced: replaced)
   except IOError, OSError:
