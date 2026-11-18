@@ -113,6 +113,26 @@ proc acquireInstallLock(pluginsDir, name: string,
       return
     sleep(installLockPollMs)
 
+proc targetFromSkillCache*(target, home, name: string): bool =
+  ## S25: true when the installed `<name>.so` matches a cached build of the
+  ## same skill. A previous skill install always matches one
+  ## `skills-compiled/<name>-<hash>.so` entry; a hand-written plugin matches
+  ## none. Best-effort reads: an unreadable target or cache means "not from
+  ## cache", which is the safe refusal side.
+  try:
+    if not fileExists(target):
+      return false
+    let want = readFile(target)
+    for path in walkFiles(home / "skills-compiled" / (name & "-*.so")):
+      try:
+        if readFile(path) == want:
+          return true
+      except IOError, OSError:
+        discard
+    false
+  except OSError:
+    false
+
 proc holdsSameContent(target, source: string): bool =
   ## True when the target already carries exactly this library: the cheap
   ## path that must not take the lock at all.
@@ -144,6 +164,14 @@ proc installCompiledSkill*(manifest: JsonNode, home, workDir: string,
     if holdsSameContent(target, compiled.soPath):
       return SkillInstallResult(ok: true, soPath: target,
         recentlyCompiled: compiled.recentlyCompiled, replaced: false)
+    # S25: never silently overwrite a hand-written plugin. A previous skill
+    # install matches a cached build of the same name and may be replaced;
+    # anything else is a manual file and the install refuses instead.
+    if fileExists(target) and not targetFromSkillCache(target, home, graph.name):
+      return SkillInstallResult(error: "cannot install skill '" & graph.name &
+        "': plugins/" & graph.name &
+        ".so already exists and did not come from the skill cache" &
+        " (manual plugin with the same name)")
 
     let lock = acquireInstallLock(pluginsDir, graph.name,
       installLockWaitMs, installLockStaleMs)
@@ -158,6 +186,11 @@ proc installCompiledSkill*(manifest: JsonNode, home, workDir: string,
     if holdsSameContent(target, compiled.soPath):
       return SkillInstallResult(ok: true, soPath: target,
         recentlyCompiled: compiled.recentlyCompiled, replaced: false)
+    if fileExists(target) and not targetFromSkillCache(target, home, graph.name):
+      return SkillInstallResult(error: "cannot install skill '" & graph.name &
+        "': plugins/" & graph.name &
+        ".so already exists and did not come from the skill cache" &
+        " (manual plugin with the same name)")
     let replaced = fileExists(target)
     publishArtifact(compiled.soPath, target)
     return SkillInstallResult(ok: true, soPath: target,

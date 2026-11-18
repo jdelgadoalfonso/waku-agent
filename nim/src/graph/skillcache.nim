@@ -15,11 +15,18 @@
 ## final path: a reader sees the old file or the whole new one, never half
 ## a library, and of two publishers the last one wins.
 
+import std/algorithm
 import std/json
 import std/os
 import std/strutils
+import std/times
 
 import ./skillcompile
+
+const maxCachedSkills* = 32
+  ## S24 bound: how many compiled .so entries the cache keeps. Beyond this
+  ## the oldest (by modification time) are pruned best-effort after each
+  ## successful publish, so disk does not grow without bound.
 
 type
   SkillCacheResult* = object
@@ -159,6 +166,49 @@ proc publishArtifact*(source, target: string) =
         discard  # a leftover temporary is ugly, not dangerous
     raise
 
+proc pruneSkillCache*(home: string, keepMax: int = maxCachedSkills): int =
+  ## S24: keep only the newest `keepMax` .so entries under
+  ## `<home>/skills-compiled`, deleting the oldest first. Leftover publish
+  ## temporaries (`*.tmp-*`) are always removed. Best-effort: unreadable
+  ## entries are skipped, never raised. Returns how many .so files were removed.
+  let dir = home / "skills-compiled"
+  if not dirExists(dir):
+    return 0
+  for tmp in walkFiles(dir / "*.tmp-*"):
+    try:
+      removeFile(tmp)
+    except IOError, OSError:
+      discard
+  var sos: seq[(string, Time)] = @[]
+  for path in walkFiles(dir / "*.so"):
+    try:
+      sos.add((path, getLastModificationTime(path)))
+    except OSError:
+      discard
+  sos.sort(proc(a, b: (string, Time)): int = cmp(a[1], b[1]))
+  if sos.len <= keepMax:
+    return 0
+  for i in 0 ..< sos.len - keepMax:
+    try:
+      removeFile(sos[i][0])
+      inc result
+    except IOError, OSError:
+      discard
+
+proc cleanWorkDir*(dir: string) =
+  ## S24: remove one per-compile scratch directory best-effort. A failed
+  ## compile leaves source + partial output for debugging only in the
+  ## error message, never on disk — disk buildup was the bug being fixed.
+  if dir.len == 0:
+    return
+  try:
+    if dirExists(dir):
+      removeDir(dir)
+    elif fileExists(dir):
+      removeFile(dir)
+  except IOError, OSError:
+    discard
+
 proc compileOrLoadSkill*(manifest: JsonNode, home, workDir: string,
                         nimExe: string = "", timeoutMs: int = 60_000):
     SkillCacheResult =
@@ -171,15 +221,23 @@ proc compileOrLoadSkill*(manifest: JsonNode, home, workDir: string,
   if fileExists(target):
     return SkillCacheResult(ok: true, soPath: target, recentlyCompiled: false)
 
-  let compiled = compileSkillGraph(manifest, skillWorkDir(workDir, manifest),
-    nimExe, timeoutMs)
+  let work = skillWorkDir(workDir, manifest)
+  let compiled = compileSkillGraph(manifest, work, nimExe, timeoutMs)
   if not compiled.ok:
+    cleanWorkDir(work)
     return SkillCacheResult(error: compiled.error)
 
   try:
     createDir(home / "skills-compiled")
     publishArtifact(compiled.soPath, target)
   except IOError, OSError:
+    cleanWorkDir(work)
     return SkillCacheResult(
       error: "cannot store compiled skill: " & getCurrentExceptionMsg())
+  cleanWorkDir(work)
+  # S24: bound the cache best-effort; a prune failure never fails the turn.
+  try:
+    discard pruneSkillCache(home)
+  except IOError, OSError:
+    discard
   result = SkillCacheResult(ok: true, soPath: target, recentlyCompiled: true)

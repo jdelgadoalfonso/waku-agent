@@ -268,8 +268,9 @@ suite "skill compile cache":
     let first = compileOrLoadSkill(manifest(), home, work)
     assert first.ok, first.error
     assert first.recentlyCompiled
-    let workDirs = toSeq(walkDir(work)).len
-    assert workDirs >= 1
+    # S24: the compile cleans its scratch, so a hit finds an empty work tree.
+    let workDirs = if dirExists(work): toSeq(walkDir(work)).len else: 0
+    assert workDirs == 0, $workDirs
     # A compiler that always fails proves the hit ran none; the work tree
     # is untouched, so a hit never burns a scratch directory either.
     let second = compileOrLoadSkill(manifest(), home, work,
@@ -339,6 +340,31 @@ suite "skill compile cache":
     assert not fileExists(artifactTempPath(res.soPath))
     removeDir(home)
 
+  test "a successful compile cleans its work directory":
+    let home = freshHome("workclean")
+    let work = home / "work"
+    let res = compileOrLoadSkill(manifest(), home, work)
+    assert res.ok, "compile failed: " & res.error
+    # S24: per-compile scratch must not accumulate — only the cache keeps.
+    if dirExists(work):
+      assert toSeq(walkDir(work)).len == 0,
+        "compile left work dirs behind: " & $toSeq(walkDir(work))
+    removeDir(home)
+
+  test "the cache keeps only the newest entries":
+    let home = freshHome("prune")
+    createDir(home / "skills-compiled")
+    for i in 0 ..< maxCachedSkills + 5:
+      let p = home / "skills-compiled" / ("s" & $i & "-0123456789abcdef.so")
+      writeFile(p, "lib " & $i)
+      # Older files first: bump mtime forward per file is hard portably,
+      # so backdate by index distance instead.
+      setLastModificationTime(p, getTime() - initDuration(seconds = (maxCachedSkills + 5 - i)))
+    let pruned = pruneSkillCache(home, maxCachedSkills)
+    assert pruned == 5, "expected 5 pruned, got " & $pruned
+    assert toSeq(walkFiles(home / "skills-compiled" / "*.so")).len == maxCachedSkills
+    removeDir(home)
+
   test "a failed compile leaves no cache entry":
     let home = getTempDir() / "waku-skillcache-fail"
     let work = home / "work"
@@ -393,6 +419,29 @@ suite "skill install lock (S12)":
     assert res.ok, "a stale lock blocked the install: " & res.error
     assert fileExists(home / "plugins" / "cachefx.so")
     assert not fileExists(lockFile), "the stale lock was never cleaned up"
+    removeDir(home)
+
+  test "an install refuses over a manual plugin with the same name":
+    # S25: a hand-written <name>.so is never silently overwritten.
+    let home = freshHome("collide")
+    createDir(home / "plugins")
+    writeFile(home / "plugins" / "cachefx.so", "hand-written library")
+    let res = installCompiledSkill(manifest(), home, home / "build")
+    assert not res.ok, "a manual plugin was overwritten"
+    assert "cachefx" in res.error and "manual" in res.error.toLowerAscii(), res.error
+    assert readFile(home / "plugins" / "cachefx.so") == "hand-written library"
+    assert not fileExists(home / "plugins" / "cachefx.lock")
+    removeDir(home)
+
+  test "an install replaces a previous skill install of the same name":
+    let home = freshHome("upgrade")
+    let first = installCompiledSkill(manifest(), home, home / "build")
+    assert first.ok and not first.replaced, first.error
+    var other = manifest()
+    other["nodes"][0]["prompt"] = %"Other: {{message}}"
+    let second = installCompiledSkill(other, home, home / "build")
+    assert second.ok, second.error
+    assert second.replaced, "a skill upgrade should replace its own install"
     removeDir(home)
 
   test "an install needs no lock when the target holds this library":
