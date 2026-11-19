@@ -21,4 +21,5 @@ L1: User request verbatim: "vamos con el ticker C2b"
 L2: User host verbatim: "Chat + multiplex"
 L3: User fire verbatim: "Ejecuta brief y reagenda"
 L5: Verify `gentle-ai-verify mwnxxsix-8-z8lh`: sin bloqueadores (S1-S3 PASS); hallazgos de honestidad aplicados: reloj tras el gate en `beforeTurn`, `getAppFilename` en try con línea misconfigured, docs con inanición/bloqueo ~93s/reapertura de DB, import json sin uso fuera. Reverde: schedule 20/20 + registry + experimental + checks waku/dashboard OK.
+L6: Commits: 517ed27 (ticker+hooks) + b1e3ea2 (registro+docs).
 L4: Explorer `mwnwr4kr-3-m970`: sin ticker hoy; `workers.nim:53-58,94-119`, `waku.nim:708-780,302-322`, `delegate.nim:123-127,247-276`, `supervisor.nim:61+`, `dashboard.nim:4396-4402` (dice no scheduler), `db.nim:15-95`, store `factstore.nim:121`, patrón `run_command.nim`.

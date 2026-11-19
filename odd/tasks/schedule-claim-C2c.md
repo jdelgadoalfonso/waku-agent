@@ -16,6 +16,7 @@ S3: Migración aditiva (columnas con default), sin reescribir datos. User verbat
 
 ## Log
 
+L6: Commits: 517ed27 (claim+migración) + b1e3ea2 (docs límites).
 L1: User request verbatim: "vamos con el C2c"
 L2: Propuesta previa aceptada (mem `odd/schedule-ticker-C2b/tasks`): "C2c (at-most-once con claim atómico)".
 L3: Límite documentado que lo motiva: "no at-most-once (chat and dashboard can fire the same row twice; crash between run and reschedule re-runs)".
