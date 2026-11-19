@@ -84,6 +84,8 @@ suite "buildRegistry":
     db.close()
     let names = toolNames(reg)
     assert "delegate_task" in names
+    assert "fetch_url" in names
+    assert "browse_web" notin names
     assert "run_command" in names
     assert "read_apple_calendar" in names
     assert "create_reminder" in names

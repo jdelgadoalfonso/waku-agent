@@ -40,13 +40,10 @@ const
     "opencode_go": "opencode_go"}.toTable
     ## Waku provider id → pi's built-in provider id (`pi --list-models`).
 
-  plannedTools* = [
+  plannedTools* = @[
     ("run_command", "Terminal tool",
      "Run a shell command in a sandbox and read the output — Hermes's 'Terminal' " &
      "tool. Needs a real sandbox + safety surface first."),
-    ("browse_web", "Browser tool",
-     "Open a page and read/click it — Hermes's 'Browser' tool. (search_web already " &
-     "covers read-only web lookups.)"),
     ("schedule_task", "Cron Job",
      "Let the agent schedule its own recurring runs. Today `make brief` + a system " &
      "cron line already does scheduled runs; this would move it in-app."),

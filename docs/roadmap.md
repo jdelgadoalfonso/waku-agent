@@ -40,7 +40,7 @@ and the dashboard's **Tools** tab lists them under **Coming soon**:
 | Sub-Agents | `delegate_task` | **live** — delegates coding tasks to pi |
 | Graph workflows | [`waku/graph/`](../waku/graph) | **live** behind `WAKU_GRAPH_WORKFLOWS=1` — [triage-first turns](tour.md#graph-workflows) |
 | Terminal tool | `run_command` | planned — needs a real sandbox + safety surface first |
-| Browser tool | `browse_web` | planned — `search_web` already covers read-only lookups |
+| Browser tool | `fetch_url` | **live** — read-only page fetch (fase A de `browse_web`); clicar sigue en roadmap |
 | Cron Job | `schedule_task` | planned — `make brief` + a system cron line covers it today |
 
 A teaching repo's point is a readable core, so these come alive one at a time,

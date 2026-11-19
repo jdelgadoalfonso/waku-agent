@@ -85,6 +85,7 @@ proc buildRegistry*(db: DbConn, home: string, settings: Settings,
   result.register(makeUpdateSoulTool(home))
   result.register(makeCreateSkillTool(home))
   if settings.experimental:
+    result.register(makeFetchTool(searchFetch))
     for t in makeExperimentalTools(pi, settings.provider, settings.model,
         home):
       result.register(t)

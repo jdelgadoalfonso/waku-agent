@@ -198,6 +198,65 @@ proc makeSearchTool*(fetch: SearchFetchFn): Tool =
       searchWeb(fetch, searchApiKey(), strArg(args, "query"),
         intArg(args, "max_results", 5)))
 
+const
+  fetchTextMax* = 6000
+    ## Roughly this many characters of converted text a `fetch_url`
+    ## answer carries: the cut backs up to a UTF-8 codepoint boundary.
+  fetchBytesMax* = 1000000
+    ## Raw body bytes read before converting; a bigger page is cut first
+    ## (also on a codepoint boundary) so one huge download cannot swell
+    ## the turn.
+
+proc fetchUrl*(fetch: SearchFetchFn, url: string): string =
+  ## Port of nothing: `browse_web` fase A. GET one `http(s)` page and
+  ## render it as text. Caps and honest refusals, never a silent empty.
+  let target = url.strip()
+  if not (target.startsWith("http://") or target.startsWith("https://")):
+    return "refused: fetch_url only reads http:// and https:// URLs, " &
+      "got: " & (if target.len > 0: target else: "(empty)")
+  var page: string
+  try:
+    let (ok, res) = fetch(target, "GET", "", duckAgent)
+    if not ok:
+      let why = if res.strip().len > 0: res.strip() else: "transport failure"
+      return "could not fetch " & target & " (" & why & ")"
+    page = res
+  except CatchableError as e:
+    return "could not fetch " & target & " (" & e.msg & ")"
+  if page.len > fetchBytesMax:
+    var cut = fetchBytesMax
+    # Back up to a UTF-8 codepoint boundary: continuation bytes match
+    # 0b10xxxxxx, and strings are byte-indexed.
+    while cut > 0 and (ord(page[cut]) and 0xC0) == 0x80:
+      dec cut
+    page = page[0 ..< cut]
+    # A cut inside an open tag would make stripTags drop everything
+    # after it; fall back to the last unclosed '<' so text survives.
+    if page.find('>') < page.rfind('<'):
+      page = page[0 ..< page.rfind('<')]
+  var text = stripTags(page).strip()
+  if text.len == 0:
+    return "fetched " & target & " but it held no readable text."
+  if text.len > fetchTextMax:
+    var cut = fetchTextMax
+    while cut > 0 and (ord(text[cut]) and 0xC0) == 0x80:
+      dec cut
+    text = text[0 ..< cut] & "\n…[truncated]"
+  return text
+
+proc makeFetchTool*(fetch: SearchFetchFn): Tool =
+  ## Registry wiring for `fetch_url` (fase A de `browse_web`).
+  Tool(name: "fetch_url",
+    description: "Fetch one public http(s) page and get back its text " &
+      "(read-only, capped). Use for a URL the user names or a search hit " &
+      "— never for local files; file:// and other schemes are refused.",
+    inputSchema: %*{"type": "object",
+      "properties": {
+        "url": {"type": "string", "description": "the http(s) page to read"}},
+      "required": ["url"]},
+    fn: proc(args: JsonNode): string =
+      fetchUrl(fetch, strArg(args, "url")))
+
 proc liveSearchFetch*(url, meth, body, agent: string): tuple[ok: bool,
     text: string] =
   ## The live round trip over `http.nim`'s one helper: `https://` gets
@@ -211,5 +270,9 @@ proc liveSearchFetch*(url, meth, body, agent: string): tuple[ok: bool,
     if agent.len > 0:
       client.headers = newHttpHeaders([("User-Agent", agent)])
     return (true, client.getContent(url))
-  except CatchableError:
-    return (false, "")
+  except CatchableError as e:
+    # The message carries the reason (a non-2xx status line included),
+    # so callers can report it instead of a bare transport failure.
+    # `searchWeb` ignores this text when `ok` is false; `fetchUrl`
+    # surfaces it with the url.
+    return (false, e.msg)
