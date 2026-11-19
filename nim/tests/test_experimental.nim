@@ -131,6 +131,30 @@ suite "delegate_task":
       "120000-gpt-write-snake" / "MANIFEST.md")
     removeDir(home)
 
+  test "no python skips auto-run honestly":
+    let home = freshDir("waku-exp-home-nopy")
+    var seams = stubSeams()
+    seams.autorunOff = false
+    seams.pythonBin = ""
+    var ranPy = false
+    seams.run = proc(argv: seq[string], workdir: string,
+        timeoutSec: int, env: StringTableRef): ProcResult {.closure.} =
+      writeFile(workdir / "main.py", "print('ran')")
+      ProcResult(timedOut: false, code: 0,
+        stdout: "{\"type\": \"message_end\", \"message\": {\"role\": " &
+        "\"assistant\", \"content\": [{\"type\": \"text\", " &
+        "\"text\": \"wrote it\"}]}}", stderr: "")
+    seams.runPy = proc(argv: seq[string], workdir: string,
+        timeoutSec: int, env: StringTableRef): ProcResult {.closure.} =
+      ranPy = true
+      ProcResult(timedOut: false, code: 0, stdout: "", stderr: "")
+    let msg = delegateTask(seams, "openai", "gpt", home, "write snake",
+      "", 0, 300, "2026-10-03/120000")
+    assert not ranPy
+    assert "Auto-ran main.py: skipped" in msg
+    assert "no python found in PATH" in msg
+    removeDir(home)
+
   test "stubs stay honest":
     let tools = makeExperimentalTools(stubSeams(), "a", "m",
       freshDir("h5"))

@@ -354,30 +354,41 @@ proc delegateTask*(seams: PiSeams, provider, model, home: string,
   if not seams.autorunOff:
     let entry = pickEntry(files)
     if entry.len > 0:
-      let t0 = getMonoTime()
-      let res = seams.runPy(@[seams.pythonBin, lastPathPart(entry)],
-        workdir, autorunTimeoutSec, liveDelegateEnv())
-      runSecs = float((getMonoTime() - t0).inMilliseconds) / 1000.0
-      runSecs = float(int(runSecs * 10)) / 10.0
       runEntry = lastPathPart(entry)
-      if res.timedOut:
-        runOut = "(still running after " & $autorunTimeoutSec &
-          "s — likely interactive; stopped)"
+      if seams.pythonBin.len == 0:
+        runOut = "no python found in PATH \u2014 skipping auto-run"
+        runSecs = 0.0
+        ran = true
+        try:
+          writeFile(workdir / "run.log", "$ python3 " & runEntry &
+            "\nexit: skipped (no python in PATH)\n\n" & runOut & "\n")
+        except IOError:
+          discard
       else:
-        runCode = res.code
-        runOut = (res.stdout & res.stderr).strip()
-      ran = true
-      try:
-        writeFile(workdir / "run.log", "$ python3 " & runEntry &
-          "\nexit: " & (if res.timedOut: "None" else: $runCode) &
-          "\n\n" & runOut & "\n")
-      except IOError:
-        discard
+        let t0 = getMonoTime()
+        let res = seams.runPy(@[seams.pythonBin, lastPathPart(entry)],
+          workdir, autorunTimeoutSec, liveDelegateEnv())
+        runSecs = float((getMonoTime() - t0).inMilliseconds) / 1000.0
+        runSecs = float(int(runSecs * 10)) / 10.0
+        if res.timedOut:
+          runOut = "(still running after " & $autorunTimeoutSec &
+            "s \u2014 likely interactive; stopped)"
+        else:
+          runCode = res.code
+          runOut = (res.stdout & res.stderr).strip()
+        ran = true
+        try:
+          writeFile(workdir / "run.log", "$ python3 " & runEntry &
+            "\nexit: " & (if res.timedOut: "None" else: $runCode) &
+            "\n\n" & runOut & "\n")
+        except IOError:
+          discard
   writeManifest(workdir, provider,
     if model.len > 0: model else: "(default)", task, files,
     (runEntry, runCode, runOut, runSecs))
   if ran:
-    let verdict = if runCode == 0: "ran clean"
+    let verdict = if runOut == "no python found in PATH \u2014 skipping auto-run": "skipped"
+                  elif runCode == 0: "ran clean"
                   else: "exited " & $runCode
     lines.add("\nAuto-ran " & runEntry & ": " & verdict & " in " &
       $runSecs & "s.\n" & runOut[^min(400, runOut.len) .. ^1])
@@ -470,7 +481,10 @@ proc livePiSeams*(home, provider, model: string): PiSeams =
     jsonMode = "--mode" in probe.stdout
   let pyBin = block:
     let p3 = findExe("python3")
-    if p3.len > 0: p3 else: "python"
+    if p3.len > 0: p3
+    else:
+      let py = findExe("python")
+      if py.len > 0: py else: ""
   let root = absolutePath(expandTilde(getEnv("WAKU_WORKSPACE",
     "waku_workspace")))
   PiSeams(piBin: piBin, jsonMode: jsonMode,
