@@ -473,7 +473,8 @@ proc checkOneReport*(v: JsonNode): JsonNode =
   if not containsRe(v.jget("message").getStr(), saveAskRe):
     var memoryOnly = true
     for t in v.jget("tools"):
-      if t.jget("source").getStr() != "waku_memory":
+      let s = t.jget("source").getStr()
+      if s != "waku_memory" and s != "mcp:engram":
         memoryOnly = false
         break
     if memoryOnly:
@@ -754,7 +755,8 @@ proc checkGroundedNumbers*(v: JsonNode): JsonNode =
   if not pass:
     var memoryOnly = true
     for t in v.jget("tools"):
-      if t.jget("source").getStr() != "waku_memory":
+      let s = t.jget("source").getStr()
+      if s != "waku_memory" and s != "mcp:engram":
         memoryOnly = false
         break
     if memoryOnly:

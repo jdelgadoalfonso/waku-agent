@@ -29,15 +29,19 @@ suite "span kind":
     assert spanKind("waku_memory_memory_remember") == "memory_write"
     assert spanKind("waku_memory_memory_forget") == "memory_write"
     assert spanKind("waku_memory_memory_import") == "memory_write"
+    assert spanKind("engram_mem_search") == "retrieval"
+    assert spanKind("engram_mem_get_observation") == "retrieval"
+    assert spanKind("engram_mem_recall") == "retrieval"
+    assert spanKind("engram_mem_save") == "memory_write"
     assert spanKind("echo") == "tool"
     assert spanKind("treg_search") == "tool"
 
 suite "tool type":
   test "datastore, extension, function":
     assert toolType("waku_memory") == "datastore"
+    assert toolType("mcp:engram") == "datastore"
     assert toolType("local") == "function"
     assert toolType("treg") == "extension"
-    assert toolType("mcp:engram") == "extension"
 
 suite "redact":
   test "secret keys and key-shaped strings become stars":

@@ -347,6 +347,33 @@ suite "connect treg":
     assert "browser blew up" in msg
     assert tregDocs in msg
 
+suite "connect engram":
+  test "a fresh home is added with no sign-in":
+    let home = freshHome("waku-connect-engram-add")
+    let msg = engramConnect(home)
+    assert "Added Engram to" in msg
+    assert "engram_mem_*" in msg
+    assert "no sign-in" in msg.toLowerAscii() or "no-sign-in" in msg.toLowerAscii() or "sign-in" in msg.toLowerAscii()
+    let config = parseJson(readFile(home / "mcp.json"))
+    assert config["servers"].len == 1
+    assert config["servers"][0]["name"].getStr() == "engram"
+    assert config["servers"][0]["command"].getStr() == "engram"
+
+  test "the dispatcher routes engram with exit 0":
+    let (msg, code) = cliConnect(@["engram"],
+      freshHome("waku-connect-engram-dispatch"),
+      googleSeams(newJNull()), memorySignIn(true))
+    assert code == 0
+    assert "Engram is set up" in msg
+
+  test "a conflicting name is left alone":
+    let home = freshHome("waku-connect-engram-conflict")
+    writeFile(home / "mcp.json",
+      """{"servers": [{"name": "engram", "command": "other", "args": ["x"]}]}""")
+    let msg = engramConnect(home)
+    assert "already points elsewhere" in msg
+    assert "local `engram mcp`" in msg
+
 suite "connect treg state":
   test "an empty home is not added":
     let (where, detail) = tregState(freshHome("waku-treg-state-empty"))

@@ -40,9 +40,14 @@ const
 
   tregPrefix* = "treg_"
   wakuMemoryPrefix* = "waku_memory_"
+  engramPrefix* = "engram_"
 
   retrievalTools = ["memory_search", "memory_recall", "memory_get"]
   memoryWriteTools = ["memory_remember", "memory_forget", "memory_import"]
+  engramRetrievalTools = ["mem_search", "mem_get_observation", "mem_recall",
+    "memory_search", "memory_recall", "memory_get"]
+  engramWriteTools = ["mem_save", "memory_remember", "memory_forget",
+    "memory_import"]
 
   secretKey = r"(authorization|apikey|token|secret|password|passwd|cookie|credential|privatekey|accesskey|xapikey|bearer)"
   secretValue = r"(Bearer\s+[A-Za-z0-9._~+/=-]{8,}|\b(?:sk|pk|rk)-[A-Za-z0-9_-]{8,}|\bgh[pousr]_[A-Za-z0-9]{16,}|\bxox[abposr]-[A-Za-z0-9-]{8,}|\bAKIA[0-9A-Z]{16}\b|\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})"
@@ -102,8 +107,9 @@ proc toolSource*(name: string, servers: openArray[string] = []): string =
   "local"
 
 proc spanKind*(name: string): string =
-  ## `retrieval` for a Waku Memory read, `memory_write` for a Waku Memory
-  ## write, `tool` for every other tool call.
+  ## `retrieval` for a memory read, `memory_write` for a memory
+  ## write, `tool` for every other tool call. Covers both Waku Memory
+  ## (`waku_memory_memory_*`) and Engram (`engram_mem_*`).
   let n = if name.len > 0: name else: ""
   if n.startsWith(wakuMemoryPrefix):
     let short = n[wakuMemoryPrefix.len .. ^1]
@@ -111,12 +117,19 @@ proc spanKind*(name: string): string =
       return "retrieval"
     if short in memoryWriteTools:
       return "memory_write"
+  if n.startsWith(engramPrefix):
+    let short = n[engramPrefix.len .. ^1]
+    if short in engramRetrievalTools:
+      return "retrieval"
+    if short in engramWriteTools:
+      return "memory_write"
   "tool"
 
 proc toolType*(source: string): string =
-  ## `gen_ai.tool.type`: `datastore` for Waku Memory, `extension` for a
-  ## remote tool (treg, an MCP server), `function` for one on this machine.
-  if source == "waku_memory":
+  ## `gen_ai.tool.type`: `datastore` for memory (Waku Memory or Engram),
+  ## `extension` for a remote tool (treg, an MCP server), `function` for
+  ## one on this machine.
+  if source == "waku_memory" or source == "mcp:engram":
     "datastore"
   elif source == "local":
     "function"

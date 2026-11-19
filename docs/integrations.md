@@ -194,6 +194,20 @@ and its connector form takes a URL and a header rather than a browser sign-in,
 which is why it needs a key. Keep that key in Grok Bot's own form, never in a
 file in this repo.
 
+### Local alternative: Engram
+
+When the hosted Waku Memory is unavailable, the Nim binary already speaks
+Engram over MCP (`engram_mem_*`, the tools the brain digest and the report
+save path look for). No sign-in, no key: it runs on this machine.
+
+```bash
+./nim/waku connect engram     # writes {"name":"engram","command":"engram","args":["mcp"]} to ~/.waku/mcp.json
+```
+
+Restart Waku and its tools appear as `engram_mem_*`. The dashboard counts
+them in the memory bucket, same as `waku_memory_*`. The entry must stay
+named `engram`: that prefix is what the brain, reports and receipts match on.
+
 ### Carry your skills too
 
 ```bash

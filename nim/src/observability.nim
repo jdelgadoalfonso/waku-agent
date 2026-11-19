@@ -388,7 +388,7 @@ proc stepRow*(ev: JsonNode, servers: openArray[string] = [],
   of "tool":
     let info = describe(ev, servers)
     let src = info.jget("source").getStr()
-    result["kind"] = %(if src == "waku_memory": "memory" else: "tool")
+    result["kind"] = %(if src == "waku_memory" or src == "mcp:engram": "memory" else: "tool")
     result["span"] = copy(info.jget("span"))
     result["tool"] = %(ev.jget("tool").getStr())
     result["source"] = %src
@@ -406,7 +406,7 @@ proc stepRow*(ev: JsonNode, servers: openArray[string] = [],
     if info.hasKey("provider"):
       result["provider"] = copy(info.jget("provider"))
     result["read_first"] = %(ev.jget("read_first").getBool())
-    if src == "waku_memory":
+    if src == "waku_memory" or src == "mcp:engram":
       for key in ["query", "results", "retrieval_trace_id"]:
         if info.hasKey(key):
           result[key] = copy(info.jget(key))
@@ -876,9 +876,11 @@ proc toolStats*(events: seq[JsonNode], servers: openArray[string] = [],
     let source = info.jget("source").getStr()
     let short = if source == "waku_memory" and
         name.len > wakuMemoryPrefix.len:
-      name[wakuMemoryPrefix.len .. ^1] else: name
+      name[wakuMemoryPrefix.len .. ^1]
+    elif source == "mcp:engram" and name.len > engramPrefix.len:
+      name[engramPrefix.len .. ^1] else: name
     let b = if source == "treg": bucketOf(treg, name)
-            elif source == "waku_memory": bucketOf(memory, short)
+            elif source == "waku_memory" or source == "mcp:engram": bucketOf(memory, short)
             else: bucketOf(other, name)
     b["calls"] = %(b.jget("calls").getInt() + 1)
     if not info.jget("ok").getBool(true):
@@ -914,7 +916,7 @@ proc toolStats*(events: seq[JsonNode], servers: openArray[string] = [],
           eb["ms_total"] = %(eb.jget("ms_total").getInt() +
             int(ms.getBiggestInt()))
           eb["ms_n"] = %(eb.jget("ms_n").getInt() + 1)
-    elif source == "waku_memory":
+    elif source == "waku_memory" or source == "mcp:engram":
       memorySpan[short] = copy(info.jget("span"))
       if info.hasKey("query"):
         queries.add(%*{"tool": short,
@@ -1096,7 +1098,7 @@ proc spendItems*(home: string, events: seq[JsonNode],
               else: float(cost.getBiggestInt())
     let src = info.jget("source").getStr()
     let bucket = if src == "treg": "treg"
-                 elif src == "waku_memory": "memory" else: "other"
+                 elif src == "waku_memory" or src == "mcp:engram": "memory" else: "other"
     let tid = ev.jget("turn_id").getStr()
     result.add(%*{"ts": ev.jget("ts").getStr(), "bucket": bucket,
       "usd": usd,

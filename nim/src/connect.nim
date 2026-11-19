@@ -32,7 +32,7 @@ import ./mcp
 import ./wire
 
 const
-  connectorNames* = ["google", "waku-memory", "treg"]
+  connectorNames* = ["google", "waku-memory", "treg", "engram"]
     ## What `waku connect` accepts, in registry order.
 
   googleScope* = "https://www.googleapis.com/auth/calendar.events.readonly"
@@ -69,6 +69,11 @@ const
   tregWhat* = "Live data for research: search, companies, people, " &
     "social, ads and the web."
     ## Port of Python's `WHAT`, shown on the Connections card.
+
+  engramName* = "engram"
+  engramDocs* = "local `engram mcp` over stdio; no sign-in, no key."
+    ## Engram is the local alternative to the hosted Waku Memory: the same
+    ## `engram_mem_*` tools the brain/report paths already look for.
 
 proc connectUsage*(): string =
   ## What to run. Unknown names land here with exit 1, like Python.
@@ -426,6 +431,56 @@ proc tregConnect*(home: string, signIn: MemorySignInFn): string =
   return done & "Connected to treg as " & identity & ". " &
     "Restart Waku to load its tools (treg_*). treg bills your own account."
 
+proc addEngramServer*(home: string): tuple[status: string, spec: JsonNode] =
+  ## Make sure `mcp.json` names the local Engram server: "added", "present"
+  ## (already there) or "conflict" (an `engram` entry pointing elsewhere on
+  ## purpose is left alone). Stdio only, no OAuth, no key: the binary speaks
+  ## `engram mcp` on this machine, the same transport `mcp.nim` already
+  ## probed live against.
+  let config = home / "mcp.json"
+  var data = %*{"servers": newJArray()}
+  if fileExists(config):
+    try:
+      data = parseJson(readFile(config))
+    except JsonParsingError:
+      raise newException(ValueError,
+        config & " is not valid JSON — fix it or move it aside, then run again.")
+  if data.kind != JObject:
+    data = %*{"servers": newJArray()}
+  if data.jget("servers").kind != JArray:
+    data["servers"] = newJArray()
+  let servers = data["servers"]
+  for spec in servers:
+    if spec.jget("name").getStr() != engramName:
+      continue
+    if spec.jget("command").getStr() == "engram":
+      return ("present", spec)
+    return ("conflict", spec)
+  let spec = %*{"name": engramName, "command": "engram", "args": ["mcp"]}
+  servers.add(spec)
+  createDir(home)
+  writeFile(config, pretty(data, 2) & "\n")
+  return ("added", spec)
+
+proc engramConnect*(home: string): string =
+  ## Add the local server, no browser: Engram needs no sign-in.
+  var status = ""
+  var spec = newJNull()
+  try:
+    (status, spec) = addEngramServer(home)
+  except ValueError as exc:
+    return exc.msg
+  let config = home / "mcp.json"
+  if status == "conflict":
+    return "'" & engramName & "' in " & config & " already points elsewhere, " &
+      "not at local `engram mcp`. " &
+      "Change it there if you meant the local Engram server."
+  let done = if status == "added": "Added Engram to " & config & ". "
+    else: ""
+  return done & "Engram is set up as '" & engramName &
+    "' (" & engramDocs & "). " &
+    "Restart Waku to load its tools (engram_mem_*)."
+
 proc connectIntegration*(name, home: string, google: GoogleSeams,
     signIn: MemorySignInFn): string =
   ## One connector's reply for a KNOWN name; unknown names stay with
@@ -437,6 +492,8 @@ proc connectIntegration*(name, home: string, google: GoogleSeams,
     return memoryConnect(home, signIn)
   of "treg":
     return tregConnect(home, signIn)
+  of "engram":
+    return engramConnect(home)
   else:
     return connectUnknown(name)
 
