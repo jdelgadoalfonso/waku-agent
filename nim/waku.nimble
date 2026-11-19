@@ -109,3 +109,6 @@ task buildStyle, "Compiles the same binary with optional ANSI styling":
 task testStyle, "Runs the styled renderer pins (offline, no key)":
   exec "nim c -r --hints:off " & stylePath & " " & styleDefines &
     " -o:tests/test_style_flagged tests/test_style.nim"
+
+task envExample, "Checks the generated Connections block in .env.example from data/ (offline, no key; --write rewrites with explicit user request)":
+  exec "nim c -r --hints:off env_example.nim -- --check"

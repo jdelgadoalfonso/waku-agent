@@ -554,6 +554,25 @@ suite "phase 9b-1 the trees nim/ may not reach":
       "these import across the MIT / Elastic licence line:\n  " &
       offenders.join("\n  ")
 
+  test "no module imports the Python waku package":
+    # `hosted/` runs `waku/` and may import it; `nim/` ships the port and
+    # may not — it reads `data/`, never the frozen half. The Nim module
+    # `src/waku.nim` (`import ../src/waku`, `./waku`) is exempt: this pins
+    # the Python *package* reach (`../waku/`, `../../waku/`, `waku/*.py`).
+    var offenders: seq[string] = @[]
+    for module in nimModules():
+      if isThisSuite(module):
+        continue
+      for line in importLines(readFile(module)):
+        let p = importPath(line.text)
+        if "../waku/" in p or "../../waku/" in p or
+            ("waku/" in p and ".py" in p):
+          offenders.add(module.extractFilename & ":" & $line.at & " " &
+            line.text)
+    assert offenders.len == 0,
+      "these import the frozen Python half:\n  " &
+      offenders.join("\n  ")
+
   test "the boundary scan read the tree it says it read":
     # A scan that finds nothing must not be able to look like a clean
     # tree: a wrong root or a pattern that stopped matching would pass
