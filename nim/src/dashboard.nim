@@ -161,13 +161,13 @@ const
     "/api/memory-arena",
     "/api/memory-arena/stores",
   ]
-    ## Mirror of the Python `PINNED_GET` set both the route-contract eval
-    ## and the hosted policy table read from. 8a serves a SUBSET of these
+    ## Mirror of the `pinned_get` contract in `data/dashboard_routes.json`
+    ## both the route-contract eval and the hosted policy table read from. 8a serves a SUBSET of these
     ## paths and must never serve anything outside this list: a new path
     ## here is a contract change (same commit updates the eval + policy).
 
   portOnlyPostRoutes*: seq[string] = @[]
-    ## POST paths this port serves that Python's `PINNED_POST` does
+    ## POST paths this port serves that the `pinned_post` contract does
     ## not name YET, each one a documented divergence rather than a
     ## drift. Empty since the origin/main sync: the rebase landed
     ## `waku/ops/turn_evals.py` and its pin, so `/api/turn-evals/judge`
@@ -175,9 +175,9 @@ const
     ## divergence the port carried closed.
     ##
     ## `pythonPinnedGet`/`pythonPinnedPost` stay an EXACT mirror of the
-    ## Python pins (a test enforces it); this list is what keeps a
+    ## contract in `data/dashboard_routes.json` (a test enforces it); this list is what keeps a
     ## served route from being invisible. A route here is a deliberate
-    ## gap: it must never hold one the Python side already pins, and
+    ## gap: it must never hold one the contract already pins, and
     ## the hosted route-contract eval cannot see it (no policy entry
     ## exists to check). Two tests pin both halves of that sentence.
 
@@ -204,12 +204,12 @@ const
     "/api/memory-arena/clean",
     "/api/memory-arena/stream",
   ]
-    ## Mirror of the Python `PINNED_POST` set (`POST_ROUTES` +
-    ## `STREAM_ROUTES` + the judgment/memory-arena exact checks). 8b serves
+    ## Mirror of the `pinned_post` contract in `data/dashboard_routes.json`
+    ## (`POST_ROUTES` + `STREAM_ROUTES` + the judgment/memory-arena exact checks). 8b serves
     ## a SUBSET; the arena entries stay honest 501s until 8c/8d.
 
   portOnlyGetRoutes*: seq[string] = @[]
-    ## GET paths this port serves that Python's `PINNED_GET` does not
+    ## GET paths this port serves that the `pinned_get` contract does not
     ## name YET, each one a documented divergence rather than a drift.
     ## Empty since the origin/main sync: the rebase landed
     ## `waku/ops/observability.py` and its pin, so `/api/observability`
@@ -217,9 +217,9 @@ const
     ## divergence the port carried closed.
     ##
     ## `pythonPinnedGet`/`pythonPinnedPost` stay an EXACT mirror of the
-    ## Python pins (a test enforces it); this list is what keeps a
+    ## contract in `data/dashboard_routes.json` (a test enforces it); this list is what keeps a
     ## served route from being invisible. A route here is a deliberate
-    ## gap: it must never hold one the Python side already pins, and
+    ## gap: it must never hold one the contract already pins, and
     ## the hosted route-contract eval cannot see it (no policy entry
     ## exists to check). Two tests pin both halves of that sentence.
 

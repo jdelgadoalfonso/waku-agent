@@ -37,16 +37,11 @@
 ##    was compiled from `nim/` or from the repo root.
 ##
 ## The second suite is the divergence pin. `pythonPinnedGet` and
-## `pythonPinnedPost` in `src/dashboard.nim` are hand copies of
-## `PINNED_GET`/`PINNED_POST` in
-## `evals/deterministic/test_dashboard_routes.py`, and until this suite
-## nothing compared the two. They are read TEXTUALLY here, the precedent
-## being `evals/deterministic/hosted/test_route_contract.py:26-38`,
-## which reads the same file's constants instead of importing them:
-## importing needs the `anthropic` client, and a pin that cannot run
-## offline would skip forever. A divergence fails here instead of passing
-## in silence. If the two sets HAVE diverged, that is a finding to report
-## — this suite never rewrites either side.
+## `pythonPinnedPost` in `src/dashboard.nim` are hand copies of the
+## contract in `data/dashboard_routes.json`, and this suite compares the
+## two. The contract is the port's own file: a missing contract fails
+## instead of skipping. If the two sets HAVE diverged, that is a finding
+## to report — this suite never rewrites either side.
 ##
 ## ONE DIVERGENCE IS ALREADY ON RECORD: `--help`. Python's `waku --help`
 ## is an unknown command (usage text, exit 1); this port answers the flag
@@ -124,9 +119,9 @@ proc binaryPath(): string =
   else:
     ""
 
-proc pythonPins(): string =
-  ## The Python route pins this suite's second half reads.
-  repoRoot() / "evals" / "deterministic" / "test_dashboard_routes.py"
+proc contractPath(): string =
+  ## The port's own route contract.
+  repoRoot() / "data" / "dashboard_routes.json"
 
 proc needBinary(): bool =
   ## Whether the process pins can run. When they cannot, this prints WHY
@@ -243,91 +238,34 @@ proc declaredNimbleVersion(manifest: string): string =
 
 # ── the Python pins, read as text ──────────────────────────────────
 #
-# `PINNED_GET` and `PINNED_POST` are Python sets built by union
-# (`POST_ROUTES | STREAM_ROUTES | {...}`), so reading them means reading
-# the union too. Two shapes are parsed, and only these two: a quoted path
-# inside braces, and a name that is itself assigned a brace literal. The
-# pinned paths contain no braces, so the brace walk below cannot be
-# fooled by a string.
+# The contract lives in `data/dashboard_routes.json` with literal
+# `pinned_get` / `pinned_post` arrays. No Python is read here.
 
-proc literalSpan(source, name: string): tuple[first, last: int] =
-  ## The byte span of `name = ...`, from just past its `=` to the brace
-  ## that closes the first `{` after it. That span carries the literal
-  ## paths AND the names this set unions, which is why the walk starts at
-  ## the literal rather than at the assignment. `(-1, -1)` when the file
-  ## holds no `name =` at all. The FIRST one wins: for the module-level
-  ## constants read here, that is the assignment itself.
-  let bounds = source.findBounds(re(escapeRe(name) & r"\s*="))
-  if bounds.first < 0:
-    return (-1, -1)
-  let open = source.find('{', bounds.last)
-  if open < 0:
-    return (-1, -1)
-  var depth = 0
-  var i = open
-  while i < source.len:
-    case source[i]
-    of '{': inc depth
-    of '}':
-      dec depth
-      if depth == 0:
-        return (bounds.last + 1, i)
-    else: discard
-    inc i
-  return (-1, -1)
+import std/json
 
-proc tokenAt(source: string, start: int): tuple[next: int, name: string] =
-  ## The `[A-Za-z_][A-Za-z0-9_]*` token at `start`, or `("", -1)` when
-  ## there is none there. Hand-rolled because the tokens are plain ASCII
-  ## and this walks one file, at test time.
-  if start < 0 or start >= source.len or
-      not (source[start].isAlphaAscii or source[start] == '_'):
-    return (-1, "")
-  var i = start + 1
-  while i < source.len and (source[i].isAlphaNumeric or source[i] == '_'):
-    inc i
-  return (i, source[start ..< i])
-
-proc pythonRoutes(source, name: string,
-                  seen: var HashSet[string]): HashSet[string] =
-  ## `name` as a set of paths: every quoted path in its span, plus every
-  ## set it unions, resolved one level at a time. `seen` stops a name
-  ## that (directly or not) refers to itself, and a name that is not a
-  ## set literal contributes nothing rather than guessing.
-  if name in seen:
-    return
-  seen.incl name
-  let (first, last) = literalSpan(source, name)
-  if first < 0:
-    return
-  # A quoted path, `"/api/chat"`. An ordinary string, not a raw one: the
-  # quotes this matches have to be escaped.
-  for quoted in source[first .. last].findAll(re("\"(/[^\"]*)\"")):
-    result.incl quoted[1 ..< quoted.len - 1]
-  var i = first
-  while i <= last:
-    let (next, token) = tokenAt(source, i)
-    if token.len == 0:
-      inc i
-      continue
-    # `contains`, not `match`: `re.match` is anchored at the search
-    # start, so it would only ever see the top of the file.
-    if source.contains(re(escapeRe(token) & r"\s*=\s*\{")):
-      result.incl pythonRoutes(source, token, seen)
-    i = if next > i: next else: i + 1
-
-proc pythonPinnedRoutes(source, name: string): HashSet[string] =
-  ## `pythonRoutes` with its own `seen`, so one call cannot leave the
-  ## next one short a name.
-  var seen: HashSet[string]
-  pythonRoutes(source, name, seen)
-
-proc routesFile(): string =
-  ## The Python pins file, or `""` when this checkout does not carry it.
-  if fileExists(pythonPins()):
-    pythonPins()
-  else:
-    ""
+proc contractRoutes(): tuple[gets: HashSet[string], posts: HashSet[string]] =
+  ## The port's own route contract, or empty sets when unreadable.
+  ## Callers assert non-empty, so a missing contract fails, never skips.
+  let path = contractPath()
+  if not fileExists(path):
+    return (initHashSet[string](), initHashSet[string]())
+  var doc: JsonNode
+  try:
+    doc = parseJson(readFile(path))
+  except JsonParsingError, IOError:
+    return (initHashSet[string](), initHashSet[string]())
+  var gets = initHashSet[string]()
+  var posts = initHashSet[string]()
+  if doc.kind == JObject:
+    if doc.hasKey("pinned_get") and doc["pinned_get"].kind == JArray:
+      for n in doc["pinned_get"]:
+        if n.kind == JString:
+          gets.incl n.getStr()
+    if doc.hasKey("pinned_post") and doc["pinned_post"].kind == JArray:
+      for n in doc["pinned_post"]:
+        if n.kind == JString:
+          posts.incl n.getStr()
+  return (gets, posts)
 
 suite "phase 9c black-box process pins":
   test "--version prints the version the manifest declares":
@@ -550,61 +488,32 @@ suite "phase 9c black-box process pins":
       assert "OPENROUTER_API_KEY" notin seen, seen
 
 suite "phase 9c pinned-surface divergence":
-  test "the mirrored GET set is Python's PINNED_GET":
-    # No binary needed: the divergence is between two copies of one list in
-    # two languages, and a missing binary must not hide it.
-    let path = routesFile()
-    if path.len == 0:
-      echo "SKIP: no " & pythonPins() & " — the Python pins are unreadable"
-      skip()
-    else:
-      let source = readFile(path)
-      let mine = toHashSet(pythonPinnedGet)
-      let theirs = pythonPinnedRoutes(source, "PINNED_GET")
-      assert mine == theirs, "only in src/dashboard.nim: " &
-        $(sorted(toSeq(mine - theirs))) &
-        "\nonly in test_dashboard_routes.py: " &
-        $(sorted(toSeq(theirs - mine)))
+  test "the mirrored GET set matches the contract":
+    # No binary needed: the divergence is between the dashboard and the
+    # port's own contract, and a missing binary must not hide it.
+    let (gets, _) = contractRoutes()
+    assert gets.len > 0, "missing contract: " & contractPath()
+    let mine = toHashSet(pythonPinnedGet)
+    assert mine == gets, "only in src/dashboard.nim: " &
+      $(sorted(toSeq(mine - gets))) &
+      "\nonly in data/dashboard_routes.json: " &
+      $(sorted(toSeq(gets - mine)))
 
-  test "the mirrored POST set is Python's PINNED_POST":
-    let path = routesFile()
-    if path.len == 0:
-      echo "SKIP: no " & pythonPins() & " — the Python pins are unreadable"
-      skip()
-    else:
-      let source = readFile(path)
-      let mine = toHashSet(pythonPinnedPost)
-      let theirs = pythonPinnedRoutes(source, "PINNED_POST")
-      assert mine == theirs, "only in src/dashboard.nim: " &
-        $(sorted(toSeq(mine - theirs))) &
-        "\nonly in test_dashboard_routes.py: " &
-        $(sorted(toSeq(theirs - mine)))
+  test "the mirrored POST set matches the contract":
+    let (_, posts) = contractRoutes()
+    assert posts.len > 0, "missing contract: " & contractPath()
+    let mine = toHashSet(pythonPinnedPost)
+    assert mine == posts, "only in src/dashboard.nim: " &
+      $(sorted(toSeq(mine - posts))) &
+      "\nonly in data/dashboard_routes.json: " &
+      $(sorted(toSeq(posts - mine)))
 
-  test "the sets parsed here are the ones the Python file declares":
-    # The guard on the parser itself. A reader that stopped finding
-    # strings would make the two pins above compare two empty sets and
-    # pass in silence; these assertions say the unions were RESOLVED (each
-    # pinned set is strictly larger than the literal sets it unions) and
-    # that every entry read back is a path.
-    let path = routesFile()
-    if path.len == 0:
-      echo "SKIP: no " & pythonPins() & " — the Python pins are unreadable"
-      skip()
-    else:
-      let source = readFile(path)
-      let gets = pythonPinnedRoutes(source, "PINNED_GET")
-      let posts = pythonPinnedRoutes(source, "PINNED_POST")
-      let getPaths = pythonPinnedRoutes(source, "GET_PATHS")
-      let postRoutes = pythonPinnedRoutes(source, "POST_ROUTES")
-      let streamRoutes = pythonPinnedRoutes(source, "STREAM_ROUTES")
-      assert gets.len > 0 and posts.len > 0, "nothing was parsed"
-      # Subset AND bigger: the pair says the union resolved into both
-      # sets, without relying on a set operator to say "strictly".
-      assert getPaths <= gets and gets.len > getPaths.len,
-        "PINNED_GET did not resolve its union with GET_PATHS"
-      assert postRoutes <= posts and streamRoutes <= posts and
-        posts.len > postRoutes.len + streamRoutes.len,
-        "PINNED_POST did not resolve its union with POST_ROUTES and " &
-        "STREAM_ROUTES"
-      for route in gets + posts:
-        assert route.startsWith("/") and route.len > 1, route
+  test "the contract holds only paths":
+    # Guard against a reader that finds nothing: an empty contract
+    # fails here instead of letting the two pins above compare two
+    # empty sets and pass in silence.
+    let (gets, posts) = contractRoutes()
+    assert gets.len > 0 and posts.len > 0,
+      "missing contract: " & contractPath()
+    for route in gets + posts:
+      assert route.startsWith("/") and route.len > 1, route
