@@ -22,6 +22,8 @@ import ./experimental
 import ./factstore
 import ./github
 import ./gmail
+import ./run_command
+import ./schedule
 import ./google_auth
 import ./mcp
 import ./memory_admin
@@ -93,6 +95,8 @@ proc buildRegistry*(db: DbConn, home: string, settings: Settings,
     for t in makeExperimentalTools(pi, settings.provider, settings.model,
         home):
       result.register(t)
+    result.register(makeRunCommandTool(pi.workspaceRoot))
+    result.register(makeScheduleTaskTool(db))
   if settings.appleTools:
     for t in makeAppleTools(apple):
       result.register(t)

@@ -1,4 +1,9 @@
-## Experimental tools — `delegate_task` is live, the rest are honest stubs.
+## Experimental tools — `delegate_task` is the only live one.
+##
+## The planned boxes are empty today: `run_command` graduated to
+## `nim/src/run_command.nim` and `schedule_task` to `nim/src/schedule.nim`,
+## both wired in `registry.nim`. `plannedTools` stays as the closed set the
+## stub builder reads, so a future skeleton has an honest home.
 ##
 ## Port of `waku/tools/experimental.py` (plus the `workspace.py` helpers
 ## delegation actually uses and `delegate_env` from `_env.py`). The pi
@@ -40,15 +45,9 @@ const
     "opencode_go": "opencode_go"}.toTable
     ## Waku provider id → pi's built-in provider id (`pi --list-models`).
 
-  plannedTools* = @[
-    ("run_command", "Terminal tool",
-     "Run a shell command in a sandbox and read the output — Hermes's 'Terminal' " &
-     "tool. Needs a real sandbox + safety surface first."),
-    ("schedule_task", "Cron Job",
-     "Let the agent schedule its own recurring runs. Today `make brief` + a system " &
-     "cron line already does scheduled runs; this would move it in-app."),
-  ]
-    ## Port of `PLANNED`: name → whiteboard box, still skeletons.
+  plannedTools*: seq[(string, string, string)] = @[]
+    ## Port of `PLANNED`: name → whiteboard box, still skeletons. Empty:
+    ## `run_command` and `schedule_task` are live tools now.
 
 type
   PiRunner* = proc(argv: seq[string], workdir: string, timeoutSec: int,

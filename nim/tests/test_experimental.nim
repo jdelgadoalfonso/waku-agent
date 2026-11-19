@@ -2,7 +2,6 @@
 ## scratch flow — the subprocess is always a stub here. Offline only:
 ## no `pi` ever runs.
 
-import std/json
 import std/os
 import std/strtabs
 import std/strutils
@@ -159,6 +158,5 @@ suite "delegate_task":
     let tools = makeExperimentalTools(stubSeams(), "a", "m",
       freshDir("h5"))
     assert tools[0].name == "delegate_task"
-    assert tools[1].name == "run_command"
-    assert "coming soon" in tools[1].fn(%*{})
+    assert tools.len == 1
     assert tools.len == 1 + plannedTools.len

@@ -218,9 +218,26 @@ and is **off by default** — set `WAKU_EXPERIMENTAL=1` to register it.
 - **This is the substrate for Battery B** — each coding case is a `delegate_task`
   scored by whether pi's output passes tests.
 
-Two sibling boxes are still honest skeletons (return "coming soon"):
-`run_command` (Terminal), `schedule_task` (Cron) — each
-needs a real sandbox + safety surface before it goes live. `browse_web`
+`schedule_task` (Cron) shipped its core + tool behind
+`WAKU_EXPERIMENTAL` (fase C2c: fixed interval 60s..7d, `scheduled_tasks`
+table, ticks in chat turn + dashboard idle step, max 3 per tick,
+honest reset-on-restart). At-most-once via atomic claim: one conditional
+`UPDATE` takes due rows under a per-tick unique owner + 300s lease, the
+tick runs only what it claimed, reschedule releases the claim. Known
+limits: a crash between claim and read-back delays those rows up to the
+lease (never a double fire); a crash mid-run or a run outliving its
+lease re-fires after the lease (side effects can duplicate); a tick
+runs max 3 briefs back-to-back (~31s each worst case) and blocks the
+turn or the idle pass while they run; a busy loop starves the dashboard
+tick (it only fires on idle passes); every dashboard tick reopens
+`state.db` (schema replay + migrate); failure lines travel the same
+channel as fired lines.
+`run_command` (Terminal) shipped its read-only half behind
+`WAKU_EXPERIMENTAL` (fase C1: argv-only allowlist, workdir pinned
+(canonical, symlink-aware when the dir exists), no shell).
+Known limits: `grep -R` may follow a symlink inside the workspace;
+`git status/diff` may refresh the index or run a repo-configured
+driver; failures report `exit N` plus a 500-char snippet. `browse_web`
 shipped its read-only half as `fetch_url` (fase A) and its session half as
 `browse_navigate` behind `WAKU_EXPERIMENTAL` (fase B: numbered links, basic
 POST forms, cookies per host in `<home>/browse_sessions` (history cap 50,

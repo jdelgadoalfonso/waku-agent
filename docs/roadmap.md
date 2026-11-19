@@ -39,9 +39,9 @@ and the dashboard's **Tools** tab lists them under **Coming soon**:
 |---|---|---|
 | Sub-Agents | `delegate_task` | **live** — delegates coding tasks to pi |
 | Graph workflows | [`waku/graph/`](../waku/graph) | **live** behind `WAKU_GRAPH_WORKFLOWS=1` — [triage-first turns](tour.md#graph-workflows) |
-| Terminal tool | `run_command` | planned — needs a real sandbox + safety surface first |
+| Terminal tool | `run_command` | **live** behind `WAKU_EXPERIMENTAL` — read-only argv-only allowlist (`ls`, `cat`, `grep`, `git status/log/diff`), workdir pinned to workspace, no shell |
 | Browser tool | `fetch_url` + `browse_navigate` | **live** behind `WAKU_EXPERIMENTAL` — `fetch_url` is the read-only page fetch (fase A); `browse_navigate` follows numbered links and basic forms with a session in `<home>/browse_sessions` (cookies per host, history cap 50, pruned to 7 days / 20 sessions) and refuses private/local hosts on every hop (literal + DNS) |
-| Cron Job | `schedule_task` | planned — `make brief` + a system cron line covers it today |
+| Cron Job | `schedule_task` | **live** behind `WAKU_EXPERIMENTAL` — in-app scheduler (fase C2b: fixed interval 60s..7d, `scheduled_tasks` in `state.db`, ticks in chat turn + dashboard idle step, max 3 per tick, fires while the orchestrator lives) |
 
 A teaching repo's point is a readable core, so these come alive one at a time,
 tested.
