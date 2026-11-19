@@ -16,8 +16,8 @@ authoritative behaviour reads them. `nim/src/` mirrors the same pillars —
 **`waku/` is frozen.** No new capability and no new behaviour eval lands there,
 and new work goes to `nim/`. It stays in the tree for three reasons. It is the
 parity oracle. `evals/deterministic/` still runs and guards this repository.
-And the Nim port reads files inside it: `nim/src/dashboard.nim` embeds
-`data/static`, and `nim/src/waku.nim` reads `../waku.nimble`. The provider and
+And the Nim port reads its own manifest: `nim/src/dashboard.nim` embeds
+`data/static`, and `nim/src/waku.nim` reads `../waku.nimble` (that is `nim/waku.nimble`). The provider and
 connection registries both halves read live in `data/`. `hosted/` stays Python
 and stays unchanged, with its own Elastic License 2.0.
 
@@ -328,7 +328,7 @@ shows those instead. A proxy that does not know the turn leaves the estimate.
 - `nim/src/` — the port that ships, one file per box above: `loop.nim`,
   `memory.nim`, `graph/engine.nim`, `gateway.nim`, `mcp.nim`, `integrations.nim`,
   `dashboard.nim` (which embeds `data/static` at compile time) and
-  `waku.nim` (the CLI, reading its version from `../waku.nimble`). `waku/` is
+  `waku.nim` (the CLI, reading its version from `../waku.nimble`, that is `nim/waku.nimble`). `waku/` is
   frozen at parity: it is the answer key, not a second place to add behaviour.
   [../nim/README.md](../nim/README.md) says what is ported and what is not.
 - `~/.waku/` — runtime state: `state.db`, `calendar.ics`, `outbox/`, `traces/`.

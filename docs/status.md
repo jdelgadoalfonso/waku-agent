@@ -20,8 +20,8 @@ dashboard, and it embeds the dashboard's files at compile time.
 eval lands there, and new work goes to `nim/`. The folder stays for three
 reasons. It is the parity oracle every phase of the Nim port was verified
 against. `evals/deterministic/` still runs and guards this repository. And the
-Nim port still reads one file inside it: `nim/src/waku.nim` reads
-`../waku.nimble`. Everything else the port needs is data, in `data/`: the
+Nim port reads its own manifest: `nim/src/waku.nim` reads
+`../waku.nimble` (that is `nim/waku.nimble`). Everything else the port needs is data, in `data/`: the
 provider registry, and the dashboard assets it embeds. `hosted/` stays
 Python, unchanged, with its own Elastic License 2.0.
 

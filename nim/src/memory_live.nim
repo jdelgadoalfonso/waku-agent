@@ -14,9 +14,9 @@
 ##
 ## `wireMemory` fills the nil-able seams (`Session.retrieve`/`skillsFor`,
 ## `Waku.afterTurn`) the session/app modules declared for this phase.
-## Hosted backends (supabase/mem0/zep/langmem/notion) stay Python-only —
-## the port's `Settings` carries no store switch, so sqlite answers
-## honestly everywhere here.
+## Semantic backends (supabase/mem0/zep/langmem) are ported via REST and
+## selected by `WAKU_SEMANTIC_STORE` (`app.nim`); sqlite stays the default
+## that answers honestly everywhere else.
 
 import std/algorithm
 import std/json

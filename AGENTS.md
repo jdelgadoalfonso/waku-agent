@@ -10,8 +10,8 @@ follow**: the project will get bigger, and it must never get muddier.
 behaviour eval lands there, and new work goes to `nim/`. It stays in the tree
 for three reasons. It is the parity oracle every phase of the Nim port was
 verified against. `evals/deterministic/` still runs and guards this
-repository. And the Nim port still reads one file inside it: `nim/src/waku.nim`
-reads `../waku.nimble`. The rest of what the port needs is data, and lives in
+repository. And the Nim port reads its own manifest: `nim/src/waku.nim`
+reads `../waku.nimble` (that is `nim/waku.nimble`, not a file in `waku/`). The rest of what the port needs is data, and lives in
 `data/`: the provider and connection registries, and the dashboard assets it embeds.
 
 This file is for everyone who changes the repo, human or coding agent. A test
