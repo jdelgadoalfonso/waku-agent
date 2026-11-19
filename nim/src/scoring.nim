@@ -10,7 +10,7 @@ import std/strutils
 
 import ./wire
 
-proc datasetPath*(startDir = ""): string =
+proc datasetPath*(): string =
   ## `evals/dataset.jsonl` beside the checkout (`findProvidersToml`
   ## convention: working directory first, binary directory last), or ""
   ## when there is no checkout — then there are no battery cases.
