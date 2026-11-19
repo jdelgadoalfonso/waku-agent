@@ -39,7 +39,6 @@ import std/times
 
 when defined(wakuStyle):
   import std/terminal
-  import ./style
 
 import ./apple
 import ./brief
@@ -65,8 +64,10 @@ import ./mcp
 import ./memory_live
 import ./providers
 import ./registry
+import ./schedule
 import ./search
 import ./skills
+import ./style
 import ./supervisor
 import ./telegram
 import ./triage
@@ -320,17 +321,29 @@ proc runChat*(dotenvStart = ""): int =
   except ClientConfigError as exc:
     stderr.writeLine(exc.msg)
     return 1
+  let renderer =
+    when defined(wakuStyle): terminalRenderer(terminalWidth())
+    else: plainRenderer()
   # The graph is re-resolved on the live agent every turn, exactly like the
   # browser's chat seam: `WAKU_GRAPH_CLI` wins, the global
   # `WAKU_GRAPH_WORKFLOWS` is the fallback, and the selector is re-read
   # before each `respond` — so a graph change needs no restart. The startup
   # seam `buildCliApp` bound (the triage door) stays as the initial value.
-  proc reselect(w: var Waku) {.closure.} =
+  #
+  # C2b: the scheduler rides that same per-turn hook, because `runRepl` has
+  # no second seam into a turn. A due brief fires (and reschedules) after
+  # the person's message and before the turn's model call, and each line
+  # the gate answers speaks through the note channel the REPL already uses
+  # for the observer's `tool ·` lines: a dim, two-space line, not a new
+  # event kind. Off (`WAKU_EXPERIMENTAL`), this answers `@[]` before the
+  # clock or the store is touched, so the default chat is byte for byte
+  # the old one.
+  proc beforeTurn(w: var Waku) {.closure.} =
+    if w.settings.experimental:
+      for line in tickIfDue(w.db, true, getTime().toUnix()):
+        echo renderer.dim("  schedule · " & line)
     reselectGraphTurn(w, "cli", processEnv())
-  when defined(wakuStyle):
-    runRepl(w, terminalRenderer(terminalWidth()), reselect)
-  else:
-    runRepl(w, graphReselect = reselect)
+  runRepl(w, renderer, beforeTurn)
   return 0
 
 proc runBriefCmd*(dotenvStart = ""): int =

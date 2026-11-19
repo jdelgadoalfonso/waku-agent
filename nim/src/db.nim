@@ -74,6 +74,18 @@ const schemaStmts* = [
       INSERT INTO episodes_fts(episodes_fts, rowid, summary) VALUES ('delete', old.id, old.summary);
   END""",
   """
+  CREATE TABLE IF NOT EXISTS scheduled_tasks (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      prompt TEXT NOT NULL,
+      agent TEXT DEFAULT 'brief',
+      interval_sec INTEGER NOT NULL,
+      next_run INTEGER NOT NULL,
+      claimed_at INTEGER DEFAULT 0,
+      claimed_by TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now'))
+  )""",
+  """
   CREATE TABLE IF NOT EXISTS chat_log (
       id INTEGER PRIMARY KEY,
       role TEXT NOT NULL,
@@ -92,6 +104,11 @@ proc chatLogColumns*(db: DbConn): seq[string] =
 proc factColumns*(db: DbConn): seq[string] =
   ## Column names of `facts` (for `_migrate` and tests).
   for row in db.getAllRows(sql"PRAGMA table_info(facts)"):
+    result.add(row[1])
+
+proc scheduledTaskColumns*(db: DbConn): seq[string] =
+  ## Column names of `scheduled_tasks` (for `_migrate` and tests).
+  for row in db.getAllRows(sql"PRAGMA table_info(scheduled_tasks)"):
     result.add(row[1])
 
 proc migrate*(db: DbConn) =
@@ -113,6 +130,14 @@ proc migrate*(db: DbConn) =
     db.exec(sql"ALTER TABLE facts ADD COLUMN synced INTEGER DEFAULT 1")
   if "scope" notin factCols:
     db.exec(sql"ALTER TABLE facts ADD COLUMN scope TEXT DEFAULT 'global'")
+  let taskCols = scheduledTaskColumns(db)
+  if "claimed_at" notin taskCols:
+    # C2c: the atomic-claim stamp; 0 means free. Rows that predate the
+    # claim come back free, so every old task still fires once.
+    db.exec(sql"ALTER TABLE scheduled_tasks ADD COLUMN claimed_at INTEGER DEFAULT 0")
+  if "claimed_by" notin taskCols:
+    # C2c: which tick owner holds the claim; '' means free.
+    db.exec(sql"ALTER TABLE scheduled_tasks ADD COLUMN claimed_by TEXT DEFAULT ''")
 
 proc connectDb*(home: string): DbConn =
   ## Open (creating `home` when missing) `<home>/state.db`, wait up to 3s

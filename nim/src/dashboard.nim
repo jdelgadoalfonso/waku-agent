@@ -116,6 +116,7 @@ import ./graph/plugins
 import ./graph/skillgraph
 import ./graph/skillinstall
 from ./graph/engine import runGraph, describe
+import ./schedule
 import ./search
 import ./session
 import ./supervisor
@@ -3792,6 +3793,11 @@ type
       ## must not hand the bot back its four-polls-a-second cadence. The wait
       ## is a `select` over the listeners, so their request still wakes the
       ## loop the moment it lands, whatever the window says.
+    schedulerAt*: int64
+      ## The last Unix second the C2b ticker ran, so the loop pays at most
+      ## one store read a second instead of one per pass. A minute is the
+      ## smallest interval a task can have, so a second of slack costs a
+      ## due task nothing.
 
 proc loggerOf*(hooks: GatewayHooks): LogFn =
   ## The terminal mirror, or the plain stdout default every gateway command
@@ -3963,7 +3969,8 @@ proc newGatewayRig*(hooks: GatewayHooks): GatewayRig =
     telegram: newTelegramLive("telegram"),
     whatsapp: newWhatsappLive("whatsapp"),
     discord: newDiscordLive("discord"),
-    discordIdleMs: 0, discordDials: 0, telegramEmptyPolls: 0)
+    discordIdleMs: 0, discordDials: 0, telegramEmptyPolls: 0,
+    schedulerAt: 0)
   result.telegramTurn = hooks.respond("telegram")
   result.whatsappTurn = hooks.respond("whatsapp")
   result.discordTurn = hooks.respond("discord")
@@ -4375,6 +4382,41 @@ proc multiplexPass*(srv: var DashboardServer, rig: GatewayRig,
   if rig.gatewayTick():
     result = true
 
+proc experimentalOn(env: Table[string, string]): bool =
+  ## The experimental switch as the loop reads it. `applySettings` writes
+  ## this key into `srv.deps.env` — the same live table the gateway rig
+  ## reads — so a save in the panel is the next pass's answer, and the
+  ## three spellings are the ones `loadSettings` accepts.
+  env.getOrDefault("WAKU_EXPERIMENTAL", "") in ["1", "true", "yes"]
+
+proc schedulerTick(srv: DashboardServer, rig: GatewayRig) =
+  ## C2b: the dashboard's half of the ticker. Off, this costs one table
+  ## lookup and touches nothing else — no store, no clock, no spawn. On,
+  ## it is at most one tick a second, and every line the gate answers (a
+  ## fired brief's reply, or the tick's own failure) goes to the log
+  ## mirror `you › …` already uses. A store that will not open is one
+  ## more log line: this hook must never be why the loop stops.
+  let experimental = experimentalOn(srv.deps.env)
+  if srv.deps.home.len == 0 or not experimental:
+    return
+  let now = getTime().toUnix()
+  if now <= rig.schedulerAt:
+    return
+  rig.schedulerAt = now
+  var db: DbConn
+  try:
+    db = connectDb(srv.deps.home)
+    for line in tickIfDue(db, experimental, now):
+      rig.logger("scheduler · " & line)
+  except CatchableError as exc:
+    rig.logger("scheduler · tick failed: " & exc.msg)
+  finally:
+    if not db.isNil:
+      try:
+        db.close()
+      except CatchableError:
+        discard
+
 proc multiplexStep*(srv: var DashboardServer, rig: GatewayRig,
                     seams: MultiplexSeams): bool =
   ## One iteration of `multiplexServe`, including the wait rule: a pass that
@@ -4384,8 +4426,15 @@ proc multiplexStep*(srv: var DashboardServer, rig: GatewayRig,
   ## cadence backs off while nothing is happening and returns to the base
   ## cadence the moment something does. Returns whether the pass did
   ## anything — the loop ignores it, a test reads it.
+  ##
+  ## C2b: the idle half is where a due brief runs, never ahead of a
+  ## request that is already waiting. A fired brief blocks this pass while
+  ## its worker runs, the same posture `multiplexServe` already accepts for
+  ## a gateway turn; the tick is wrapped by `schedulerTick`, so a broken
+  ## store or a raising spawn is a log line and the next pass runs.
   if multiplexPass(srv, rig, seams):
     return true
+  srv.schedulerTick(rig)
   if not seams.wait.isNil:
     seams.wait(rig.idleWaitMs())
   return false
