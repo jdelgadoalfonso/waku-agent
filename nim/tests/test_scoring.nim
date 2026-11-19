@@ -46,3 +46,13 @@ suite "scoring":
     assert caseForMessage("other", cases).kind == JNull
     assert loadCases(dir / "missing.jsonl").len == 0
     removeDir(dir)
+
+  test "empty battery names the missing dataset":
+    assert batteryNote("", @[]) == "0 casos, sin evals/dataset.jsonl"
+    assert batteryNote("injected", @[]) == ""
+    assert batteryNote("evals/dataset.jsonl", @[]) == ""
+    let dir = freshDir("waku-scoring-empty")
+    let missing = loadCases(dir / "missing.jsonl")
+    assert missing.len == 0
+    assert batteryNote("", missing) == "0 casos, sin evals/dataset.jsonl"
+    removeDir(dir)

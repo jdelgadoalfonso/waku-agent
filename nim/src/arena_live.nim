@@ -147,7 +147,9 @@ proc liveRace*(message: string, specs: seq[string], coding: bool,
   ## as that column's error, never a silent skip (Python catches
   ## `SystemExit` from `get_client` for the same reason).
   result = newJArray()
-  let cases = if battery.len > 0: battery else: loadCases()
+  let datasetAt = if battery.len > 0: "injected" else: datasetPath()
+  let cases = if battery.len > 0: battery else: loadCases(datasetAt)
+  let note = batteryNote(if battery.len > 0: "injected" else: datasetAt, cases)
   let c = caseForMessage(message, cases)
   for rawSpec in specs:
     let spec = $rawSpec
@@ -199,14 +201,16 @@ proc liveRace*(message: string, specs: seq[string], coding: bool,
                     "latency_ms": ms, "tools": tools,
                     "tokens_in": tin, "tokens_out": tout,
                     "cost_usd": cost, "cutoff": cutoffFor(w.settings.model),
-                    "completion": completion, "quality": newJNull()})
+                    "completion": completion, "quality": newJNull(),
+                    "battery_cases": cases.len, "battery_note": note})
       emit("result", result[result.len - 1])
     except CatchableError as exc:
       emit("result", %*{"spec": spec, "provider": provider,
                         "model": model, "error": exc.msg[0 ..< min(200,
                           exc.msg.len)]})
       result.add(%*{"spec": spec, "provider": provider, "model": model,
-                    "error": exc.msg[0 ..< min(200, exc.msg.len)]})
+                    "error": exc.msg[0 ..< min(200, exc.msg.len)],
+                    "battery_cases": cases.len, "battery_note": note})
   return result
 
 proc makeLiveRace*(deps: ArenaDeps): RaceFn =

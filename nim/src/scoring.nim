@@ -41,6 +41,13 @@ proc loadCases*(path = ""): seq[JsonNode] =
     except JsonParsingError:
       continue
 
+proc batteryNote*(datasetAt: string, cases: seq[JsonNode]): string =
+  ## Honest empty-battery sentence, never a silent zero: when no dataset
+  ## was found and no cases were injected, name the missing file.
+  if datasetAt.len == 0 and cases.len == 0:
+    return "0 casos, sin evals/dataset.jsonl"
+  return ""
+
 proc checkCase*(c: JsonNode, toolCalls: JsonNode): tuple[passed: bool,
     why: string] =
   ## The deterministic contract: right tool, right args, enough calls.
