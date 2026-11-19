@@ -37,6 +37,12 @@ proc stubFetch(url, meth, body, agent: string): tuple[ok: bool,
 proc stubGh(argv: seq[string]): tuple[ok: bool, text: string] =
   (true, "[]")
 
+proc stubBrowseFetch(url, meth, body, agent, cookie: string): tuple[
+    ok: bool, text: string, setCookies: seq[string], status: int,
+    location: string] =
+  (true, "<html><body><p>hola</p><a href=\"/dos\">Dos</a></body></html>",
+   @["sid=abc; Path=/"], 200, "")
+
 proc stubPi(): PiSeams =
   PiSeams(piBin: "", jsonMode: false,
     run: proc(argv: seq[string], workdir: string, timeoutSec: int,
@@ -90,6 +96,50 @@ suite "buildRegistry":
     assert "read_apple_calendar" in names
     assert "create_reminder" in names
     assert "github_read" in names
+    removeDir(home)
+
+  test "browse_navigate rides the experimental flag with fetch_url":
+    let home = freshHome("waku-reg-browse")
+    let db = connectDb(home)
+    var settings = baseSettings(home)
+    settings.experimental = true
+    let reg = buildRegistry(db, home, settings, stubFetch, stubGh,
+      stubPi(), stubApple(), sqliteFactStore(db), sqliteEpisodeStore(db),
+      browseFetch = stubBrowseFetch)
+    let names = toolNames(reg)
+    assert "browse_navigate" in names
+    assert "fetch_url" in names
+    let text = reg.execute("browse_navigate",
+      %*{"url": "https://example.com/", "session_id": "t5"})
+    assert "hola" in text
+    assert "1. Dos" in text
+    assert "https://example.com/dos" in text
+    db.close()
+    removeDir(home)
+
+  test "browse_navigate stays hidden without experimental":
+    let home = freshHome("waku-reg-browse-off")
+    let db = connectDb(home)
+    let reg = buildRegistry(db, home, baseSettings(home), stubFetch,
+      stubGh, stubPi(), stubApple(), sqliteFactStore(db), sqliteEpisodeStore(db),
+      browseFetch = stubBrowseFetch)
+    let names = toolNames(reg)
+    assert "browse_navigate" notin names
+    assert "fetch_url" notin names
+    db.close()
+    removeDir(home)
+
+  test "browse_navigate adapts a cookie-unaware fetch when nil":
+    let home = freshHome("waku-reg-browse-adapt")
+    let db = connectDb(home)
+    var settings = baseSettings(home)
+    settings.experimental = true
+    let reg = buildRegistry(db, home, settings, stubFetch, stubGh,
+      stubPi(), stubApple(), sqliteFactStore(db), sqliteEpisodeStore(db))
+    let text = reg.execute("browse_navigate",
+      %*{"url": "https://example.com/", "session_id": "adapt"})
+    assert "results" in text
+    db.close()
     removeDir(home)
 
   test "gmail is opt-in and sits between apple and github":

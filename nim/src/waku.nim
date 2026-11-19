@@ -267,7 +267,8 @@ proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
       setup.settings.model),
     liveAppleSeams(), w.facts, w.episodes,
     mcpRegistryTools(setup.settings.home, processEnv(),
-      getTime().toUnix(), liveStdioFactory(), liveHttpPostFn()))
+      getTime().toUnix(), liveStdioFactory(), liveHttpPostFn()),
+    browseFetch = liveBrowseFetch)
   # Step 3: the host table a plugin calls back into, built where the live
   # client and the tool registry exist (never on this stack frame — a
   # plugin keeps its address for the process's lifetime), then every

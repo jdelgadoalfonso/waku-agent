@@ -83,7 +83,7 @@ proc tlsContext*(): SslContext =
   else:
     return nil
 
-proc newTlsHttpClient*(timeout = -1): HttpClient =
+proc newTlsHttpClient*(timeout = -1, maxRedirects = 5): HttpClient =
   ## A blocking client that carries the TLS context, or exactly the
   ## client this module built before this existed when there is no
   ## context to carry. Every live REST call in the port goes through
@@ -97,9 +97,10 @@ proc newTlsHttpClient*(timeout = -1): HttpClient =
   ## this module always made, which is what makes "the default build is
   ## unchanged" checkable by reading rather than by testing.
   when defined(wakuTls) and defined(ssl):
-    newHttpClient(timeout = timeout, sslContext = tlsContext())
+    newHttpClient(timeout = timeout, sslContext = tlsContext(),
+      maxRedirects = maxRedirects)
   else:
-    newHttpClient(timeout = timeout)
+    newHttpClient(timeout = timeout, maxRedirects = maxRedirects)
 
 proc newTlsAsyncHttpClient*(): AsyncHttpClient =
   ## The streaming twin: same one-context rule, same default-build

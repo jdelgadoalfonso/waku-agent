@@ -221,7 +221,14 @@ and is **off by default** — set `WAKU_EXPERIMENTAL=1` to register it.
 Two sibling boxes are still honest skeletons (return "coming soon"):
 `run_command` (Terminal), `schedule_task` (Cron) — each
 needs a real sandbox + safety surface before it goes live. `browse_web`
-shipped its read-only half as `fetch_url`; clicking stays on the roadmap.
+shipped its read-only half as `fetch_url` (fase A) and its session half as
+`browse_navigate` behind `WAKU_EXPERIMENTAL` (fase B: numbered links, basic
+POST forms, cookies per host in `<home>/browse_sessions` (history cap 50,
+pruned to 7 days / 20 sessions), SSRF guard on every hop (literal + DNS).
+Known limits: DNS check is check-then-dial (rebinding TOCTOU); cookies are
+host-wide (Domain/Path/Secure not scoped); session save is non-atomic
+`writeFile` then `chmod` (brief default-umask window); live redirect/cookie
+behavior is covered by seam tests, not live sockets.
 
 *v2 idea already noted in the source:* run `pi --mode json` and stream its
 per-turn events into the dashboard's Loop tab, so a delegated coding run animates

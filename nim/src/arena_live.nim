@@ -68,6 +68,7 @@ type
     dotenvPath*: string
     apiKey*: string
     fetch*: SearchFetchFn
+    browseFetch*: BrowseFetchFn
     gh*: GhRunner
     apple*: AppleSeams
     makeExchange*: StdioFactory
@@ -100,7 +101,7 @@ proc contestantAgent*(deps: ArenaDeps, home, provider, model: string,
   w.tools = buildRegistry(db, home, s, deps.fetch, deps.gh,
     livePiSeams(home, s.provider, s.model), deps.apple, w.facts, w.episodes,
     mcpRegistryTools(home, deps.env, deps.nowUnix, deps.makeExchange,
-      deps.httpPost))
+      deps.httpPost), browseFetch = deps.browseFetch)
   wireMemory(w, s, db, client, bundledSkillDirs())
   return w
 

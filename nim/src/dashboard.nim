@@ -3078,7 +3078,8 @@ proc ensureWaku*(box: WakuBox) =
       liveGhRun, livePiSeams(s.home, s.provider, s.model),
       liveAppleSeams(), box.waku.facts, box.waku.episodes,
       mcpRegistryTools(s.home, liveEnv,
-        getTime().toUnix(), liveStdioFactory(), liveHttpPostFn()))
+        getTime().toUnix(), liveStdioFactory(), liveHttpPostFn()),
+      browseFetch = liveBrowseFetch)
     # Step 3: the host table plugins call back into, then every
     # `.waku/plugins/*.so` registered as `plugin:<name>` — the same wiring
     # `buildCliApp` does, so a gateway reusing this box gets it too.
@@ -4530,7 +4531,7 @@ proc serveDashboardCmd*(providers: seq[Provider], settings: Settings,
       fetch: liveSearchFetch, gh: liveGhRun,
       apple: liveAppleSeams(),
       makeExchange: liveStdioFactory(), httpPost: liveHttpPostFn(),
-      env: arenaEnv, buildClient: nil,
+      env: arenaEnv, buildClient: nil, browseFetch: liveBrowseFetch,
       jevPost: liveJevPost, jevKey: getEnv("TYPESAFE_API_KEY"),
       nowUnix: getTime().toUnix())
     srv.deps.raceFn = makeLiveRace(adeps)

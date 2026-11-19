@@ -68,7 +68,8 @@ proc buildRegistry*(db: DbConn, home: string, settings: Settings,
     mcpTools: seq[Tool] = @[], remember: notes.Remember = nil,
     gmailFetch: GmailHttpFn = liveGmailFetch,
     googleCalendarFetch: GoogleHttpFn = liveGoogleFetch,
-    clock: GoogleClockFn = nil): ToolRegistry =
+    clock: GoogleClockFn = nil,
+    browseFetch: BrowseFetchFn = nil): ToolRegistry =
   ## Port of `build_registry`. Every side effect rides an injected seam
   ## (`searchFetch`, `ghRun`, `pi`, `apple`) plus pre-connected
   ## `mcpTools` — tests record them all, the builders pass the live
@@ -86,6 +87,9 @@ proc buildRegistry*(db: DbConn, home: string, settings: Settings,
   result.register(makeCreateSkillTool(home))
   if settings.experimental:
     result.register(makeFetchTool(searchFetch))
+    let bf = if browseFetch.isNil: adaptSearchFetch(searchFetch)
+             else: browseFetch
+    result.register(makeBrowseNavigateTool(bf, home))
     for t in makeExperimentalTools(pi, settings.provider, settings.model,
         home):
       result.register(t)
