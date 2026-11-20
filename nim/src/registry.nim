@@ -10,6 +10,7 @@
 ## the Nim builders always hand over an open db, so they always register
 ## (like a Python agent whose `Memory` built successfully).
 
+import std/strutils
 import std/tables
 
 import db_connector/db_sqlite
@@ -21,6 +22,7 @@ import ./episodes
 import ./experimental
 import ./factstore
 import ./github
+import ./gitlab
 import ./gmail
 import ./run_command
 import ./schedule
@@ -71,7 +73,8 @@ proc buildRegistry*(db: DbConn, home: string, settings: Settings,
     gmailFetch: GmailHttpFn = liveGmailFetch,
     googleCalendarFetch: GoogleHttpFn = liveGoogleFetch,
     clock: GoogleClockFn = nil,
-    browseFetch: BrowseFetchFn = nil): ToolRegistry =
+    browseFetch: BrowseFetchFn = nil,
+    gitlabGet: GitlabGetFn = liveGitlabGet): ToolRegistry =
   ## Port of `build_registry`. Every side effect rides an injected seam
   ## (`searchFetch`, `ghRun`, `pi`, `apple`) plus pre-connected
   ## `mcpTools` — tests record them all, the builders pass the live
@@ -105,5 +108,14 @@ proc buildRegistry*(db: DbConn, home: string, settings: Settings,
       result.register(t)
   if settings.ghTool:
     result.register(makeGithubTool(ghRun, settings.ghRepo))
+  # GitLab rides after GitHub. The two switches match the row's own `enabled`
+  # closure: the explicit flag OR a stored token. Either one is the person
+  # saying they want GitLab in the prompt; with neither, the tool is absent and
+  # costs nothing. A flag-only build registers it and every call answers that
+  # GITLAB_TOKEN is missing, which is the honest reply to a half-done setup.
+  let gitlabToken = settings.gitlabToken.strip()
+  if settings.gitlabTool or gitlabToken.len > 0:
+    result.register(makeGitlabTool(gitlabGet, settings.gitlabUrl, gitlabToken,
+      settings.gitlabProject))
   for t in mcpTools:
     result.register(t)

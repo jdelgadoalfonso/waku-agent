@@ -35,7 +35,7 @@ const linuxOs = "linux"
 const macOs = "macosx"
 
 suite "phase 5d1 static registry":
-  test "all 14 keys present in order with their groups":
+  test "all 15 keys present in order with their groups":
     let got = INTEGRATIONS.mapIt((it.key, it.group))
     assert got == @[
       ("telegram", "Channels"),
@@ -45,6 +45,7 @@ suite "phase 5d1 static registry":
       ("gmail", "Calendar & Productivity"),
       ("apple_calendar", "Calendar & Productivity"),
       ("apple_tools", "Calendar & Productivity"),
+      ("gitlab", "Calendar & Productivity"),
       ("obsidian", "Memory & Storage"),
       ("mem0", "Memory & Storage"),
       ("zep", "Memory & Storage"),
@@ -337,6 +338,19 @@ WAKU_PROVIDER=anthropic
 # Lets Waku use Apple Mail and other local Apple tools.
 # Set to 1 to enable.
 # WAKU_APPLE_TOOLS=
+
+# ── GitLab ──
+# Lets Waku read merge requests and issues from your GitLab, including a self-hosted instance.
+# Setup: https://docs.gitlab.com/user/profile/personal_access_tokens/
+# Off by default: every registered tool rides in every prompt, so this is opt-in.
+# Set to 1 to enable.
+# WAKU_GITLAB_TOOL=
+# Your instance root, e.g. https://gitlab.example.com. /api/v4 is added for you.
+# GITLAB_URL=https://gitlab.com
+# Needs the read_api scope. Waku only reads: it cannot comment, merge, close or push.
+# GITLAB_TOKEN=
+# owner/name or the numeric project ID used when a call omits it.
+# WAKU_GITLAB_PROJECT=
 
 # ── Memory & Storage ──
 

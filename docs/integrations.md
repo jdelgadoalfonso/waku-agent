@@ -158,6 +158,41 @@ Google call that takes a form body, and sending it as JSON made every refresh
 fail, so an expired token read as "not connected" while a valid refresh token
 sat on disk. See [status.md](status.md).
 
+## Read merge requests and issues from GitLab
+
+GitLab is read-only, opt-in, and points at whichever instance you name, so a
+self-hosted server works exactly like gitlab.com:
+
+```bash
+GITLAB_URL=https://gitlab.example.com \
+GITLAB_TOKEN=glpat-... \
+WAKU_GITLAB_TOOL=1 ./nim/waku
+```
+
+`GITLAB_URL` is the instance root (`https://gitlab.com` when unset) and
+`/api/v4` is appended for you. `GITLAB_TOKEN` is a personal access token with
+the `read_api` scope: it travels in the `Private-Token` header and is never
+printed. `WAKU_GITLAB_PROJECT` names a default target (`group/project` or the
+project's numeric ID) for calls that omit one.
+
+The tool is `gitlab_read`, with five commands and no others: `mr list`,
+`mr view`, `mr diff`, `issue list`, `issue view`. The method is GET, the
+allowlist is closed, and a request to comment, close, merge or push is refused
+by name before a socket opens. A reply caps at 8000 characters; the cut is
+announced, with the web address of the merge request or issue to read the rest.
+
+With neither `WAKU_GITLAB_TOOL` nor a `GITLAB_TOKEN` the tool is not registered
+at all: no prompt space and no failure to explain. A token saved through the
+Connections panel turns the row on by itself, and the card's test button asks
+`GET /api/v4/user` — the cheapest call that proves the URL and the token
+together, which is exactly what a self-hosted address needs.
+
+An `https://` instance needs the TLS build (`make nim-build-tls`, which writes
+`./waku_tls`), like Gmail and the calendar; a local `http://` instance works in
+the default build. Pipelines, approvals and comments are out of scope: the
+allowlist reads merge requests and issues only. The row is Nim-only — the
+frozen half in `waku/` does not carry it.
+
 ## Share one memory with your other agents (Waku Memory)
 
 Waku's own memory is local. Each fact is also written to `~/.waku/memory/`,

@@ -227,6 +227,38 @@ name = "WAKU_APPLE_TOOLS"
 label = "Enable Apple tools"
 kind = "bool"
 
+[gitlab]
+halves = ["nim"]
+group = "Calendar & Productivity"
+name = "GitLab"
+what = "Lets Waku read merge requests and issues from your GitLab, including a self-hosted instance."
+setup_url = "https://docs.gitlab.com/user/profile/personal_access_tokens/"
+reload = "agent"
+
+[[gitlab.env]]
+name = "WAKU_GITLAB_TOOL"
+label = "Enable GitLab"
+kind = "bool"
+help = "Off by default: every registered tool rides in every prompt, so this is opt-in."
+
+[[gitlab.env]]
+name = "GITLAB_URL"
+label = "GitLab URL"
+default = "https://gitlab.com"
+help = "Your instance root, e.g. https://gitlab.example.com. /api/v4 is added for you."
+
+[[gitlab.env]]
+name = "GITLAB_TOKEN"
+label = "Personal access token"
+required = true
+secret = true
+help = "Needs the read_api scope. Waku only reads: it cannot comment, merge, close or push."
+
+[[gitlab.env]]
+name = "WAKU_GITLAB_PROJECT"
+label = "Default project"
+help = "owner/name or the numeric project ID used when a call omits it."
+
 [notion]
 halves = ["python"]
 group = "Memory & Storage"

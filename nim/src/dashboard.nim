@@ -93,6 +93,7 @@ import ./factstore
 import ./gather
 import ./gateway
 import ./github
+import ./gitlab
 import ./gmail
 import ./google_auth
 import ./http
@@ -3296,9 +3297,9 @@ proc closeQuietly(sock: Socket) =
 
 proc liveProbes*(): Table[string, ProbeFn] =
   ## The portable connection probes: Tavily (one search call), OTLP
-  ## (one TCP dial), and the two Apple automation checks. Notion needs
-  ## its SDK and Google Calendar needs its API client — both stay
-  ## honestly unprobed, like the dashboard says.
+  ## (one TCP dial), GitLab (`GET /api/v4/user`) and the two Apple
+  ## automation checks. Notion needs its SDK and Google Calendar needs
+  ## its API client — both stay honestly unprobed, like the dashboard says.
   result["tavily"] =
     proc(values: Table[string, string]) {.closure.} =
       let key = values.getOrDefault("TAVILY_API_KEY", "")
@@ -3385,6 +3386,10 @@ proc liveProbes*(): Table[string, ProbeFn] =
       if failures.len > 0:
         raise newException(ValueError, "Apple Tools probe failed: " &
           failures.join("; "))
+  # GitLab: the row's own probe (GET $base/user), so the card's test button
+  # and the tool agree on what "connected" means. The seam is the live GET;
+  # tests inject their own probe table instead of reaching this one.
+  result["gitlab"] = gitlabProbe(liveGitlabGet)
 
 proc liveGraphStream*(box: WakuBox, payload: JsonNode,
     emit: SseEmit) =

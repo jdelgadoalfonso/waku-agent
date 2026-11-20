@@ -21,4 +21,9 @@ a third-party CDN at runtime.
 - `treg.svg` is a neutral glyph drawn for this repository (a globe, for "live
   data from the web"), MIT like the rest of `waku/`. It is not treg's mark.
 
+- `gitlab.svg` uses the GitLab mark from
+  [Simple Icons 16.21.0](https://github.com/simple-icons/simple-icons), licensed
+  under CC0 1.0. The rounded background is Waku presentation, like the other
+  cards above.
+
 Brand names and marks remain the property of their respective owners.

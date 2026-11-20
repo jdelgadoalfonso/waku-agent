@@ -345,10 +345,13 @@ episode; `settle` waits for the graph to stop growing, not just the episodes.
   `schemas`, `execute` with errors-as-text) plus JSON arg helpers and the
   shared subprocess runner with an explicit deadline.
 - `src/registry.nim` ports `build_registry` in the same order (calendar,
-  notes, messages, search, memory trio, experimental/apple/github opt-ins,
-  connected MCP tools) — every side effect injected, like everywhere else.
+  notes, messages, search, memory trio, experimental/apple/github/gitlab
+  opt-ins, connected MCP tools) — every side effect injected, like everywhere
+  else.
 - `src/search.nim` (`search_web`: Tavily when keyed, DuckDuckGo scrape
   otherwise), `src/github.nim` (`github_read` over the `gh` CLI allowlist),
+  `src/gitlab.nim` (`gitlab_read` over the GitLab REST `/api/v4` allowlist,
+  with `GITLAB_URL`/`GITLAB_TOKEN` so a self-hosted instance works),
   `src/experimental.nim` (`delegate_task` over a `pi` subprocess with JSON
   event parsing, workspace folders, manifests and autorun, plus the three
   coming-soon stubs) and `src/apple.nim` (the four osascript readers /

@@ -211,6 +211,18 @@ proc darwinEnabled(varName: string): EnabledFn =
   result = proc(env: Table[string, string], hostOs: string): bool {.closure.} =
     hostOs == "macosx" and env.getOrDefault(v, "").len > 0
 
+proc gitlabEnabled(): EnabledFn =
+  ## The gitlab row: on when the explicit switch is set OR a token is stored.
+  ##
+  ## The token half is what makes the Connections form usable — saving a
+  ## `GITLAB_TOKEN` through the panel has to leave a card that says
+  ## "connected", and the probe behind it proves the URL and the token in one
+  ## call. With neither value the row is off, so its state reads
+  ## NOT_CONFIGURED rather than an error about a credential nobody entered.
+  result = proc(env: Table[string, string], hostOs: string): bool {.closure.} =
+    env.getOrDefault("WAKU_GITLAB_TOOL", "").strip().len > 0 or
+      env.getOrDefault("GITLAB_TOKEN", "").strip().len > 0
+
 proc positiveInt*(values: Table[string, string]): Table[string, string] =
   ## Port of `_positive_int`: the discord row's normalize hook. Raises
   ## `ValueError` with the exact Python message on a non-positive
@@ -227,6 +239,17 @@ proc positiveInt*(values: Table[string, string]): Table[string, string] =
     if not ok:
       raise newException(ValueError,
         "DISCORD_MAX_TURNS_PER_HOUR must be a positive integer")
+
+proc trimUrl*(values: Table[string, string]): Table[string, string] =
+  ## The gitlab row's normalize hook: a pasted instance URL arrives with a
+  ## trailing slash, a newline from the browser tab, or both. Trim it here so
+  ## the stored value is the host the person recognises; `gitlab.normalizeUrl`
+  ## is what appends `/api/v4` at request time, and it is idempotent, so a
+  ## value that already carries the suffix keeps working.
+  result = values
+  let key = "GITLAB_URL"
+  if result.hasKey(key):
+    result[key] = result[key].strip()
 
 const
   KnownHalves = ["python", "nim"]
@@ -468,6 +491,12 @@ proc nimBehaviour(): Table[string, IntegrationBehaviour] =
   result["google_calendar"] = IntegrationBehaviour(
     enabled: keyEnabled("WAKU_GOOGLE_CALENDAR"))
   result["gmail"] = IntegrationBehaviour(enabled: keyEnabled("WAKU_GMAIL"))
+  # Nim-only row (GitLab over its REST API). The probe is `gitlabProbe` in
+  # `gitlab.nim`, which this pure module cannot import without dragging the
+  # HTTP client into the registry; a caller that wants the live probe wires it
+  # into its own probe table, exactly like tavily/otel.
+  result["gitlab"] = IntegrationBehaviour(enabled: gitlabEnabled(),
+    normalize: trimUrl)
   result["apple_calendar"] = IntegrationBehaviour(
     enabled: darwinEnabled("WAKU_APPLE_CALENDAR"))
   result["apple_tools"] = IntegrationBehaviour(

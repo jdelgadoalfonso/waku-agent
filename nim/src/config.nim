@@ -68,6 +68,20 @@ type
     ghRepo*: string
       ## `WAKU_GH_REPO`: owner/name when a call omits it (running
       ## outside a checkout, where `gh` infers no remote).
+    gitlabTool*: bool
+      ## `WAKU_GITLAB_TOOL`: read-only GitLab (merge requests and issues)
+      ## over the REST API. Off by default for the same reason as
+      ## `ghTool`: every registered tool ships in every prompt.
+    gitlabUrl*: string
+      ## `GITLAB_URL`: the instance root, default `https://gitlab.com`.
+      ## A self-hosted instance is the same setting with its own host;
+      ## `/api/v4` is appended at request time, never stored here.
+    gitlabToken*: string
+      ## `GITLAB_TOKEN`: a personal access token with the `read_api`
+      ## scope. Secret — never printed, never echoed by a tool.
+    gitlabProject*: string
+      ## `WAKU_GITLAB_PROJECT`: `owner/name` or a numeric project ID
+      ## used when a call omits `project`.
     gmail*: bool
       ## `WAKU_GMAIL`: the Gmail read tools. Off by default on purpose: an
       ## untouched machine carries no mail tool in any prompt, and the
@@ -140,7 +154,10 @@ proc defaultSettings*(): Settings =
            agents: @[],
            consolidateEvery: 6, retrievalTopK: 4,
            experimental: false, appleTools: false, ghTool: false,
-           ghRepo: "", gmail: false, gmailSend: false, semanticStore: "sqlite", mem0UserId: "waku",
+           ghRepo: "", gitlabTool: false,
+           gitlabUrl: "https://gitlab.com", gitlabToken: "",
+           gitlabProject: "",
+           gmail: false, gmailSend: false, semanticStore: "sqlite", mem0UserId: "waku",
            zepUserId: "waku", episodicStore: "sqlite", obsidianVault: "",
            otelEndpoint: "")
 
@@ -197,6 +214,13 @@ proc loadFromEnv*(s: var Settings) =
   s.appleTools = getEnv("WAKU_APPLE_TOOLS") in ["1", "true", "yes"]
   s.ghTool = getEnv("WAKU_GH_TOOL") in ["1", "true", "yes"]
   s.ghRepo = getEnv("WAKU_GH_REPO")
+  s.gitlabTool = getEnv("WAKU_GITLAB_TOOL") in ["1", "true", "yes"]
+  # `envOrDefault`, not `getEnv`: the Connections form stores `GITLAB_URL=''`
+  # when the field is left blank, and an empty host must mean gitlab.com
+  # rather than the empty string.
+  s.gitlabUrl = envOrDefault("GITLAB_URL", "https://gitlab.com")
+  s.gitlabToken = getEnv("GITLAB_TOKEN")
+  s.gitlabProject = getEnv("WAKU_GITLAB_PROJECT")
   s.gmail = getEnv("WAKU_GMAIL") in ["1", "true", "yes"]
   s.gmailSend = getEnv("WAKU_GMAIL_SEND") in ["1", "true", "yes"]
   s.graphWorkflows = getEnv("WAKU_GRAPH_WORKFLOWS") in ["1", "true", "yes"]

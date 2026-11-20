@@ -115,12 +115,12 @@ suite "T4c-2 the registry file":
     check path.endsWith("data" / "integrations.toml")
     check fileExists(path)
 
-  test "carries all 17 rows in the file's order":
+  test "carries all 18 rows in the file's order":
     let rows = parseIntegrationRows(readFile(findIntegrationsToml()))
     check rows.keysOf == @[
       "telegram", "discord", "whatsapp", "google_calendar", "gmail",
-      "apple_calendar", "apple_tools", "notion", "obsidian", "mem0", "zep",
-      "langmem", "supabase", "tavily", "treg", "typesafe", "otel"]
+      "apple_calendar", "apple_tools", "gitlab", "notion", "obsidian", "mem0",
+      "zep", "langmem", "supabase", "tavily", "treg", "typesafe", "otel"]
 
   test "reads the row fields the panel renders":
     let rows = parseIntegrationRows(readFile(findIntegrationsToml()))
@@ -204,12 +204,12 @@ label = "Three"
     check rows.rowOf("b").env.mapIt(it.name) == @["THREE"]
 
 suite "T4c-2 loadIntegrations":
-  test "registers the 14 rows this half owns, in the file's order":
+  test "registers the 15 rows this half owns, in the file's order":
     let rows = loadIntegrations(findIntegrationsToml(), "nim", BEHAVIOUR)
     check rows.keysOf == @[
       "telegram", "discord", "whatsapp", "google_calendar", "gmail",
-      "apple_calendar", "apple_tools", "obsidian", "mem0", "zep", "langmem",
-      "supabase", "tavily", "otel"]
+      "apple_calendar", "apple_tools", "gitlab", "obsidian", "mem0", "zep",
+      "langmem", "supabase", "tavily", "otel"]
     check INTEGRATIONS.keysOf == rows.keysOf
 
   test "drops the rows the file marks for the other half only":
@@ -305,8 +305,8 @@ suite "T4c-2 startup is best effort":
 
   test "what startup exported is either the rows or the reason, never both":
     check (INTEGRATIONS.len == 0) == (integrationRegistryError.len > 0)
-    # And from the checkout, the shape that renders: the 14 rows, no reason.
-    check INTEGRATIONS.len == 14
+    # And from the checkout, the shape that renders: the 15 rows, no reason.
+    check INTEGRATIONS.len == 15
     check integrationRegistryError == ""
 
   test "an empty row list still refuses a behaviour table with entries":
