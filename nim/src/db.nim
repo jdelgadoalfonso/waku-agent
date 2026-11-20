@@ -148,3 +148,14 @@ proc connectDb*(home: string): DbConn =
   for stmt in schemaStmts:
     result.exec(sql(stmt))
   result.migrate()
+
+proc closeDbQuietly*(db: DbConn) =
+  ## Close that never raises, for `finally:` blocks (`test_tls` bans
+  ## `except` inside `finally` — the swallow shape). Nil-safe so a
+  ## `connectDb` that raised before assignment still closes clean.
+  if db.isNil:
+    return
+  try:
+    db.close()
+  except CatchableError:
+    discard

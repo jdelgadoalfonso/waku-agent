@@ -4411,11 +4411,7 @@ proc schedulerTick(srv: DashboardServer, rig: GatewayRig) =
   except CatchableError as exc:
     rig.logger("scheduler · tick failed: " & exc.msg)
   finally:
-    if not db.isNil:
-      try:
-        db.close()
-      except CatchableError:
-        discard
+    closeDbQuietly(db)
 
 proc multiplexStep*(srv: var DashboardServer, rig: GatewayRig,
                     seams: MultiplexSeams): bool =
