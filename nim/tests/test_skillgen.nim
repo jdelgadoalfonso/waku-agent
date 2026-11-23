@@ -53,6 +53,30 @@ suite "skill Nim generator":
     let describeSection = source[describeStart ..< describeEnd]
     assert not describeSection.contains("\"prompt\"")
 
+  test "the describe manifest carries tasks and still omits prompts":
+    # S2: `tasks` is card data, not internals — it travels verbatim in the
+    # manifest the compiled .so describes, while the prompt stays inside
+    # node_run. This is the manifest the loader reads tasks from (S3).
+    let graph = validateSkillGraph(%*{
+      "name": "tagged",
+      "abi": 1,
+      "tasks": ["research", "brief"],
+      "nodes": [
+        {"name": "answer", "kind": "llm", "inKeys": ["message"],
+         "outKey": "reply", "needs": ["llm"],
+         "prompt": "Answer: {{message}}"}
+      ]
+    })
+    let source = generateSkillNim(graph)
+    let describeStart = source.find("waku_plugin_describe")
+    let describeEnd = source.find("waku_plugin_node_run")
+    let describeSection = source[describeStart ..< describeEnd]
+    assert describeSection.contains("tasks")
+    assert describeSection.contains("research")
+    assert describeSection.contains("brief")
+    assert not describeSection.contains("\"prompt\"")
+    assert not describeSection.contains("Answer:")
+
   test "generates llm node with prompt interpolation":
     let source = generateSkillNim(validGraph())
     assert source.contains("llmComplete")

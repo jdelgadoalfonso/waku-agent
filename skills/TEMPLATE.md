@@ -10,6 +10,13 @@ official Anthropic Agent Skills format). A skill loads when a message shares 2+ 
 description, so every word you put there is a trigger. CI checks it stays quiet
 on everyday messages (evals/deterministic/test_skill_triggers.py). Keep the body under ~60 lines:
 skills are loaded into the prompt only when they match, but shorter is better.
+
+Optional: add a `tasks:` line to declare what the skill is for, as 1-4 short
+lowercase tags — inline (`tasks: [research, brief]`) or comma-separated
+(`tasks: research, brief`). The tags reach the agent card of the skill's
+compiled graph, so the assistant can pick it for a matching request. Leave the
+line out when the skill has no clear tag: a skill without tasks stays always
+available.
 -->
 
 ## Instructions

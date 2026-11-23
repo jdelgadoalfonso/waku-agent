@@ -2741,7 +2741,7 @@ suite "T7a the graph draft and its prompt":
     let prompt = prompts[0]
     # The schema the validator enforces, field by field.
     for key in ["name", "abi", "nodes", "kind", "inKeys", "outKey", "needs",
-        "prompt", "routes", "label", "dst", "when"]:
+        "prompt", "routes", "label", "dst", "when", "tasks"]:
       assert "\"" & key & "\"" in prompt, "the prompt never names " & key
     # The closed catalogs: a prompt naming an op the validator refuses
     # sends the human down a dead end.

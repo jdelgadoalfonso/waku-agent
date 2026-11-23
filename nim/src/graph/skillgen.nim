@@ -41,7 +41,10 @@ proc escapeNimString(s: string): string =
 
 proc buildManifestJson(graph: SkillGraph): string =
   ## Build the manifest JSON for waku_plugin_describe.
-  ## Excludes prompt fields (internal to node_run, not part of ABI).
+  ## Excludes prompt fields (internal to node_run, not part of ABI), and
+  ## carries `tasks` verbatim (S2): the loader reads the card's tags from
+  ## this manifest, so what a skill declared in frontmatter is what a
+  ## loaded plugin enrolls.
   var nodes: seq[JsonNode] = @[]
   for n in graph.nodes:
     var node = %*{
@@ -65,6 +68,7 @@ proc buildManifestJson(graph: SkillGraph): string =
   let manifest = %*{
     "name": graph.name,
     "abi": skillAbiVersion,
+    "tasks": graph.tasks,
     "nodes": nodes
   }
   result = $manifest

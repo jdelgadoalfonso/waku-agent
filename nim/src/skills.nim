@@ -19,6 +19,10 @@
 ## - `installSkill` gates through `validSkillText`, which is stricter
 ##   than `_parse_text`: an empty description is rejected (see the
 ##   memory_admin.nim header for why).
+## - the optional `tasks:` frontmatter line has no Python counterpart: it
+##   is read by `skillTasks` (memory_admin.nim) and a malformed list makes
+##   the SKILL.md invalid, because the tags a skill declares end up on the
+##   agent card its compiled graph enrolls.
 ## - `skill export` arg/file errors print to stderr and exit 1, while
 ##   Python prints the arg errors to stdout (real I/O failures there are
 ##   uncaught tracebacks on stderr); parse errors exit 1 (Python argparse
@@ -95,6 +99,11 @@ proc installSkill*(home, url: string, fetch: FetchFn): string =
   let tmp = incoming / "SKILL.md"
   writeFile(tmp, text)
   let front = frontmatterOf(text)
+  if not skillTasks(front).ok:
+    removeFile(tmp)
+    raise newException(CatchableError,
+      "Invalid skill: `tasks:` must be a one-line list of strings, like " &
+      "`tasks: [research, brief]`. See skills/TEMPLATE.md in the repo.")
   if not validSkillText(text) or frontmatterValue(front, "name").len == 0:
     removeFile(tmp)
     raise newException(CatchableError,

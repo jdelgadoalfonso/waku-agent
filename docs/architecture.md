@@ -249,6 +249,28 @@ streaming, the research reads and the MCP task filter.
 [skill-compiler-design.md](skill-compiler-design.md) holds the schema rules, the
 router contract and the known gaps.
 
+### How a turn reaches a plugin
+
+A user message meets a plugin through one of two doors. The gate offers routes; the loop answers through a matched skill.
+
+```mermaid
+flowchart LR
+  U["User message - gateway"] --> G{{"Triage gate - offer from the inventory, narrowed by task tags"}}
+  G -->|quick| Q["quick_reply"]
+  G -->|full| F["full_agent - the loop"]
+  G -->|plugin route| D["delegate_agent - same-binary worker"]
+  F --> S{{"Matched skill plus installed plugin?"}}
+  S -->|yes| H["headless plugin answer - no loop"]
+  S -->|no| L["run_loop - skill text in prompt"]
+  D -->|done or fail_open| R["Parent turn answers"]
+  F --> R
+  Q --> R
+```
+
+The gate builds its offer from the unified inventory (`nim/src/graph/inventory.nim`): built-in graphs, loaded plugin graphs and on-disk skills. It narrows that offer with the turn's task tags and fails open to the full offer when nothing matches, so filtering never leaves the orchestrator without options. Every offered agent route has a bound delegate built from the same list, so the model only picks a route something can receive.
+
+The loop's own door needs no gate: when the turn's text matches a skill with an installed plugin, the skill answers headless inside the turn. A matched skill without a plugin runs as prompt text in the plain loop. A worker that fails answers `fail_open`, and the parent loop answers instead — one failure costs latency, never the turn.
+
 ### The turn receipt
 
 Every reply in the chat ends with one line that says what the turn did and

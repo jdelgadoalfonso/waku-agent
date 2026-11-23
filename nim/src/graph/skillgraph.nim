@@ -19,6 +19,11 @@
 ##   `pluginRunHeadless` answers with (S18). A graph that can never answer
 ##   would compile, install and then fall back to text on every turn; it is
 ##   refused here instead.
+## - Card tags: the optional top-level `tasks` is an array of non-empty
+##   strings (S1/S2) — the routing tags the skill's agent card carries, read
+##   from SKILL.md frontmatter. Absent is no tasks, never an error, so a
+##   skill that declares none stays always available. Nothing else at the
+##   top level is read: unknown keys are dropped, exactly as before.
 ##
 ## Edge model: llm nodes flow implicitly to the next declared node;
 ## router nodes branch ONLY to their route destinations (no implicit
@@ -79,6 +84,10 @@ type
 
   SkillGraph* = object
     name*: string
+    tasks*: seq[string]
+      ## The skill's optional routing tags (S1/S2), declared as `tasks:` in
+      ## SKILL.md frontmatter and carried into the manifest. Empty means
+      ## "no tags": the card is always listed, never filtered out.
     nodes*: seq[SkillNode]
 
 proc strSeq(node: JsonNode, key: string): seq[string] =
@@ -93,6 +102,23 @@ proc strSeq(node: JsonNode, key: string): seq[string] =
     if item.kind != JString:
       raise newException(SkillGraphError,
         "skill graph key '" & key & "' must be an array of strings")
+    result.add(item.getStr())
+
+proc taskTags(manifest: JsonNode): seq[string] =
+  ## The optional top-level `tasks`: an array of non-empty strings (S1/S2).
+  ## Stricter than `strSeq` on purpose — an empty tag matches nothing, so a
+  ## card carrying one would silently never be picked. An absent key (or an
+  ## empty array) is no tasks, which is the always-listed default.
+  let arr = manifest.jget("tasks")
+  if arr.kind == JNull:
+    return @[]
+  if arr.kind != JArray:
+    raise newException(SkillGraphError,
+      "skill graph key 'tasks' must be an array of non-empty strings")
+  for item in items(arr):
+    if item.kind != JString or item.getStr().strip().len == 0:
+      raise newException(SkillGraphError,
+        "skill graph key 'tasks' must be an array of non-empty strings")
     result.add(item.getStr())
 
 proc parseWhen(item: JsonNode, nodeName, label: string): SkillRoute =
@@ -303,6 +329,8 @@ proc validateSkillGraph*(manifest: JsonNode): SkillGraph =
     raise newException(SkillGraphError,
       "skill graph abi must be " & $skillAbiVersion)
 
+  let tasks = taskTags(manifest)
+
   let defs = manifest.jget("nodes")
   if defs.kind != JArray or defs.len == 0:
     raise newException(SkillGraphError, "skill graph needs a non-empty nodes array")
@@ -366,4 +394,4 @@ proc validateSkillGraph*(manifest: JsonNode): SkillGraph =
   checkDataFlow(nodes)
   checkCanAnswer(nodes)
 
-  result = SkillGraph(name: name.getStr(), nodes: nodes)
+  result = SkillGraph(name: name.getStr(), tasks: tasks, nodes: nodes)

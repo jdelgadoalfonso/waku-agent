@@ -58,6 +58,32 @@ suite "skill graph validator":
     expect SkillGraphError:
       discard validateSkillGraph(%*"not an object")
 
+  # ---- Optional `tasks` (S1/S2): the tags the skill's agent card carries. ----
+
+  test "carries an optional tasks list verbatim":
+    let graph = validGraph()
+    graph["tasks"] = %*["research", "brief"]
+    check validateSkillGraph(graph).tasks == @["research", "brief"]
+
+  test "accepts an absent tasks list as no tasks":
+    check validateSkillGraph(validGraph()).tasks.len == 0
+
+  test "rejects a tasks value that is not an array of non-empty strings":
+    for bad in [%*"research", %*5, %*[1], %*[""]]:
+      let graph = validGraph()
+      graph["tasks"] = bad
+      var msg = ""
+      try:
+        discard validateSkillGraph(graph)
+      except SkillGraphError as e:
+        msg = e.msg
+      check msg.contains("tasks")  # the message names the field
+
+  test "accepts an empty tasks array as no tasks":
+    let graph = validGraph()
+    graph["tasks"] = %*[]
+    check validateSkillGraph(graph).tasks.len == 0
+
   test "rejects missing name":
     let graph = validGraph()
     graph.delete("name")

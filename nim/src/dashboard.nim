@@ -1984,6 +1984,11 @@ The manifest:
 - "abi": 1
 - "nodes": a non-empty array. Execution starts at the first node, every
   node must be reachable from it, and a cycle is refused.
+- "tasks": OPTIONAL, 1-4 short tags the assistant matches a request
+  against when it picks a worker, like ["research", "brief"] or
+  ["inbox", "triage"]. Copy the skill's own `tasks:` frontmatter when it
+  declares one; omit the key when the skill has no clear tag — a skill
+  without tasks stays always available, which is never an error.
 
 A node:
 - "name": unique in the graph.
@@ -2013,9 +2018,12 @@ The skill to compile:
 """
   ## What `skill_graph_propose` asks the model for. It describes what
   ## compilation accepts — the validator's schema (kinds, needs, route
-  ## conditions, data flow) plus the `reply` the last llm node has to
-  ## write — because a prompt that contradicts the validator only wastes
-  ## the human's time on a draft that cannot compile.
+  ## conditions, data flow), the optional `tasks` tags the approved card
+  ## carries, plus the `reply` the last llm node has to write — because a
+  ## prompt that contradicts the validator only wastes the human's time on
+  ## a draft that cannot compile. A field the prompt never names is a field
+  ## the model never emits, which is why `tasks` is listed here even though
+  ## it is optional.
 
 proc skillGraphSlugError(slug: string): string =
   ## Why `slug` cannot name a skill folder, or "" when it can: one plain

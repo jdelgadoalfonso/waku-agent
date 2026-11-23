@@ -37,16 +37,27 @@
 ## Failure rule learned the hard way (step 2): never call into a
 ## library after `unloadLib` — not even to format an error message.
 ## Capture everything the message needs BEFORE unloading.
+##
+## Agent cards (S3): a manifest may carry `tasks` — the tags the skill
+## declared in its SKILL.md frontmatter, which the compiler carried into
+## the manifest. `loadPluginGraphs` enrolls one agent card per such plugin
+## (`plugin:<name>`, kind graph, the manifest's tasks, the skill's own
+## `when_to_use` line) so Slice B's per-turn filter has something to match.
+## A manifest without tasks enrolls nothing, leaving today's text-match
+## path untouched; a card this host cannot build or read is one stderr
+## line and the library keeps working, because the .so is the plugin.
 
 import std/dynlib
 import std/json
 import std/os
 import std/strutils  # strip/split: manifest string fields; startsWith below
 
+import ./agents  # enrollAgentChecked: the card registry is data-only
 import ./engine
 import ./hostfns  # HostFns, nullHostFns, the six real functions (re-exported)
 import ./registry  # isKnownPluginKind, registerPluginGraph (one direction:
                    # registry NEVER imports this module, so no cycle)
+from ../skills import frontmatterOf, frontmatterValue
 import ../wire
 
 ## `HostFns` lives in `graph/hostfns.nim` so `app.nim` can hold one without
@@ -85,6 +96,9 @@ type
     nodeRun*: NodeRunFn
     stringFree*: StringFreeFn
     nodes*: seq[PluginNodeDecl]
+    tasks*: seq[string]
+      ## The manifest's optional routing tags (S3). Empty means the plugin
+      ## enrolls no agent card and today's text-match path is untouched.
 
 proc symOrRaise(lib: LibHandle, path, sym: string): pointer =
   ## `symAddr`, but a missing symbol fails the load with its name —
@@ -109,6 +123,19 @@ proc strSeq(node: JsonNode, key: string): seq[string] =
       raise newException(CatchableError,
         "plugin manifest key '" & key & "' must be an array of strings")
     result.add(item.getStr())
+
+proc manifestTasks(manifest: JsonNode): seq[string] =
+  ## The manifest's optional `tasks` list, read LENIENTLY: a value this
+  ## host cannot read becomes no tasks instead of a failed load. The .so is
+  ## the plugin and the graph is what runs; a card field is not worth
+  ## refusing a compiled skill over. The strict gate for what a skill may
+  ## ship is `validateSkillGraph`, before anything is compiled.
+  let raw = manifest.jget("tasks")
+  if raw.kind != JArray:
+    return @[]
+  for item in items(raw):
+    if item.kind == JString and item.getStr().strip().len > 0:
+      result.add(item.getStr())
 
 proc routeList(def: JsonNode, pluginName: string,
                names: openArray[string]): seq[tuple[label, dst: string]] =
@@ -260,7 +287,8 @@ proc loadPlugin*(path: string, host: ptr HostFns): LoadedPlugin =
     raise
   let pluginName = manifest["name"].getStr()
   LoadedPlugin(name: pluginName, path: path, lib: lib,
-               nodeRun: nodeRunFn, stringFree: freeFn, nodes: nodes)
+               nodeRun: nodeRunFn, stringFree: freeFn, nodes: nodes,
+               tasks: manifestTasks(manifest))
 
 proc callPlugin*(plugin: LoadedPlugin, nodeName: string, input: JsonNode,
                  handle: uint64 = 0): JsonNode =
@@ -415,6 +443,46 @@ proc pluginDir*(home: string): string =
   ## default home, the directory step 2 chose.
   home / "plugins"
 
+proc skillWhenToUse(home, name: string): string =
+  ## The `when_to_use` line for a plugin's card: the description its own
+  ## SKILL.md declares. A skill's graph name is its slug (the compiler names
+  ## `<name>.so` from the manifest name), so the document sits beside it at
+  ## `<home>/skills/<name>/SKILL.md`. Best-effort: a hand-written plugin has
+  ## no SKILL.md, and a card whose description is empty is still worth
+  ## enrolling for the tasks it carries.
+  try:
+    frontmatterValue(frontmatterOf(
+      readFile(home / "skills" / name / "SKILL.md")), "description")
+  except CatchableError:
+    ""
+
+proc pluginAgentCard(plugin: LoadedPlugin, whenToUse: string): JsonNode =
+  ## The card a loaded plugin implies (S3): one graph worker named
+  ## `plugin:<name>`, the manifest's tasks and the skill's own
+  ## `when_to_use` line. `tasks` is the field the per-turn filter reads;
+  ## the rest is what the inventory panel shows.
+  result = newJObject()
+  result["name"] = %(pluginGraphPrefix & plugin.name)
+  result["kind"] = %"graph"
+  result["tasks"] = %plugin.tasks
+  result["when_to_use"] = %whenToUse
+
+proc enrollPluginCard(plugin: LoadedPlugin, home: string) =
+  ## Enroll (or refresh) the card a loaded plugin implies, and only when its
+  ## manifest declared tasks: everything else keeps today's text-match path
+  ## (S3). Fail-open in every direction — a card that cannot be built or
+  ## enrolled is one stderr line, never a failed load, because the graph is
+  ## already registered and is what actually runs.
+  if plugin.tasks.len == 0:
+    return
+  try:
+    var err = ""
+    let card = pluginAgentCard(plugin, skillWhenToUse(home, plugin.name))
+    if not enrollAgentChecked(card, err):
+      stderr.writeLine("(plugins) " & plugin.name & " card skipped: " & err)
+  except CatchableError as exc:
+    stderr.writeLine("(plugins) " & plugin.name & " card skipped: " & exc.msg)
+
 proc buildPluginGraph*(plugin: LoadedPlugin, decls: seq[PluginNodeDecl],
                        handle: uint64 = 0): Graph =
   ## The graph a manifest implies. The chain is the only topology a plain
@@ -502,22 +570,31 @@ proc loadPluginGraphs*(dir: string, host: ptr HostFns): seq[LoadedPlugin] =
   ## dashboard change — and the plugin in this module's process registry,
   ## which is what lets `resolveGatewayGraph` bind it.
   ##
-  ## Fail-open is the point: a file that does not load, and a manifest whose
-  ## graph cannot be built (a router without routes), are one line on stderr
-  ## and the rest keep working. No plugin, no graph, no stderr line — exactly
-  ## today's behaviour.
+  ## A plugin whose manifest declared `tasks` also enrolls its agent card
+  ## (S3, `enrollPluginCard`). The home the card's `when_to_use` is read
+  ## from is `dir`'s parent: `dir` is `<home>/plugins`, the one place
+  ## `pluginDir` puts it, so the skill lives at `<home>/skills/<name>`.
+  ## Mid-run installs take effect at the next load, like any registration.
+  ##
+  ## Fail-open is the point: a file that does not load, a manifest whose
+  ## graph cannot be built (a router without routes), and a card that cannot
+  ## be enrolled are one line on stderr and the rest keep working. No
+  ## plugin, no graph, no stderr line — exactly today's behaviour.
+  let home = parentDir(dir)
   for path in discoverPluginPaths(dir):
     let already = findLoadedPath(path)
     if not already.isNil:
       result.add(already)
       registerPluginGraph(pluginGraphPrefix & already.name,
                           buildPluginGraph(already, already.nodes).describe())
+      enrollPluginCard(already, home)
       continue
     try:
       let plugin = loadPlugin(path, host)
       registerPluginGraph(pluginGraphPrefix & plugin.name,
                           buildPluginGraph(plugin, plugin.nodes).describe())
       registerLoadedPlugin(plugin)
+      enrollPluginCard(plugin, home)
       result.add(plugin)
     except CatchableError as exc:
       stderr.writeLine("(plugins) " & exc.msg)

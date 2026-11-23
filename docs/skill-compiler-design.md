@@ -74,6 +74,7 @@ and every path runs it: propose, approve, compile and install.
 | Rule | Why the validator enforces it |
 |---|---|
 | `name` is non-empty, `abi` is 1, `nodes` is non-empty | The host refuses a manifest whose ABI it does not know, so a wrong value would fail at load time instead of at review time. |
+| `tasks`, when present, is an array of non-empty strings | The gate matches a turn's tags against the card's tasks, so a non-string entry would silently narrow the offer instead of failing at review time. |
 | Node names are unique | Routes and the engine address a node by name, and one name with two definitions can only run one of them. |
 | Kinds are `llm` and `router` only | A compiled skill runs as a worker, and a worker holds no tools and no sub-agents; a `tool` or `agent` node asks the parent for an effect the worker cannot serve. |
 | `needs` holds `llm` and nothing else | `pluginWorkerEligible` refuses a manifest that needs `tool` or `fetch`, so a graph with those needs could compile and never run. |

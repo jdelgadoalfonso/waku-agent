@@ -8,7 +8,8 @@
 ## - `validSkillText` is deliberately stricter than `_parse_text`: an empty
 ##   description is rejected, while Python checks key presence only. The
 ##   tool's own message promises "present and non-trivial", so the strict
-##   side matches the contract the model reads.
+##   side matches the contract the model reads. A malformed `tasks:` list
+##   is refused for the same reason (`skillTasks`).
 ## - `createSkill`'s live `memory.skills.refresh()`: the file write below IS
 ##   the durable effect; re-scanning a running session lands with session wiring.
 ## - the bundled-skills existence check takes its dirs as a parameter; phase 4
@@ -142,11 +143,84 @@ proc updateSoul*(home, rule: string): string =
   writeFile(home / "SOUL.md", text)
   return "Noted, I'll remember to: " & r
 
+type
+  SkillTasks* = object
+    ## The optional `tasks:` list a SKILL.md declares (S1). `present` says
+    ## the key appeared; `ok` says its value is a list of plain strings.
+    ## Absent means no tasks — an empty list, never an error — so a skill
+    ## that declares none keeps the always-available path.
+    present*: bool
+    ok*: bool
+    items*: seq[string]
+
+proc unquoted(s: string): string =
+  s.strip().strip(chars = {'\'', '"'})
+
+proc skillTasks*(front: string): SkillTasks =
+  ## Parse `tasks:` out of a SKILL.md frontmatter block: an inline
+  ## `[a, b]` list or a comma-separated line (`a, b`). This is the ONE
+  ## parser — `validSkillText` gates on it, so the installer, the loader
+  ## and the dashboard all read the same shape.
+  ##
+  ## The value is one line, like every other field here. A present value
+  ## that is not a plain string list — an unclosed `[`, a nested `[x]` or
+  ## `{k: v}` entry, an empty entry between commas, or a block list under
+  ## a bare `tasks:` — comes back `ok: false`, and the caller refuses the
+  ## skill. Guessing would either reject a good document or silently read
+  ## "no tasks" where the author wrote some.
+  result.ok = true
+  var seen = false
+  let lines = front.splitLines()
+  for i, line in lines:
+    let parts = line.split(":", 1)
+    if parts.len != 2 or parts[0].strip().toLowerAscii() != "tasks":
+      continue
+    if seen:  # the first `tasks:` wins, like frontmatterValue
+      continue
+    seen = true
+    result.present = true
+    var body = parts[1].strip()
+    if body.len == 0:
+      # `tasks:` with nothing after it: a block list on the following lines
+      # is the one shape this line parser does not read, and dropping it
+      # silently would lose tags the author wrote.
+      for j in i + 1 ..< lines.len:
+        let next = lines[j].strip()
+        if next.len == 0:
+          continue
+        if next.startsWith("-"):
+          result.ok = false
+        break
+      continue
+    if body.startsWith("["):
+      if not body.endsWith("]"):
+        result.ok = false
+        return
+      body = body[1 .. ^2].strip()
+    if body.len == 0:  # `tasks: []`
+      continue
+    let entries = body.split(',')
+    for k, raw in entries:
+      let entry = unquoted(raw)
+      if entry.len == 0:
+        if k == entries.len - 1 and raw.strip().len == 0:
+          continue  # a trailing comma: `[a, b,]`
+        result.ok = false
+        return
+      if entry.startsWith("[") or entry.startsWith("{"):
+        result.ok = false  # a nested list or map is not a string entry
+        return
+      result.items.add(entry)
+
 proc validSkillText*(text: string): bool =
-  ## The `_parse_text` gate: `---` frontmatter with name + description.
-  ## Port of the validation in `waku/memory/procedural/loader.py`.
+  ## The `_parse_text` gate: `---` frontmatter with name + description,
+  ## and a `tasks:` line — when present — that is a plain string list
+  ## (`skillTasks`). Port of the validation in
+  ## `waku/memory/procedural/loader.py`.
   var m: array[2, string]
   if not match(text, skillFrontRe, m):
+    return false
+  if not skillTasks(m[0]).ok:
     return false
   for line in m[0].splitLines():
     let parts = line.split(":", 1)
