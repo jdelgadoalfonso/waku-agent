@@ -16,6 +16,7 @@ import ./supervisor
 import ./trace
 import ./triage
 import ./wire
+import ./workers
 
 const delegateDefaultTimeoutMs* = 30000
   ## Tests and the binder agree on one budget: 30s / 8 tool calls.
@@ -46,6 +47,39 @@ proc workerAgents*(enabled: seq[string],
   for agent in enabled:
     if (agent in delegateWorkers or agent in extra) and
         agent notin result:
+      result.add(agent)
+
+proc runnableAgents*(entries: seq[JsonNode]): seq[string] =
+  ## The installed inventory entries that pass the SAME eligibility gates
+  ## the binders already apply, in inventory order: a plugin when
+  ## `pluginWorkerNames` accepts its `plugin:<name>` (loaded manifest,
+  ## worker-eligible needs), a builtin when `delegateWorkers` holds its
+  ## name. The inventory replaces only where the candidate names come
+  ## from; the verdict stays where it was, so a name the gate refuses
+  ## today is still refused here. Duplicates collapse, first wins.
+  for e in entries:
+    if not e.jget("installed").getBool():
+      continue
+    let name = e.jget("name").getStr()
+    if name.len == 0 or name in result:
+      continue
+    if pluginWorkerNames(@[name]).len > 0 or name in delegateWorkers:
+      result.add(name)
+
+proc agentRoster*(entries: seq[JsonNode], enabled: seq[string],
+    extra: seq[string] = @[]): seq[string] =
+  ## The routes a binder offers and binds: the runnable inventory roster
+  ## followed by today's gate-checked enable list. The union keeps a loop
+  ## worker with no inventory row (`brief` has a worker in
+  ## `delegateWorkers` but no graph topology, so `inventoryEntries` cannot
+  ## list it) offered exactly as it was before Slice C. Both halves are
+  ## already gate-checked — `runnableAgents` applies the inventory gates,
+  ## `workerAgents` applies the enable-list gates — so the union adds
+  ## names without widening a verdict. Inventory order first, then the
+  ## enable list; duplicates collapse.
+  result = runnableAgents(entries)
+  for agent in workerAgents(enabled, extra):
+    if agent notin result:
       result.add(agent)
 
 type ContextFn* = proc(message: string): string {.closure.}

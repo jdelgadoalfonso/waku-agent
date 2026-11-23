@@ -56,6 +56,7 @@ import ./gather
 import ./gateway
 import ./github
 import ./graph/hostfns
+import ./graph/inventory
 import ./graph/plugins
 import ./http
 import ./integrations
@@ -280,25 +281,29 @@ proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
   discard loadPluginGraphs(pluginDir(setup.settings.home), addr w.hostFns[])
   wireMemory(w, setup.settings, db, setup.client, bundledSkillDirs())
   if setup.settings.graphWorkflows:
-    # The triage door. The gate is offered exactly the enabled agents
-    # that have a worker in this binary (`delegateWorkers`: today only
-    # `gather`), and gets a nil seam when none does — which is today's
-    # quick|full graph, byte for byte. The seam reads `tracer.turnId`
-    # per call (the binder outlives one turn) and spawns this same
-    # binary at `getAppFilename()` in the worker role.
-    let workers = workerAgents(setup.settings.agents,
+    # The triage door. The offer and the delegates are built from ONE
+    # roster: the runnable inventory followed by today's gate-checked
+    # enable list, so every route the gate can pick has a worker behind
+    # it and a loop worker with no inventory row (`brief`) stays
+    # offered. No roster entry means nil, which is today's quick|full
+    # graph byte for byte. The seam reads `tracer.turnId` per call (the
+    # binder outlives one turn) and spawns this same binary at
+    # `getAppFilename()` in the worker role.
+    let entries = inventoryEntries(setup.settings.agents,
+      skillStatusesFor(setup.settings.home, bundledSkillDirs()))
+    let roster = agentRoster(entries, setup.settings.agents,
       pluginWorkerNames(setup.settings.agents))
     w.graphTurn = triageGraphTurn(setup.client, setup.settings.smallModel,
       setup.settings.home,
       proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
         w.runFullTurn(st.jget("message").getStr(), n, strm),
-      workers,
-      liveDelegateFor(setup.settings.agents, getAppFilename(),
+      roster,
+      liveDelegateFor(roster, getAppFilename(),
         proc(): string = w.tracer.turnId, defaultWorkerRunner,
-        extra = pluginWorkerNames(setup.settings.agents),
+        extra = pluginWorkerNames(roster),
         contextFn = proc(msg: string): string =
           if w.session.retrieve.isNil: "" else: w.session.retrieve(msg, nil)),
-      taskTagsFn = mcpTaskTagsFn(setup.settings.home, workers))
+      taskTagsFn = mcpTaskTagsFn(setup.settings.home, roster))
   return w
 
 proc buildWorkerApp*(dotenvStart = ""): Waku =

@@ -813,6 +813,17 @@ proc turnSection*(home, provider, model: string,
     inc n
   result = (served, stats, agentsSummary(events))
 
+proc skillStatusesFor*(home: string,
+                       bundled: seq[string]): seq[SkillStatus] =
+  ## One status per on-disk skill: `listDistribSkills` owns discovery
+  ## (bundled first, a home skill wins by name) and `installedSkill` owns
+  ## the `.so` verdict. `graphSection` and every binder read this one
+  ## list, so the inventory the page shows and the one the delegates are
+  ## built from cannot disagree.
+  for info in listDistribSkills(home, bundled):
+    result.add((name: info.name,
+      installed: installedSkill(home, info.name)))
+
 proc graphSection*(home: string, enabled: bool,
                     plugins: seq[string] = defaultPlugins): JsonNode =
   ## Port of the `"graph"` block in Python `collect()`: topologies
@@ -864,10 +875,7 @@ proc graphSection*(home: string, enabled: bool,
   # workflows above. Read-only and additive: the workflows array keeps
   # the exact shape it had, so a page that never reads `inventory`
   # sees no change.
-  var skillStates: seq[SkillStatus] = @[]
-  for info in listDistribSkills(home, bundledSkillDirs()):
-    skillStates.add((name: info.name,
-      installed: installedSkill(home, info.name)))
+  var skillStates = skillStatusesFor(home, bundledSkillDirs())
   var invArr = newJArray()
   for e in inventoryEntries(plugins, skillStates):
     invArr.add(e)
@@ -3051,22 +3059,29 @@ proc reselectGraphTurn*(w: var Waku, source: string,
   ##
   ## The delegation seam is rebuilt here for the same reason it is built
   ## in `buildCliApp`: this reselect runs every CLI and dashboard turn, so
-  ## a seam bound only at startup would be dropped by the first one. With
-  ## `WAKU_AGENTS` empty `liveDelegateFor` answers nil and the graph is
-  ## today's quick|full, byte for byte. The trace id is read per call
-  ## through the same address, so an empty `tracer.turnId` at bind time
-  ## is not a race.
+  ## a seam bound only at startup would be dropped by the first one. The
+  ## offer and the delegates come from ONE roster: the runnable inventory
+  ## followed by today's gate-checked enable list, so a loop worker with
+  ## no inventory row (`brief`) stays offered. With `WAKU_AGENTS` empty
+  ## and no eligible plugin that roster is empty, `liveDelegateFor`
+  ## answers nil and the graph is today's quick|full, byte for byte. The
+  ## trace id is read per call through the same address, so an empty
+  ## `tracer.turnId` at bind time is not a race.
   let agent = addr w
   try:
+    let entries = inventoryEntries(w.settings.agents,
+      skillStatusesFor(w.settings.home, bundledSkillDirs()))
+    let roster = agentRoster(entries, w.settings.agents,
+      pluginWorkerNames(w.settings.agents))
     w.graphTurn = resolveGatewayGraph(graphSelectorFor(source, env),
       w.client, w.settings.smallModel, w.settings.home,
       proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
         agent[].runFullTurn(st.jget("message").getStr(), n, strm),
       gatherGraphTurn(w),
-      workerAgents(w.settings.agents, pluginWorkerNames(w.settings.agents)),
-      liveDelegateFor(w.settings.agents, getAppFilename(),
+      roster,
+      liveDelegateFor(roster, getAppFilename(),
         proc(): string = agent[].tracer.turnId, defaultWorkerRunner,
-        extra = pluginWorkerNames(w.settings.agents),
+        extra = pluginWorkerNames(roster),
         contextFn = proc(msg: string): string =
           if agent[].session.retrieve.isNil: "" else: agent[].session.retrieve(msg, nil)))
   except CatchableError:
@@ -3105,19 +3120,24 @@ proc ensureWaku*(box: WakuBox) =
     if s.graphWorkflows:
       # The same live seam `buildCliApp` and `reselectGraphTurn` bind, so a
       # gateway (or a build that never reselects) still runs the agent
-      # route; with `WAKU_AGENTS` empty `liveDelegateFor` answers nil and
-      # this is today's quick|full graph.
-      let agents = workerAgents(s.agents, pluginWorkerNames(s.agents))
+      # route. The offer and the delegates read the same roster (runnable
+      # inventory plus the gate-checked enable list), so every offered
+      # route can receive its turn; with an empty roster `liveDelegateFor`
+      # answers nil and this is today's quick|full graph.
+      let entries = inventoryEntries(s.agents,
+        skillStatusesFor(s.home, bundledSkillDirs()))
+      let roster = agentRoster(entries, s.agents,
+        pluginWorkerNames(s.agents))
       box.waku.graphTurn = triageGraphTurn(client, s.smallModel, s.home,
         proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
           box.waku.runFullTurn(st.jget("message").getStr(), n, strm),
-        agents,
-        liveDelegateFor(s.agents, getAppFilename(),
+        roster,
+        liveDelegateFor(roster, getAppFilename(),
           proc(): string = box.waku.tracer.turnId, defaultWorkerRunner,
-          extra = pluginWorkerNames(s.agents),
+          extra = pluginWorkerNames(roster),
           contextFn = proc(msg: string): string =
             if box.waku.session.retrieve.isNil: "" else: box.waku.session.retrieve(msg, nil)),
-        taskTagsFn = mcpTaskTagsFn(s.home, agents))
+        taskTagsFn = mcpTaskTagsFn(s.home, roster))
     box.waku.session.sessionId =
       if box.sessionId.len > 0: box.sessionId
       else: "dashboard-" & format(now(), "yyyyMMdd-HHmmss")
@@ -3260,19 +3280,21 @@ proc runSlashCommand*(message: string, box: WakuBox, emit: SseEmit,
         if box.buildError.len > 0:
           emit("done", %*{"error": box.buildError})
           return true
-        let agents = workerAgents(box.waku.settings.agents,
+        let entries = inventoryEntries(box.waku.settings.agents,
+          skillStatusesFor(box.waku.settings.home, bundledSkillDirs()))
+        let roster = agentRoster(entries, box.waku.settings.agents,
           pluginWorkerNames(box.waku.settings.agents))
         let turn = triageGraphTurn(box.waku.client,
           box.waku.settings.smallModel, box.waku.settings.home,
           proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
             box.waku.runFullTurn(st.jget("message").getStr(), n, strm),
-          agents,
-          liveDelegateFor(box.waku.settings.agents, getAppFilename(),
+          roster,
+          liveDelegateFor(roster, getAppFilename(),
             proc(): string = box.waku.tracer.turnId, defaultWorkerRunner,
-            extra = pluginWorkerNames(box.waku.settings.agents),
+            extra = pluginWorkerNames(roster),
             contextFn = proc(msg: string): string =
               if box.waku.session.retrieve.isNil: "" else: box.waku.session.retrieve(msg, nil)),
-          taskTagsFn = mcpTaskTagsFn(box.waku.settings.home, agents))
+          taskTagsFn = mcpTaskTagsFn(box.waku.settings.home, roster))
         let (answered, res) = turn(arg,
           proc(kind: string, ev: JsonNode) {.closure.} = emit(kind, ev),
           true)
@@ -4510,16 +4532,19 @@ proc gatewayAgents*(providers: seq[Provider], settings: Settings,
         raise newException(CatchableError, box.buildError)
       let liveEnv = envOf()
       let sel = graphSelectorFor(source, liveEnv)
+      let entries = inventoryEntries(box.waku.settings.agents,
+        skillStatusesFor(box.waku.settings.home, bundledSkillDirs()))
+      let roster = agentRoster(entries, box.waku.settings.agents,
+        pluginWorkerNames(box.waku.settings.agents))
       box.waku.graphTurn = resolveGatewayGraph(sel, box.waku.client,
         box.waku.settings.smallModel, box.waku.settings.home,
         proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
           box.waku.runFullTurn(st.jget("message").getStr(), n, strm),
         gatherGraphTurn(box.waku),
-        workerAgents(box.waku.settings.agents,
-          pluginWorkerNames(box.waku.settings.agents)),
-        liveDelegateFor(box.waku.settings.agents, getAppFilename(),
+        roster,
+        liveDelegateFor(roster, getAppFilename(),
           proc(): string = box.waku.tracer.turnId, defaultWorkerRunner,
-          extra = pluginWorkerNames(box.waku.settings.agents),
+          extra = pluginWorkerNames(roster),
           contextFn = proc(msg: string): string =
             if box.waku.session.retrieve.isNil: "" else: box.waku.session.retrieve(msg, nil)))
       box.waku.respond(text, cli.liveObserver, source, false).reply
