@@ -35,6 +35,7 @@ into four groups.
 | [graph-plugins-design.md](graph-plugins-design.md) | a graph node from a Nim dynamic library: the C boundary, the host functions, and the trust tiers (proposal) |
 | [orchestrator-instances-design.md](orchestrator-instances-design.md) | the orchestrator of same-binary role processes: the delegation contract, the agent registry, and the single dashboard |
 | [orchestrator-memory-context-design.md](orchestrator-memory-context-design.md) | read-only memory for delegated workers: the bounded task snapshot without a worker store (proposal) |
+| [orchestrator-inventory-design.md](orchestrator-inventory-design.md) | the unified graphs-plus-plugins inventory the orchestrator reads: manifest, describe, dashboard list (Slice A proposal) |
 | [generic-workers-design.md](generic-workers-design.md) | any loop or graph as a same-binary worker process behind the delegation contract (proposal) |
 | [plugin-workers-design.md](plugin-workers-design.md) | graph plugins as worker processes: eligibility by manifest needs, effects owned by the orchestrator (proposal) |
 | [skill-compiler-design.md](skill-compiler-design.md) | a skill compiled to a plugin: the graph schema, the compiler stages, the router contract, what the loop skips, and the known gaps |

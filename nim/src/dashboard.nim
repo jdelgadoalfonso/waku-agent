@@ -112,6 +112,7 @@ import ./registry
 from ./graph/registry import enabledWorkflows, defaultPlugins, parsePluginList,
   pluginGraph, registerPluginGraph
 from ./graph/agents import agentKind
+from ./graph/inventory import inventoryEntries, SkillStatus
 import ./graph/hostfns
 import ./graph/plugins
 import ./graph/skillgraph
@@ -859,8 +860,20 @@ proc graphSection*(home: string, enabled: bool,
                  "steps": (if steps.kind == JInt: steps else: newJNull()),
                  "path": path,
                  "error": e.jget("error")})
+  # Slice A inventory: what graphs and plugins exist, beside the
+  # workflows above. Read-only and additive: the workflows array keeps
+  # the exact shape it had, so a page that never reads `inventory`
+  # sees no change.
+  var skillStates: seq[SkillStatus] = @[]
+  for info in listDistribSkills(home, bundledSkillDirs()):
+    skillStates.add((name: info.name,
+      installed: installedSkill(home, info.name)))
+  var invArr = newJArray()
+  for e in inventoryEntries(plugins, skillStates):
+    invArr.add(e)
   result = %*{"enabled": enabled,
                "workflows": enabledWorkflows(plugins),
+               "inventory": invArr,
                "runs": runs,
                "stats": {"quick": quick, "full": full}}
 
