@@ -18,9 +18,12 @@ import std/strutils
 import std/times
 
 import ./app
+import ./graph/agents
 import ./graph/engine
 import ./graph/nodes
 import ./loop
+import ./mcp
+import ./tools
 import ./wire
 
 export app
@@ -56,6 +59,10 @@ type
   QuickFn* = proc(state: JsonNode): string {.closure.}
   FullFn* = proc(state: JsonNode, notify: Observer): LoopResult {.closure.}
   DelegateFn* = proc(state: JsonNode, notify: Observer): JsonNode {.closure.}
+  TaskTagsFn* = proc(message: string): seq[string] {.closure.}
+    ## The per-turn filter signal the gate narrows its offer with
+    ## (Slice B): the task tags this turn's message triggers. Nil is
+    ## "no signal" and binds today's full offer byte for byte.
   Delegates* = seq[tuple[agent: string, fn: DelegateFn]]
     ## One delegate per agent, in the order the caller binds them: the
     ## graph's single `delegate_agent` node picks the entry whose `agent`
@@ -71,6 +78,31 @@ proc agentRoutesIn(allowedRoutes: seq[string]): seq[string] =
     if route.len > 0 and route notin ["quick", "full"] and
         route notin result:
       result.add(route)
+
+proc routesForTask*(routes, taskTags: seq[string]): seq[string] =
+  ## The routes this turn may offer the gate (Slice B, S1/S3): the
+  ## per-turn filter, built on the same matcher `schemasFor` uses
+  ## (`tools.tagsMatch`) and the same allow-by-default rule (§4.4). An
+  ## empty signal returns `routes` unchanged — the full offer, today's
+  ## behaviour. `quick`/`full` are the gate's own paths and are always
+  ## kept. An agent route is kept when its card declares no tasks
+  ## (fail-open: irrelevance unproven, S2) or its tasks intersect the
+  ## signal. When that would leave zero agent routes the input comes
+  ## back unchanged (S1): an unproven mismatch must never hand the
+  ## orchestrator an empty menu.
+  if taskTags.len == 0:
+    return routes
+  var agents = 0
+  for route in routes:
+    if route == "quick" or route == "full":
+      result.add(route)
+      continue
+    let tasks = cardTasks(agentCard(route))
+    if tasks.len == 0 or tagsMatch(tasks, taskTags):
+      result.add(route)
+      inc agents
+  if agents == 0:
+    return routes
 
 proc triagePromptFor*(allowedRoutes: seq[string] = @[]): string =
   ## The gate's prompt. With no enabled agent it IS `triagePrompt`, byte
@@ -267,12 +299,30 @@ proc quickReply*(client: LlmClient, smallModel: string,
   textOf(meteredClient(client, "quick", smallModel,
     notify).create(req)["content"])
 
+proc mcpTaskTagsFn*(home: string, agents: seq[string]): TaskTagsFn =
+  ## The gate's production signal: the `tasks` tags this message triggers
+  ## in `<home>/mcp.json`, read the same way `runFullTurn` reads them for
+  ## the loop's tool filter (mcp-per-turn-filter §4.2), so the gate and
+  ## the loop can never disagree about what a turn is about. With no agent
+  ## route there is nothing to narrow, so the file is never read: the
+  ## common case costs no I/O. An unreadable or invalid file is an empty
+  ## signal, exactly as in the loop (allow-by-default, §4.4) — filtering
+  ## must never break the gate.
+  result = proc(message: string): seq[string] {.closure.} =
+    if agents.len == 0:
+      return @[]
+    try:
+      return deriveTaskTags(message, loadMcpServers(home))
+    except ValueError:
+      return @[]
+
 proc triageGraphTurn*(client: LlmClient, smallModel, home: string,
     full: proc(state: JsonNode, notify: Observer,
                stream: bool): LoopResult {.closure.},
     agents: seq[string] = @[],
     delegateFn: DelegateFn = nil,
-    delegates: Delegates = @[]): GraphTurn =
+    delegates: Delegates = @[],
+    taskTagsFn: TaskTagsFn = nil): GraphTurn =
   ## The app binder: triage as a `Waku.graphTurn` seam. `stream` rides
   ## per call (like Python's closure over `respond`'s flag), not per
   ## bind. Returns `(answered, result)`; `(false, _)` whenever the graph
@@ -289,22 +339,34 @@ proc triageGraphTurn*(client: LlmClient, smallModel, home: string,
   ## domain: enabling `WAKU_AGENTS` before the delegate is wired changes
   ## nothing (the model's agent route fails open to full), and the gate can
   ## never ask the graph for a label the router has no target for.
+  ##
+  ## `taskTagsFn` is the Slice B per-turn filter: when it is bound and
+  ## there are agent routes, the message's task tags narrow the offer
+  ## through `routesForTask`. The narrowed list is BOTH the model's answer
+  ## domain and the labels the graph builds, so those two can never
+  ## diverge. Nil (the default) and zero agent routes keep today's list
+  ## byte for byte.
   let agentRoutes = if delegateFn.isNil and delegates.len == 0:
                       newSeq[string]()
                     else:
                       agentRoutesIn(agents)
   result = proc(userMessage: string, notify: Observer,
                 stream: bool): tuple[answered: bool, res: LoopResult] =
+    let offered =
+      if agentRoutes.len > 0 and not taskTagsFn.isNil:
+        routesForTask(@["quick", "full"] & agentRoutes,
+          taskTagsFn(userMessage))
+      else:
+        @["quick", "full"] & agentRoutes
     let g = buildTriageGraph(
       classifyFn = proc(m: string): tuple[route, reason: string] =
-        classifyMessage(client, smallModel, m, notify,
-                        @["quick", "full"] & agentRoutes),
+        classifyMessage(client, smallModel, m, notify, offered),
       calendarFn = proc(): string = todaysEvents(home),
       quickFn = proc(s: JsonNode): string =
         quickReply(client, smallModel, s, notify),
       fullFn = proc(s: JsonNode, n: Observer): LoopResult =
         full(s, n, stream),
-      agentRoutes = agentRoutes,
+      agentRoutes = agentRoutesIn(offered),
       delegateFn = delegateFn,
       delegates = delegates)
     var state = %*{"message": userMessage}

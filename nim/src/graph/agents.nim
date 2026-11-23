@@ -69,6 +69,21 @@ proc agentCard*(name: string): JsonNode =
     if card.jget("name").getStr() == name:
       return card
 
+proc cardTasks*(card: JsonNode): seq[string] =
+  ## The `tasks` tags a card declares (Slice B: `["research", "brief"]`),
+  ## the tags the gate's per-turn filter matches. Missing, non-array or
+  ## non-string entries contribute nothing, so a card that declares no
+  ## tasks reads as "no tags" and is always listed: irrelevance
+  ## unproven, never a route the orchestrator loses (S2, fail-open).
+  if card == nil:
+    return @[]
+  let raw = card.jget("tasks")
+  if raw.kind != JArray:
+    return @[]
+  for t in raw:
+    if t.kind == JString:
+      result.add(t.getStr())
+
 proc agentKind*(name: string): string =
   ## Worker shape for `name`: builtins triage/gather are graphs (they
   ## mirror `registry.defaultPlugins`), enrolled cards declare their

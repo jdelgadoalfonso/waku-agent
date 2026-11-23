@@ -28,13 +28,14 @@ type
     ## this module only sorts names into entries.
 
 proc entryFor(name, kind, source, whenToUse, cost: string,
-    installed: bool): JsonNode =
+    installed: bool, tasks: seq[string]): JsonNode =
   ## One inventory row with every field present (empty string when
-  ## unknown) — a half row is never emitted.
+  ## unknown, empty `tasks` when the card declares none) — a half row
+  ## is never emitted.
   result = newJObject()
   result["name"] = %name
   result["kind"] = %kind
-  result["tasks"] = newJArray()
+  result["tasks"] = %tasks
   result["when_to_use"] = %whenToUse
   result["cost"] = %cost
   result["fallback"] = %"plain-loop"
@@ -60,21 +61,25 @@ proc inventoryEntries*(enabled: seq[string],
   ## then every on-disk skill not already covered. Builtins are always
   ## `installed`; a skill with a `.so` lists as `plugin-so` under its
   ## `plugin:` name, one without as `skill-md` under its folder name.
-  ## An enrolled card fills `when_to_use` and `cost` — it never
-  ## creates a row on its own (see `inventoryGaps`).
+  ## An enrolled card fills `when_to_use`/`cost`/`tasks` — it never
+  ## creates a row on its own (see `inventoryGaps`). `tasks` is where
+  ## Slice B reads the per-turn signal's match from: a card with no
+  ## tasks lists an empty array and stays always routable (S2).
   for wf in builtinWorkflows():
     let name = wf.jget("name").getStr()
     if name notin enabled:
       continue
     let card = agentCard(name)
     result.add(entryFor(name, "graph", "builtin",
-      cardText(card, "when_to_use"), cardText(card, "cost"), true))
+      cardText(card, "when_to_use"), cardText(card, "cost"), true,
+      cardTasks(card)))
   for name in pluginGraphNames():
     if inventoryFind(result, name) != nil:
       continue
     let card = agentCard(name)
     result.add(entryFor(name, "plugin", "plugin-so",
-      cardText(card, "when_to_use"), cardText(card, "cost"), true))
+      cardText(card, "when_to_use"), cardText(card, "cost"), true,
+      cardTasks(card)))
   for s in skills:
     let pname = "plugin:" & s.name
     if inventoryFind(result, pname) != nil:
@@ -82,13 +87,15 @@ proc inventoryEntries*(enabled: seq[string],
     if s.installed:
       let card = agentCard(pname)
       result.add(entryFor(pname, "plugin", "plugin-so",
-        cardText(card, "when_to_use"), cardText(card, "cost"), true))
+        cardText(card, "when_to_use"), cardText(card, "cost"), true,
+        cardTasks(card)))
     else:
       if inventoryFind(result, s.name) != nil:
         continue
       let card = agentCard(pname)
       result.add(entryFor(s.name, "plugin", "skill-md",
-        cardText(card, "when_to_use"), cardText(card, "cost"), false))
+        cardText(card, "when_to_use"), cardText(card, "cost"), false,
+        cardTasks(card)))
 
 proc inventoryGaps*(enabled: seq[string],
     skills: seq[SkillStatus] = @[]): seq[string] =

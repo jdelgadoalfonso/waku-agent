@@ -3016,7 +3016,8 @@ proc resolveGatewayGraph*(name: string, client: LlmClient, smallModel, home: str
   of "", "off", "loop", "0", "false", "no":
     discard
   of "triage", "1", "true", "yes", "on":
-    result = triageGraphTurn(client, smallModel, home, full, agents, delegateFn)
+    result = triageGraphTurn(client, smallModel, home, full, agents, delegateFn,
+      taskTagsFn = mcpTaskTagsFn(home, agents))
   of "gather":
     result = gatherTurn
   else:
@@ -3106,15 +3107,17 @@ proc ensureWaku*(box: WakuBox) =
       # gateway (or a build that never reselects) still runs the agent
       # route; with `WAKU_AGENTS` empty `liveDelegateFor` answers nil and
       # this is today's quick|full graph.
+      let agents = workerAgents(s.agents, pluginWorkerNames(s.agents))
       box.waku.graphTurn = triageGraphTurn(client, s.smallModel, s.home,
         proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
           box.waku.runFullTurn(st.jget("message").getStr(), n, strm),
-        workerAgents(s.agents, pluginWorkerNames(s.agents)),
+        agents,
         liveDelegateFor(s.agents, getAppFilename(),
           proc(): string = box.waku.tracer.turnId, defaultWorkerRunner,
           extra = pluginWorkerNames(s.agents),
           contextFn = proc(msg: string): string =
-            if box.waku.session.retrieve.isNil: "" else: box.waku.session.retrieve(msg, nil)))
+            if box.waku.session.retrieve.isNil: "" else: box.waku.session.retrieve(msg, nil)),
+        taskTagsFn = mcpTaskTagsFn(s.home, agents))
     box.waku.session.sessionId =
       if box.sessionId.len > 0: box.sessionId
       else: "dashboard-" & format(now(), "yyyyMMdd-HHmmss")
@@ -3257,17 +3260,19 @@ proc runSlashCommand*(message: string, box: WakuBox, emit: SseEmit,
         if box.buildError.len > 0:
           emit("done", %*{"error": box.buildError})
           return true
+        let agents = workerAgents(box.waku.settings.agents,
+          pluginWorkerNames(box.waku.settings.agents))
         let turn = triageGraphTurn(box.waku.client,
           box.waku.settings.smallModel, box.waku.settings.home,
           proc(st: JsonNode, n: Observer, strm: bool): LoopResult =
             box.waku.runFullTurn(st.jget("message").getStr(), n, strm),
-          workerAgents(box.waku.settings.agents,
-            pluginWorkerNames(box.waku.settings.agents)),
+          agents,
           liveDelegateFor(box.waku.settings.agents, getAppFilename(),
             proc(): string = box.waku.tracer.turnId, defaultWorkerRunner,
             extra = pluginWorkerNames(box.waku.settings.agents),
             contextFn = proc(msg: string): string =
-              if box.waku.session.retrieve.isNil: "" else: box.waku.session.retrieve(msg, nil)))
+              if box.waku.session.retrieve.isNil: "" else: box.waku.session.retrieve(msg, nil)),
+          taskTagsFn = mcpTaskTagsFn(box.waku.settings.home, agents))
         let (answered, res) = turn(arg,
           proc(kind: string, ev: JsonNode) {.closure.} = emit(kind, ev),
           true)

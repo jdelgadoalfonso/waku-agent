@@ -54,6 +54,31 @@ suite "inventory slice A":
         found = true
     assert found
 
+  test "card tasks land on every entry kind":
+    registerPluginGraph("plugin:invtasks",
+      %*{"name": "plugin:invtasks", "nodes": [], "edges": []})
+    enrollAgent(%*{"name": "triage", "kind": "graph",
+      "tasks": ["calendar", "memory"]})
+    enrollAgent(%*{"name": "plugin:invtasks", "kind": "graph",
+      "tasks": ["code"]})
+    enrollAgent(%*{"name": "plugin:invtskill", "kind": "graph",
+      "tasks": ["docs"]})
+    let entries = inventoryEntries(@["triage"],
+      @[(name: "invtskill", installed: false)])
+    assert inventoryFind(entries, "triage").jget("tasks") ==
+      %*["calendar", "memory"]
+    assert inventoryFind(entries, "plugin:invtasks").jget("tasks") ==
+      %*["code"]
+    assert inventoryFind(entries, "invtskill").jget("tasks") == %*["docs"]
+
+  test "a card without tasks lists an empty array":
+    enrollAgent(%*{"name": "gather", "kind": "graph"})
+    let entries = inventoryEntries(@["gather"], @[])
+    let gather = inventoryFind(entries, "gather")
+    assert gather != nil
+    assert gather.jget("tasks").kind == JArray
+    assert gather.jget("tasks").len == 0
+
   test "graphSection carries the inventory beside workflows":
     let g = graphSection("/tmp/waku-invtest-nonexistent-home", false,
       @["triage"])

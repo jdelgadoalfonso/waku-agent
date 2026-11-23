@@ -68,7 +68,7 @@ proc schemas*(reg: ToolRegistry): seq[JsonNode] =
   for t in reg.tools:
     result.add(t.toApi())
 
-proc tagsMatch(tags, taskTags: seq[string]): bool =
+proc tagsMatch*(tags, taskTags: seq[string]): bool =
   ## Whether any of `tags` appears in `taskTags` — the set
   ## intersection the filter tests, as a linear scan: both are
   ## short (a server's declared tasks against a turn's signal).

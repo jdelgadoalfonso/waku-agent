@@ -297,7 +297,8 @@ proc buildCliApp*(dotenvStart = "", homeEnv = ""): Waku =
         proc(): string = w.tracer.turnId, defaultWorkerRunner,
         extra = pluginWorkerNames(setup.settings.agents),
         contextFn = proc(msg: string): string =
-          if w.session.retrieve.isNil: "" else: w.session.retrieve(msg, nil)))
+          if w.session.retrieve.isNil: "" else: w.session.retrieve(msg, nil)),
+      taskTagsFn = mcpTaskTagsFn(setup.settings.home, workers))
   return w
 
 proc buildWorkerApp*(dotenvStart = ""): Waku =
