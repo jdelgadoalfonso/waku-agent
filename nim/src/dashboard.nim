@@ -2137,10 +2137,33 @@ proc skillGraphApprove*(d: DashboardDeps, payload: JsonNode): JsonNode =
   except JsonParsingError as exc:
     return skillGraphInstallFailure(
       "the submitted graph is not JSON: " & exc.msg)
+  var graph: SkillGraph
   try:
-    discard validateSkillGraph(manifest)
+    graph = validateSkillGraph(manifest)
   except SkillGraphError as exc:
     return skillGraphInstallFailure(exc.msg)
+  # Strict tasks equality: the manifest is what the loader trusts, so a
+  # manifest whose tasks differ from the skill's own frontmatter is
+  # refused here instead of silently changing routing. Absent in both
+  # is equal; a missing SKILL.md has no baseline and stays fail-open.
+  let slugName = manifest.jget("name").getStr()
+  let skillDocPath = absolutePath(d.home) / "skills" / slugName / "SKILL.md"
+  if fileExists(skillDocPath):
+    var skillText = ""
+    try:
+      skillText = readFile(skillDocPath)
+    except IOError as exc:
+      return skillGraphInstallFailure(
+        "cannot read skill '" & slugName & "': " & exc.msg)
+    let parsed = skillTasks(frontmatterOf(skillText))
+    if not parsed.ok:
+      return skillGraphInstallFailure("skill '" & slugName &
+        "' frontmatter tasks are invalid: fix tasks: in SKILL.md")
+    if parsed.items != graph.tasks:
+      return skillGraphInstallFailure("skill '" & slugName &
+        "' tasks mismatch: frontmatter [" & parsed.items.join(", ") &
+        "] != manifest [" & graph.tasks.join(", ") &
+        "] — copy the skill's own tasks: frontmatter when it declares one")
   # Scratch lives under the home, beside `skills-compiled`: a compile's
   # work directory is allocated per call, so two approvals never share a
   # source or an output path.
