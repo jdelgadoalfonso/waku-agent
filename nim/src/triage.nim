@@ -128,6 +128,12 @@ proc triagePromptFor*(allowedRoutes: seq[string] = @[]): string =
     legend.add "        gather — only an explicit digest, briefing or report that it\n" &
       "        builds with its own tools: never a memory or identity question,\n" &
       "        never plain chat.\n"
+  for agent in agents:
+    let card = agentCard(agent)
+    if card != nil:
+      let wtu = card.jget("when_to_use").getStr().strip()
+      if wtu.len > 0:
+        legend.add "        " & agent & " — " & wtu & "\n"
   result = triagePrompt.replace("\"quick\" or \"full\"", routes)
   result = result.replace("\n\nUser message: {message}",
     "\n" & legend & "\nUser message: {message}")
