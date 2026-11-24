@@ -1984,7 +1984,7 @@ The manifest:
 - "abi": 1
 - "nodes": a non-empty array. Execution starts at the first node, every
   node must be reachable from it, and a cycle is refused.
-- "tasks": OPTIONAL, 1-4 short tags the assistant matches a request
+- "tasks": OPTIONAL, a few short tags (up to 4 recommended) the assistant matches a request
   against when it picks a worker, like ["research", "brief"] or
   ["inbox", "triage"]. Copy the skill's own `tasks:` frontmatter when it
   declares one; omit the key when the skill has no clear tag — a skill
