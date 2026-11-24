@@ -11,13 +11,14 @@ Two-line header: approved proposal `docs/orchestrator-inventory-design.md` rollo
 
 ## Tasks
 
-- [ ] T1 (S2): `tasks` in inventory entries from enrolled cards (empty = listed always) — route: inline
-- [ ] T2 (S1,S3): gate filter in triage/delegate path reusing the tag matcher, fail-open — route: inline
-- [ ] T3 (S4): deterministic pins (match narrows / empty restores / no-tasks listed) — route: inline
-- [ ] T4: neighbor suites + rulebook — route: inline
+- [x] T1 (S2): `tasks` in inventory entries from enrolled cards (empty = listed always) — route: inline
+- [x] T2 (S1,S3): gate filter in triage/delegate path reusing the tag matcher, fail-open — route: inline
+- [x] T3 (S4): deterministic pins (match narrows / empty restores / no-tasks listed) — route: inline
+- [x] T4: neighbor suites + rulebook — route: inline
 
 ## Log
 
 - L1: user: "vamos con el slice B" (after Slice A landed: manifest + describe + dashboard list, read-only).
 - L2: Slice B landed via worker (T1-T3, test-first, S1-S3 PASS, S4 partial: `when_to_use` not injected into gate prompt — needs explicit decision). Assess: risk medium, native unassessable (untracked files), plan = writer self-verification stands, no separate verifier. Verified: test_triage_filter 5/5, test_inventory 6/6, test_workflows 40/40, test_plugin_registry/agents/plugin_graphs green, rulebook 17 passed. Full `nimble test` not run.
 - L3: independent verify (gentle-ai-verify): points 1-4 + 6 PASS; point 5 qualified FAIL (empty-signal test didn't pin its guard; turn test pinned only forward direction). Fixed inline: empty-signal test now enrolls tagless `delta` (guard break -> RED confirmed, restored -> 5/5 GREEN); turn test asserts the exact route line and documents why reverse divergence needs no pin.
+- L4: S4 gap closed inline: `when_to_use` injection confirmed in triagePromptFor + new pin `the gate prompt cites name plus when_to_use` (test_triage_filter 6/6 GREEN, RED proof: empty when_to_use emits no S4 line); neighbors + rulebook 17 + full `nimble test` EXIT 0 (2175 OK); no commit per policy.

@@ -45,6 +45,12 @@ suite "slice B gate filter":
     let routes = @["quick", "full", "alpha", "beta"]
     assert routesForTask(routes, @["unrelated"]) == routes
 
+  test "the gate prompt cites name plus when_to_use (S4)":
+    enrollAgent(%*{"name": "wtuagent", "kind": "graph",
+      "when_to_use": "summarize the week", "tasks": ["research"]})
+    let prompt = triagePromptFor(@["quick", "full", "wtuagent"])
+    assert "wtuagent — summarize the week" in prompt
+
   test "the filter is what the prompt and the graph receive":
     var seen: seq[JsonNode] = @[]
     let client = LlmClient(create: proc(req: JsonNode): JsonNode =

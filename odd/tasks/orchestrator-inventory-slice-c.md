@@ -11,13 +11,14 @@ Two-line header: approved proposal `docs/orchestrator-inventory-design.md` rollo
 
 ## Tasks
 
-- [ ] T1 (S1,S2): inventory-driven delegate list reusing workerAgents/pluginWorkerEligible — route: worker
-- [ ] T2 (S3): binders build delegates and offer from the same inventory — route: worker
-- [ ] T3 (S4): deterministic pins (offered ⇒ runnable; unknown ⇒ no delegate; fail-open) — route: worker
-- [ ] T4: neighbor suites + rulebook + independent verify — route: inline
+- [x] T1 (S1,S2): inventory-driven delegate list reusing workerAgents/pluginWorkerEligible — route: worker
+- [x] T2 (S3): binders build delegates and offer from the same inventory — route: worker
+- [x] T3 (S4): deterministic pins (offered ⇒ runnable; unknown ⇒ no delegate; fail-open) — route: worker
+- [x] T4: neighbor suites + rulebook + independent verify — route: inline
 
 ## Log
 
 - L1: user: "vamos con el slice C" (after Slice B landed: per-turn tag filter with fail-open, independently verified).
 - L2: Slice C landed via worker (T1-T3, test-first, S1-S4 PASS). Follow-up fixed `brief` regression: `agentRoster` = runnableAgents(entries) ∪ workerAgents(enabled, extra); all 5 binders share one rule with extra recomputed from roster. Verified: slice-c suite 14/14, inventory 6/6, triage-filter 5/5, delegate + gateway_graph_select green, nim check waku clean, rulebook 17 passed, assess recorded (medium/unassessable, writer self-verification). Full `nimble test` not run; no commit.
 - L3: independent verify (gentle-ai-verify): points 1-6 PASS, no blockers. Notes: inventory half admits loaded eligible plugins absent from WAKU_AGENTS (name-source widening consistent with S2, behavior change vs enable-list-only offer); binder-shape pins exercise helpers, binder call sites guarded by source inspection; cross-half dedupe correct by inspection, unpinned.
+- L4: T4 closed inline: test_slice_c_delegates 14/14 + neighbors green + rulebook 17 + full `nimble test` EXIT 0 (2175 OK); no commit per policy.
