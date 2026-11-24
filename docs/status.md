@@ -6,7 +6,7 @@
 Read this before opening a PR or filing an issue: most of what is already
 known-broken is below, and half of it already has a fix in flight.
 
-**Last updated:** 2026-11-17
+**Last updated:** 2026-11-24
 
 ---
 

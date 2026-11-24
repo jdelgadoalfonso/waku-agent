@@ -22,4 +22,4 @@ L1: User request verbatim: "Estoy viendo que Waku Memory no está disponible, te
 L2: User constraint verbatim: "Ya tenemos un MCP de engram"
 L3: User authorization verbatim: "1. preparalo tal y como lo propones"
 L4: Explorer map done (task mwnc0g4d-1-uzw7): connect.nim:35,54-56,238-313,436-449; mcp.nim:60-91,212-224,344-369,897-912; brain.nim:58-77,112-119; reports.nim:51; receipt.nim:100-106; observe.nim:42,91-98; observability.nim:998,1256; turn_evals.nim:476,757
-L5: Gate report tracked separately: "en cada aparece gate failed open (LlmRefused) aunque luego me responde" — dashboard chat, lo elimina tras responder, modelo nemotron OpenRouter, sin WAKU_SLOT_GATE
+L5: Gate report tracked separately: "en cada aparece gate failed open (LlmRefused) aunque luego me responde" — dashboard chat, lo elimina tras responder, modelo nemotron OpenRouter, sin WAKU_SLOT_GATE [2026-11-24: CERRADO en odd/tasks/gate-failopen-quiet.md fases A+B+extensión, commit `bda7f7b`: el aviso lleva el mensaje del proveedor, `(repeats)`, y el gate degrada ante LlmRefused sin más llamadas]
