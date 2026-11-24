@@ -72,6 +72,16 @@ suite "retrieval gate":
     assert query == "hi Alex"
     assert "no JSON" in reason
 
+  test "identical no-JSON failures mark repeats":
+    resetGateFailState()
+    let client = scriptedClient("thinking", "thinking")
+    let (_, _, r1) = shouldRetrieve(client, "mini", "hi")
+    let (_, _, r2) = shouldRetrieve(client, "mini", "hi again")
+    assert "no JSON" in r1
+    assert "(repeats)" notin r1
+    assert "(repeats)" in r2
+    resetGateFailState()
+
   test "a broken client fails open":
     let client = LlmClient(create: proc(req: JsonNode): JsonNode =
       raise newException(CatchableError, "down"))
@@ -79,6 +89,33 @@ suite "retrieval gate":
     assert retrieve == true
     assert query == "hi Alex"
     assert "failed open" in reason
+
+  test "a refusal names the provider message, repeats marked once":
+    resetGateFailState()
+    let client = LlmClient(create: proc(req: JsonNode): JsonNode =
+      raise newException(LlmRefused, "model does not support tools"))
+    let (_, _, r1) = shouldRetrieve(client, "mini", "hi Alex")
+    assert "model does not support tools" in r1
+    assert "(repeats)" notin r1
+    let (_, _, r2) = shouldRetrieve(client, "mini", "hi Alex again")
+    assert "model does not support tools" in r2
+    assert "(repeats)" in r2
+    resetGateFailState()
+
+  test "a refusing gate degrades: one call, then silence without calls":
+    resetGateFailState()
+    var calls = 0
+    let client = LlmClient(create: proc(req: JsonNode): JsonNode =
+      inc calls
+      raise newException(LlmRefused, "quota exceeded"))
+    let (_, _, r1) = shouldRetrieve(client, "mini", "first")
+    let (_, _, r2) = shouldRetrieve(client, "mini", "second")
+    assert calls == 1
+    assert "quota exceeded" in r1
+    assert "(repeats)" notin r1
+    assert "quota exceeded" in r2
+    assert "degraded" in r2
+    resetGateFailState()
 
 suite "gated retrieval":
   test "a skip announces itself and searches nothing":

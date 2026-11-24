@@ -136,12 +136,43 @@ proc formatPrompt*(prompt, message: string): string =
   ## The one substitution both prompts need (`{message}` / `{log}`).
   prompt.replace("{message}", message).replace("{log}", message)
 
+var lastGateFailReason = ""
+  ## The last fail-open reason `shouldRetrieve` produced, so an identical
+  ## consecutive failure is marked `(repeats)` instead of announced anew.
+var gateDegraded = false
+  ## Phase B: set once a small-model call raises `LlmRefused`. A model
+  ## that refuses will refuse again, so the gate stops calling it for
+  ## the rest of the process and retrieves without gating.
+var gateDegradedMsg = ""
+  ## The refusal message kept for the degraded notice.
+
+proc resetGateFailState*() =
+  ## Test seam: clears the fail-open memory (last reason + degradation)
+  ## so pins stay order-independent inside one test binary.
+  lastGateFailReason = ""
+  gateDegraded = false
+  gateDegradedMsg = ""
+
+proc gateFailNote*(base: string): string =
+  ## Marks an identical consecutive fail-open reason `(repeats)` instead of
+  ## announcing it anew; a different reason announces in full. A clean
+  ## decision clears the memory, so the next failure is never a repeat.
+  if base == lastGateFailReason:
+    return base & " (repeats)"
+  lastGateFailReason = base
+  result = base
+
 proc shouldRetrieve*(client: LlmClient, smallModel,
     message: string): tuple[retrieve: bool, query, reason: string] =
   ## `(retrieve?, search_query, reason)`, failing open: a gate error — or
   ## a reply with no JSON — retrieves with the raw message, because a
   ## stale memory beats a lost one. The `{...}` slice mirrors Python's
   ## `text.index("{")` → `text.rindex("}")`.
+  if gateDegraded:
+    # Phase B: the small model refused before; never call it again in
+    # this process. Retrieve without gating; the notice stays identical.
+    return (true, message, "gate failed open: " & gateDegradedMsg &
+      " (repeats) (gate degraded)")
   try:
     let req = %*{"model": smallModel, "max_tokens": 600,
                  "messages": @[%*{"role": "user",
@@ -149,16 +180,25 @@ proc shouldRetrieve*(client: LlmClient, smallModel,
     let text = textOf(client.create(req)["content"])
     let a = text.find('{')
     if a < 0:
-      return (true, message, "gate returned no JSON — failing open")
+      return (true, message,
+        gateFailNote("gate returned no JSON — failing open"))
     let b = text.rfind('}')
     if b < a:
-      return (true, message, "gate returned no JSON — failing open")
+      return (true, message,
+        gateFailNote("gate returned no JSON — failing open"))
     let decision = parseJson(text[a .. b])
+    lastGateFailReason = ""
     return (decision.jget("retrieve").getBool(true),
             decision.jget("query").getStr(message),
             decision.jget("reason").getStr(""))
+  except LlmRefused as exc:
+    gateDegraded = true
+    gateDegradedMsg = errorText(exc)
+    let base = "gate failed open: " & gateDegradedMsg
+    return (true, message, gateFailNote(base))
   except CatchableError as exc:
-    return (true, message, "gate failed open (" & $exc.name & ")")
+    let base = "gate failed open: " & errorText(exc)
+    return (true, message, gateFailNote(base))
 
 proc gatedRetrieve*(db: DbConn, facts: FactStore, episodes: EpisodeStore,
     client: LlmClient,

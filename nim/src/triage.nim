@@ -138,6 +138,24 @@ proc triagePromptFor*(allowedRoutes: seq[string] = @[]): string =
   result = result.replace("\n\nUser message: {message}",
     "\n" & legend & "\nUser message: {message}")
 
+var lastTriageFailReason = ""
+  ## The last fail-open reason `classifyMessage` produced, so an identical
+  ## consecutive failure is marked `(repeats)` instead of announced anew.
+
+proc resetTriageFailState*() =
+  ## Test seam: clears the fail-open memory so pins stay order-independent
+  ## inside one test binary.
+  lastTriageFailReason = ""
+
+proc triageFailNote*(base: string): string =
+  ## Marks an identical consecutive fail-open reason `(repeats)` instead of
+  ## announcing it anew; a different reason announces in full. A clean
+  ## decision clears the memory, so the next failure is never a repeat.
+  if base == lastTriageFailReason:
+    return base & " (repeats)"
+  lastTriageFailReason = base
+  result = base
+
 proc classifyMessage*(client: LlmClient, smallModel,
                       message: string,
                       notify: Observer = nil,
@@ -160,21 +178,23 @@ proc classifyMessage*(client: LlmClient, smallModel,
       notify).create(req)["content"])
     let a = text.find('{')
     if a < 0:
-      return ("full", "no JSON — failing open")
+      return ("full", triageFailNote("no JSON — failing open"))
     let b = text.rfind('}')
     if b < a:
       # Python's `rindex` raises ValueError here and fails open as
       # "triage failed open (ValueError)"; a slice with no closing
       # brace holds no JSON at all (truncated reply), so this says so.
       # Either way the turn costs latency, never capability.
-      return ("full", "no JSON — failing open")
+      return ("full", triageFailNote("no JSON — failing open"))
     let decision = parseJson(text[a .. b])
     let route = decision.jget("route").getStr()
     if route notin allowedRoutes:
-      return ("full", "bad route '" & route & "' — failing open")
+      let base = "bad route '" & route & "' — failing open"
+      return ("full", triageFailNote(base))
+    lastTriageFailReason = ""
     return (route, decision.jget("reason").getStr())
   except CatchableError as exc:
-    return ("full", "triage failed open (" & $exc.name & ")")
+    return ("full", triageFailNote("triage failed open: " & errorText(exc)))
 
 proc todaysEvents*(home: string): string =
   ## Today's event titles straight from calendar.ics — a local file read,

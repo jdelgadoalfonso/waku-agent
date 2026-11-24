@@ -17,6 +17,7 @@ import ../src/db
 import ../src/delegate
 import ../src/gather
 import ../src/graph/engine
+import ../src/loop
 import ../src/memory
 import ../src/observability
 import ../src/observe
@@ -130,6 +131,17 @@ suite "phase 4d classify":
     assert route == "full"
     assert "ValueError" in reason
 
+  test "a refusal carries the provider message, repeats marked once":
+    let bad = LlmClient(create: proc(req: JsonNode): JsonNode =
+      raise newException(LlmRefused, "reasoning model cannot comply"))
+    let (route1, reason1) = classifyMessage(bad, "mini", "hi")
+    assert route1 == "full"
+    assert "reasoning model cannot comply" in reason1
+    assert "(repeats)" notin reason1
+    let (route2, reason2) = classifyMessage(bad, "mini", "hi again")
+    assert route2 == "full"
+    assert "(repeats)" in reason2
+
   test "a truncated brace never crashes, it fails open":
     # prosa + `{` cortada por max_tokens: rfind('}') == -1 would slice
     # text[a .. -1] and raise RangeDefect (a Defect, uncatchable by the
@@ -137,6 +149,17 @@ suite "phase 4d classify":
     let script = Script(items: @[textResp("thinking… {\"route\": ")])
     assert classifyMessage(scriptedClient(script), "mini", "hi") ==
       (route: "full", reason: "no JSON — failing open")
+
+  test "identical no-JSON failures mark repeats":
+    resetTriageFailState()
+    let script = Script(items: @[textResp("thinking"), textResp("thinking")])
+    let (route1, reason1) = classifyMessage(scriptedClient(script), "mini", "hi")
+    let (route2, reason2) = classifyMessage(scriptedClient(script), "mini", "hi again")
+    assert (route1, reason1) == ("full", "no JSON — failing open")
+    assert "(repeats)" notin reason1
+    assert reason2 == "no JSON — failing open (repeats)"
+    assert route2 == "full"
+    resetTriageFailState()
 
   test "the rendered prompt keeps single braces and fills the message":
     let script = Script(items: @[textResp("{\"route\": \"full\"}")])
