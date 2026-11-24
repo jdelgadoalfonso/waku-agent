@@ -139,7 +139,12 @@ proc compileSkillGraph*(manifest: JsonNode, workDir: string,
   # "cannot open '.waku/skills-build/…/greeter.nim'" — because the test
   # suites always used temp-dir absolute homes.
   let absWorkDir = absolutePath(workDir)
-  let nimFile = absWorkDir / graph.name & ".nim"
+  # Nim refuses a source file whose stem is not an identifier, so a skill
+  # slug like `weekly-brief` must compile from `weekly_brief.nim`: the
+  # manifest name (and the .so stem) keep the real slug, only the temp
+  # source stem is sanitized. Matches the test workaround in
+  # tests/test_skill_tasks.nim.
+  let nimFile = absWorkDir / graph.name.replace("-", "_") & ".nim"
   let soFile = absWorkDir / graph.name & ".so"
   try:
     writeFile(nimFile, generateSkillNim(graph))
