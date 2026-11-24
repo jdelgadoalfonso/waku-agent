@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>01 — Corrección inline bajo el draft</title>
+<style>
+:root{--bg:#E1E1D9;--paper:#D5D5CC;--ink:#161614;--muted:#3a3a36;--faint:#5c5c56;--rule:#b9b9ac;--accent:#E1AE05;--accent-ink:#161614;--bad:#AA2E11;--ok:#2B7754;--warn:#8C5617;--mono:JetBrains Mono,ui-monospace,Menlo,monospace;--sans:Instrument Sans,Helvetica Neue,Arial,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.55}
+header,main{max-width:960px;margin:0 auto;padding:0 20px}
+header{padding-top:24px}h1{font-size:20px;margin:0 0 4px}.sub{color:var(--muted);font-size:13px;margin:0 0 16px}
+.card{background:var(--paper);border:1px solid var(--rule);border-radius:2px;padding:16px;margin:0 0 16px}
+.label{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin:0 0 8px}
+pre{font-family:var(--mono);font-size:12px;background:#efeee6;border:1px solid var(--rule);border-radius:2px;padding:12px;overflow:auto;margin:8px 0;white-space:pre-wrap}
+.error{border:1px solid var(--bad);color:var(--bad);border-radius:2px;padding:10px 12px;font-size:13px;margin:12px 0}
+.compare{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}.chip{font-family:var(--mono);font-size:12px;border:1px solid var(--rule);border-radius:999px;padding:2px 10px;background:#efeee6}
+.chip.front{border-color:var(--ok)}.chip.draft{border-color:var(--bad)}
+textarea{width:100%;min-height:180px;font-family:var(--mono);font-size:12px;border:1px solid var(--rule);border-radius:2px;padding:12px;background:#fff;color:var(--ink)}
+textarea:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+button{font:inherit;border-radius:2px;padding:8px 14px;cursor:pointer;border:1px solid var(--rule);background:#efeee6;color:var(--ink)}
+button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:700}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.hint{font-size:13px;color:var(--muted)}.vs{align-self:center;font-family:var(--mono);font-size:12px;color:var(--faint)}
+mark.mismatch{background:#F6D9CE;border:1px solid var(--bad);border-radius:2px;padding:0 4px;color:var(--ink)}
+.linenote{font-family:var(--mono);font-size:12px;color:var(--muted);margin:6px 0}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}</style></head>
+<body><header><p class="label">Memory · Skills · weekly-brief</p><h1>Corrección inline bajo el draft</h1><p class="sub">Solo aparece cuando el approve devuelve mismatch. El draft sigue en contexto, debajo del skill.</p></header>
+<main>
+<section class="card" aria-label="Skill"><p class="label">SKILL.md</p><pre>---
+name: weekly-brief
+description: summarize the week
+<mark class="mismatch">tasks: [research, brief]  ← línea 4, mismatch aquí</mark>
+---</pre></section>
+<section class="card" aria-label="Draft con mismatch"><p class="label">Draft propuesto por el modelo</p><pre>{"name":"weekly-brief","abi":1,<mark class="mismatch">"tasks":["other"]  ← línea 1, mismatch aquí</mark>,"nodes":[...]}</pre>
+<div class="error" role="alert">skill 'weekly-brief' tasks mismatch: frontmatter [research, brief] != manifest [other] — copy the skill's own tasks: frontmatter when it declares one</div>
+<div class="compare" aria-label="Comparativa"><span class="chip front">frontmatter: research, brief</span><span class="vs">≠</span><span class="chip draft">draft: other</span></div>
+<label class="label" for="fix">JSON corregido</label>
+<p class="linenote" id="fix-note">Línea 4 del JSON · <mark class="mismatch">"tasks": ["research", "brief"]</mark> — alinea con la línea 4 del SKILL.md</p>
+<textarea id="fix" aria-describedby="fix-note">{
+  "name": "weekly-brief",
+  "abi": 1,
+  "tasks": ["research", "brief"],
+  "nodes": [
+    {
+      "name": "answer",
+      "kind": "llm",
+      "inKeys": ["message"],
+      "outKey": "reply",
+      "needs": ["llm"],
+      "prompt": "Answer: {{message}}"
+    }
+  ]
+}</textarea>
+<div class="row"><button class="primary">Approve corrected</button><button>Copiar tasks del frontmatter</button><button>Re-propose</button></div>
+<p class="hint">Aprueba el corregido y compila el .so. Si recargas, el draft sin aprobar se pierde.</p></section>
+</main></body></html>

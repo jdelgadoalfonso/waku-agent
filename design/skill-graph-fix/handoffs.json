@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "chosen": "01-inline-fix.html",
+  "handoffs": {
+    "01-inline-fix.html": {
+      "status": "implemented",
+      "queued": false,
+      "sentAt": "2026-11-24T09:06:10.634Z",
+      "startedAt": "2026-11-24T09:06:26.698Z",
+      "implementedAt": "2026-11-24T09:11:52.927Z",
+      "note": "Implementado panel inline solo en mismatch con comparativa, editor prettify y auto-fix; node-check y test_dashboard T7a en verde"
+    }
+  }
+}

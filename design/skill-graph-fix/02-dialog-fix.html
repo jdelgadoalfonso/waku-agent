@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>02 — Diálogo de corrección focal</title>
+<style>
+:root{--bg:#E1E1D9;--paper:#D5D5CC;--ink:#161614;--muted:#3a3a36;--faint:#5c5c56;--rule:#b9b9ac;--accent:#E1AE05;--accent-ink:#161614;--bad:#AA2E11;--scrim:rgb(0 0 0/.4);--mono:JetBrains Mono,ui-monospace,Menlo,monospace;--sans:Instrument Sans,Helvetica Neue,Arial,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.55}
+.page{max-width:960px;margin:0 auto;padding:24px 20px;color:var(--faint)}.scrim{position:fixed;inset:0;background:var(--scrim);display:flex;align-items:center;justify-content:center;padding:20px}
+dialog,.sheet{background:var(--paper);border:1px solid var(--rule);border-radius:2px;max-width:640px;width:100%;padding:20px}
+.label{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin:0 0 8px}
+h2{margin:0 0 4px;font-size:18px}.sub{color:var(--muted);font-size:13px;margin:0 0 12px}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:8px 0}th,td{text-align:left;padding:8px;border-top:1px solid var(--rule)}th{font-family:var(--mono);font-size:12px;color:var(--faint)}
+code{font-family:var(--mono);font-size:12px}textarea{width:100%;min-height:150px;font-family:var(--mono);font-size:12px;border:1px solid var(--rule);border-radius:2px;padding:10px}
+textarea:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.row{display:flex;gap:8px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap}button{font:inherit;border-radius:2px;padding:8px 14px;border:1px solid var(--rule);background:#efeee6;cursor:pointer}button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:700}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}</style></head>
+<body><div class="page" aria-hidden="true">Memory · Skills · lista atenuada tras el mismatch…</div>
+<div class="scrim"><section class="sheet" role="dialog" aria-modal="true" aria-label="Corregir mismatch de tasks"><p class="label">Mismatch · weekly-brief</p><h2>Corrige el tasks del draft</h2><p class="sub">El frontmatter manda. El manifiesto tiene que copiarlo.</p>
+<table><tr><th>Fuente</th><th>Tasks</th></tr><tr><td>SKILL.md frontmatter</td><td><code>research, brief</code></td></tr><tr><td>Draft del modelo</td><td><code>other</code></td></tr></table>
+<label class="label" for="dj">JSON a aprobar</label><textarea id="dj">{"name":"weekly-brief","tasks":["research","brief"],"nodes":[...]}</textarea>
+<div class="row"><button>Cancelar</button><button>Re-propose</button><button class="primary">Approve corrected</button></div></section></div></body></html>

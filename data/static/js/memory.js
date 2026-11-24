@@ -89,21 +89,188 @@ async function proposeSkillGraph(i){
   box.innerHTML = uiCard(`<pre style="font-family:var(--face-mono);font-size:var(--text-xs);color:var(--text-muted);white-space:pre-wrap;max-height:320px;overflow:auto;margin:0">${esc(r.graph)}</pre>
     <div style="margin-top:var(--space-2)">${uiButton("Approve & install", {level: "primary", onclick: `approveSkillGraph(${i})`, attrs: `id="skgraph-ok-${i}"`})}</div>`);
 }
+// A tasks mismatch is the one approve failure the human can repair inline:
+// the draft is already in hand, so the fix is an editor, not another model
+// call. This parser mirrors skillTasks in memory_admin.nim — the same one
+// the installer checks — so the chips and "copy frontmatter tasks" name
+// exactly the list the backend compared.
+function skillGraphFrontTasks(text){
+  const src = String(text == null ? "" : text).replace(/\r\n/g, "\n");
+  const fm = src.match(/^---\n([\s\S]*?)\n---(?:\n|$)/);
+  const lines = fm ? fm[1].split("\n") : [];
+  for (let i = 0; i < lines.length; i++){
+    const colon = lines[i].indexOf(":");
+    if (colon < 0 || lines[i].slice(0, colon).trim().toLowerCase() !== "tasks") continue;
+    const line = i + 2;  // the first frontmatter line is line 2 of the file
+    let body = lines[i].slice(colon + 1).trim();
+    if (!body){
+      // A bare `tasks:` is a block list, the one shape the line parser refuses.
+      for (let j = i + 1; j < lines.length; j++){
+        const next = lines[j].trim();
+        if (!next) continue;
+        if (next.startsWith("-")) return {ok: false, present: true, items: [], line};
+        break;
+      }
+      return {ok: true, present: true, items: [], line};
+    }
+    if (body.startsWith("[")){
+      if (!body.endsWith("]")) return {ok: false, present: true, items: [], line};
+      body = body.slice(1, -1).trim();
+    }
+    if (!body) return {ok: true, present: true, items: [], line};
+    const entries = body.split(",");
+    const items = [];
+    for (let k = 0; k < entries.length; k++){
+      const entry = entries[k].trim().replace(/^['"]+|['"]+$/g, "");
+      if (!entry){
+        if (k === entries.length - 1 && !entries[k].trim()) continue;
+        return {ok: false, present: true, items: [], line};
+      }
+      if (entry.startsWith("[") || entry.startsWith("{"))
+        return {ok: false, present: true, items: [], line};
+      items.push(entry);
+    }
+    return {ok: true, present: true, items, line};
+  }
+  return {ok: true, present: false, items: [], line: 0};
+}
+function skillGraphPretty(raw){
+  try { return JSON.stringify(JSON.parse(raw), null, 2); }
+  catch(e) { return String(raw == null ? "" : raw); }
+}
+function skillGraphDraftTasks(raw){
+  try {
+    const graph = JSON.parse(raw);
+    if (graph && Array.isArray(graph.tasks)) return graph.tasks;
+  } catch(e) {}
+  return null;
+}
+function skillGraphTasksText(items){
+  if (!items || !items.length) return "(none)";
+  return items.map(v => String(v)).join(", ");
+}
+function skillGraphTasksLine(text){
+  const lines = String(text == null ? "" : text).replace(/\r\n/g, "\n").split("\n");
+  for (let i = 0; i < lines.length; i++)
+    if (/^\s*"tasks"\s*:/.test(lines[i])) return i + 1;
+  return 0;
+}
+function skillGraphFixNoteText(i, text){
+  const ta = document.getElementById("skgraph-edit-"+i);
+  const sk = document.getElementById("sk-"+i);
+  const raw = text == null ? (ta ? ta.value : "") : text;
+  const tasks = skillGraphDraftTasks(raw);
+  const jsonLine = skillGraphTasksLine(raw);
+  const front = sk ? skillGraphFrontTasks(sk.value) : {line: 0};
+  const snippet = tasks
+    ? `"tasks": [${tasks.map(v => JSON.stringify(v)).join(", ")}]`
+    : '"tasks"';
+  const where = jsonLine ? "Line "+jsonLine+" of the JSON" : "The JSON";
+  const align = front.line
+    ? " — align it with line "+front.line+" of SKILL.md"
+    : " — align it with the tasks: line in SKILL.md";
+  return where+" · <code>"+esc(snippet)+"</code>"+align;
+}
+// Shows the correction panel for the two errors it can answer, and does
+// nothing for every other failure (the plain error text stays the message).
+function skillGraphFix(i, raw, error){
+  const box = document.getElementById("skgraph-"+i);
+  if (!box) return;
+  const why = String(error == null ? "" : error);
+  const invalid = why.indexOf("frontmatter tasks are invalid") >= 0;
+  const mismatch = why.indexOf("tasks mismatch") >= 0;
+  if (!invalid && !mismatch) return;  // every other failure keeps the plain message
+  const old = document.getElementById("skgraph-fix-"+i);
+  if (old) old.remove();
+  const wrap = document.createElement("div");
+  wrap.id = "skgraph-fix-"+i;
+  if (invalid){
+    // The skill's own half is broken: an edited manifest cannot repair it,
+    // so the honest fix is the SKILL.md editor and its Save button.
+    wrap.innerHTML = uiCard(`<div class="u">Fix SKILL.md first</div>
+      <div class="meta" style="margin-top:var(--space-2)">The <code>tasks:</code> line in SKILL.md is not a plain list. Fix it in the SKILL.md editor above, click <b>Save SKILL.md</b>, then propose the graph again. Editing the graph JSON cannot repair the skill's own frontmatter.</div>`);
+    box.appendChild(wrap);
+    return;
+  }
+  if (!mismatch) return;
+  const sk = document.getElementById("sk-"+i);
+  const front = sk ? skillGraphFrontTasks(sk.value) : {ok: true, present: false, items: [], line: 0};
+  const draft = skillGraphDraftTasks(raw);
+  const pretty = skillGraphPretty(raw);
+  const frontText = !front.ok ? "invalid in the editor"
+    : front.present ? skillGraphTasksText(front.items) : "(none)";
+  const draftText = draft == null ? "(unreadable)" : skillGraphTasksText(draft);
+  const chip = (text, colour) => `<span class="chip" style="color:${colour};border-color:${colour}">${text}</span>`;
+  wrap.innerHTML = uiCard(`
+    <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;align-items:center;margin-bottom:var(--space-2)">
+      ${chip("frontmatter: "+esc(frontText), "var(--ok)")}
+      <span class="meta" style="margin-top:0">&ne;</span>
+      ${chip("draft: "+esc(draftText), "var(--bad)")}
+    </div>
+    <label class="meta" for="skgraph-edit-${i}" style="display:block;font-family:var(--face-mono);letter-spacing:var(--tracking-label);text-transform:uppercase">Corrected graph JSON</label>
+    <div class="meta" id="skgraph-fix-note-${i}" style="font-family:var(--face-mono);margin-top:var(--space-2)">${skillGraphFixNoteText(i, pretty)}</div>
+    <textarea class="editor" id="skgraph-edit-${i}" spellcheck="false" aria-describedby="skgraph-fix-note-${i}" style="min-height:180px;margin-top:var(--space-2)">${esc(pretty)}</textarea>
+    <div style="display:flex;gap:var(--space-2);flex-wrap:wrap;margin-top:var(--space-2)">
+      ${uiButton("Approve corrected", {level: "primary", onclick: `approveSkillGraph(${i})`, attrs: `id="skgraph-fix-ok-${i}"`})}
+      ${uiButton("Copy frontmatter tasks", {level: "secondary", onclick: `copyFrontmatterTasks(${i})`})}
+      ${uiButton("Re-propose", {level: "secondary", onclick: `proposeSkillGraph(${i})`})}
+    </div>`);
+  box.appendChild(wrap);
+}
+function copyFrontmatterTasks(i){
+  const sk = document.getElementById("sk-"+i);
+  const ta = document.getElementById("skgraph-edit-"+i);
+  const msg = document.getElementById("skgraph-msg-"+i);
+  if (!sk || !ta) return;
+  const front = skillGraphFrontTasks(sk.value);
+  if (!front.ok){
+    if (msg) msg.textContent = "Error: the tasks: line in SKILL.md is invalid — fix it in the SKILL.md editor and Save first.";
+    return;
+  }
+  if (!front.present){
+    if (msg) msg.textContent = "Error: SKILL.md has no tasks: line to copy — add one and Save first.";
+    return;
+  }
+  let graph;
+  try { graph = JSON.parse(ta.value); }
+  catch(e) { if (msg) msg.textContent = "Error: the corrected JSON is not valid JSON: "+((e && e.message) || e); return; }
+  if (!graph || typeof graph !== "object" || Array.isArray(graph)){
+    if (msg) msg.textContent = "Error: the corrected JSON must be an object with a tasks list.";
+    return;
+  }
+  graph.tasks = front.items;
+  ta.value = JSON.stringify(graph, null, 2);
+  const note = document.getElementById("skgraph-fix-note-"+i);
+  if (note) note.innerHTML = skillGraphFixNoteText(i, ta.value);
+}
 async function approveSkillGraph(i){
   const msg = document.getElementById("skgraph-msg-"+i);
   const btn = document.getElementById("skgraph-ok-"+i);
-  const graph = skillGraphDrafts[i];
+  const fixBtn = document.getElementById("skgraph-fix-ok-"+i);
+  // Once the correction editor exists, approve reads it: "Approve corrected"
+  // re-runs this same path with the human's JSON instead of the draft.
+  const edit = document.getElementById("skgraph-edit-"+i);
+  const graph = edit ? edit.value : skillGraphDrafts[i];
   if (!graph){ if (msg) msg.textContent = "Nothing to approve — propose a graph first."; return; }
   if (msg) pendingStart(msg, "Compiling and installing…");
   if (btn) btn.disabled = true;
+  if (fixBtn) fixBtn.disabled = true;
   let r;
   try {
     r = await postJSON("/api/memory", {action:"skill_graph_approve", graph});
   } catch(e) { r = {error: String((e && e.message) || e)}; }
   if (msg) pendingStop(msg);
   if (!msg || !msg.isConnected) return;
-  if (r.error){ msg.textContent = "Error: "+r.error; if (btn) btn.disabled = false; return; }
+  if (r.error){
+    msg.textContent = "Error: "+r.error;
+    if (btn) btn.disabled = false;
+    if (fixBtn) fixBtn.disabled = false;
+    skillGraphFix(i, graph, r.error);
+    return;
+  }
   delete skillGraphDrafts[i];
+  const fix = document.getElementById("skgraph-fix-"+i);
+  if (fix) fix.remove();
   msg.textContent = "Installed at "+r.plugin_path+" (compiled: "+r.compiled+", replaced: "+r.replaced+").";
 }
 async function forkSkill(i){

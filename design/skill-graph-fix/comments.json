@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "comments": [
+    {
+      "id": "19q3wojy",
+      "file": "01-inline-fix.html",
+      "selector": "#fix",
+      "excerpt": "{\"name\": \"weekly-brief\", \"abi\": 1, \"tasks\": [\"research\", \"brief\"], \"nodes\": [{\"name\": \"answer\", \"kind\": \"llm\", \"inKeys\": [\"message\"], \"outKey\": \"reply\", \"needs\": [\"llm\"], \"prompt\": \"Answer: {{message}}\"}]}",
+      "comment": "pon el json en formato prettify",
+      "createdAt": "2026-11-24T09:03:08.563Z",
+      "status": "resolved",
+      "sentAt": "2026-11-24T09:03:08.578Z",
+      "resolvedAt": "2026-11-24T09:03:19.827Z",
+      "resolution": "JSON del textarea #fix en formato prettify con indentación"
+    },
+    {
+      "id": "czu6perc",
+      "file": "01-inline-fix.html",
+      "selector": "body > main > section:nth-of-type(2) > div:nth-of-type(1)",
+      "excerpt": "skill 'weekly-brief' tasks mismatch: frontmatter [research, brief] != manifest [other] — copy the skill's own tasks: frontmatter when it declares one",
+      "comment": "quiero que aparezca marcada la línea donde se encuentra el mismatch pero en el skill.md y en el json",
+      "createdAt": "2026-11-24T09:05:33.146Z",
+      "status": "resolved",
+      "sentAt": "2026-11-24T09:05:33.206Z",
+      "resolvedAt": "2026-11-24T09:05:53.862Z",
+      "resolution": "Marcadas líneas tasks con mark en SKILL.md, draft y nota de línea 4 del JSON"
+    }
+  ]
+}

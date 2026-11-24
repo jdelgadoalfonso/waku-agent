@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>03 — Pasos con auto-fix de tasks</title>
+<style>
+:root{--bg:#E1E1D9;--paper:#D5D5CC;--ink:#161614;--muted:#3a3a36;--faint:#5c5c56;--rule:#b9b9ac;--accent:#E1AE05;--accent-ink:#161614;--ok:#2B7754;--mono:JetBrains Mono,ui-monospace,Menlo,monospace;--sans:Instrument Sans,Helvetica Neue,Arial,sans-serif}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);font-size:15px;line-height:1.55}
+header,main{max-width:960px;margin:0 auto;padding:0 20px}header{padding-top:24px}h1{font-size:20px;margin:0 0 4px}.sub{color:var(--muted);font-size:13px;margin:0 0 16px}
+.steps{display:flex;gap:8px;list-style:none;padding:0;margin:0 0 16px}.steps li{font-family:var(--mono);font-size:12px;border:1px solid var(--rule);border-radius:999px;padding:4px 12px;background:#efeee6;color:var(--faint)}.steps li.done{border-color:var(--ok);color:var(--ok)}.steps li.now{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+.card{background:var(--paper);border:1px solid var(--rule);border-radius:2px;padding:16px;margin:0 0 16px}.label{font-family:var(--mono);font-size:12px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);margin:0 0 8px}
+.compare{font-family:var(--mono);font-size:13px;background:#efeee6;border:1px solid var(--rule);border-radius:2px;padding:10px 12px;margin:8px 0}
+button{font:inherit;border-radius:2px;padding:8px 14px;border:1px solid var(--rule);background:#efeee6;cursor:pointer}button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:700}button:focus-visible,details summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+details{margin-top:12px}summary{cursor:pointer;font-size:13px;color:var(--muted)}textarea{width:100%;min-height:140px;font-family:var(--mono);font-size:12px;margin-top:8px;border:1px solid var(--rule);border-radius:2px;padding:10px}
+@media(prefers-reduced-motion:reduce){*{transition:none!important}}</style></head>
+<body><header><p class="label">Memory · weekly-brief · mismatch</p><h1>Fix en 2 pasos: auto-fix y aprobar</h1><p class="sub">El caso común se resuelve en un clic. La edición manual queda como secundaria.</p></header><main>
+<ol class="steps"><li class="done">1 Review</li><li class="now">2 Fix tasks</li><li>3 Approve</li></ol>
+<section class="card"><p class="label">Comparativa</p><div class="compare">frontmatter [research, brief] ≠ draft [other]</div>
+<button class="primary">Copiar frontmatter al draft y aprobar</button>
+<details><summary>Editar JSON a mano (opcional)</summary><textarea>{"name":"weekly-brief","tasks":["research","brief"],"nodes":[...]}</textarea><p><button>Approve corrected</button></p></details></section>
+</main></body></html>
