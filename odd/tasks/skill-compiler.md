@@ -65,10 +65,10 @@ S25: Installing a skill never silently overwrites a hand-written plugin. If <hom
 - T4: Hash-based cache and .so loader (S5) — route: inline, commit: 17ac0b1 — DONE: 9/9 tests GREEN (canonical key ignores key order, hit never compiles, no entry on refusal/failure)
 - T5: Worker binding for compiled skills (S6) — route: inline, commit: 2cd1f09 — DONE: 7/7 tests GREEN (install into <home>/plugins/<name>.so, headless run through pluginRunHeadless, worker-eligible, replace semantics, refusal touches nothing)
 - T6: Fallback when Nim is unavailable (S7) — route: inline, commit: 2ba4a59 — DONE: 6/6 tests GREEN (plugin mode, no compiler, invalid graph, failing compiler, cache hit without compiler, describeExecution)
-- T7: Shadow mode for loop integration (S8) — route: inline, commit: pending
-- T4c: Unique work directory per compile: hash + process + call discriminator (S13) — route: inline, commit: pending
+- T7: Shadow mode for loop integration (S8) — SUPERSEDED by S15, not implemented (L14/L34): the loop uses what is installed and never compiles
+- T4c: Unique work directory per compile: hash + process + call discriminator (S13) — route: inline, commit: 17ac0b1 — DONE (L23, skillWorkDir/skillWorkPaths per COMPILE)
 - T7a: Dashboard propose + approve (S14, S14a, S14b, S14c) — DONE: 153/153 in test_dashboard (+12)
-- T7a2: Wire the live draft backend so propose works in a shipped binary (S14d) — route: inline, commit: pending
+- T7a2: Wire the live draft backend so propose works in a shipped binary (S14d) — route: inline, commit: cc25f97 (+1ad8deb ceiling) — DONE (L41 live smoke PASS, buildDashboardDeps live + metered)
 - T7b: Installed-plugin path in the loop, text otherwise (S15, S15a, S15b, S15c, S15d) — DONE: 39/17/47/16/10 GREEN
 - T7c: Meter a compiled skill's model calls, so its turn books its real cost (S16) — DONE: 43/47/10 GREEN
 - T7d: Meter a router fallback's model call inside a compiled graph (S17) — CLOSED BY EVIDENCE: already metered since T2c's memo; test_skillgen pins it, no code change needed
@@ -164,3 +164,4 @@ L49: T13 done: PluginFailed carries usage from pluginRunHeadless through runPlug
 L50: OCR high finding fixed (user decision 2026-11-18): T14 prune evicted the cache entry T15 provenance relied on, permanently refusing self-upgrades after 32+ compiles. Provenance now recorded at install time as plugins/<name>.so.skill beside the target (marker first, cache comparison as pre-marker fallback). RED (2 new tests) then GREEN, suite 2009 OK 0 FAILED.
 L51: OCR mediums fixed in proposed order (2026-11-18): nil-guard on PluginFailed.usage in runPluginWorker + skillWorkerTurn (bare raises fail open, 2 tests); sanitized stem via skillName in the provenance glob (1 test; names needing it fail codegen today, fallback-only); prune reaps only >60s publish temporaries (1 test). Suite 2013 OK 0 FAILED.
 L52 (2026-11-27, cierre gap doc): T1-T6 landed en 2125156/491903e/6244d79/17ac0b1/2cd1f09/2ba4a59 (L24), T1b en 2125156 y T2b en 491903e (L7-L8). El "pending" era stale; T7/T4c/T7a2 quedan pendientes como trabajo abierto. Sin cambio de código.
+L53 (2026-11-27, cierre T7/T4c/T7a2): T7 SUPERSEDED por S15 (L14/L34, sin código); T4c en 17ac0b1 (work paths únicos por compile); T7a2 en cc25f97 + 1ad8deb con smoke live PASS (L41). Sin cambio de código.
