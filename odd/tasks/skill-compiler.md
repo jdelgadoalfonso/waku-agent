@@ -59,12 +59,12 @@ S25: Installing a skill never silently overwrites a hand-written plugin. If <hom
 
 ## Tasks
 
-- T1: Graph JSON validator (S1, S2) — route: inline, commit: pending — DONE: 22/22 tests GREEN, module nim/src/graph/skillgraph.nim
-- T2: Nim template generator from validated JSON (S3) — route: inline, commit: pending — DONE: 16/16 tests GREEN incl. real compile+loadPlugin integration, module nim/src/graph/skillgen.nim
-- T3: Child-process compiler with timeout and minimal env (S4) — route: inline, commit: pending — DONE: 6/6 tests GREEN (compile ok, invalid graph refused, missing nim, timeout kill, non-zero exit, no secret leak)
-- T4: Hash-based cache and .so loader (S5) — route: inline, commit: pending — DONE: 9/9 tests GREEN (canonical key ignores key order, hit never compiles, no entry on refusal/failure)
-- T5: Worker binding for compiled skills (S6) — route: inline, commit: pending — DONE: 7/7 tests GREEN (install into <home>/plugins/<name>.so, headless run through pluginRunHeadless, worker-eligible, replace semantics, refusal touches nothing)
-- T6: Fallback when Nim is unavailable (S7) — route: inline, commit: pending — DONE: 6/6 tests GREEN (plugin mode, no compiler, invalid graph, failing compiler, cache hit without compiler, describeExecution)
+- T1: Graph JSON validator (S1, S2) — route: inline, commit: 2125156 — DONE: 22/22 tests GREEN, module nim/src/graph/skillgraph.nim
+- T2: Nim template generator from validated JSON (S3) — route: inline, commit: 491903e — DONE: 16/16 tests GREEN incl. real compile+loadPlugin integration, module nim/src/graph/skillgen.nim
+- T3: Child-process compiler with timeout and minimal env (S4) — route: inline, commit: 6244d79 — DONE: 6/6 tests GREEN (compile ok, invalid graph refused, missing nim, timeout kill, non-zero exit, no secret leak)
+- T4: Hash-based cache and .so loader (S5) — route: inline, commit: 17ac0b1 — DONE: 9/9 tests GREEN (canonical key ignores key order, hit never compiles, no entry on refusal/failure)
+- T5: Worker binding for compiled skills (S6) — route: inline, commit: 2cd1f09 — DONE: 7/7 tests GREEN (install into <home>/plugins/<name>.so, headless run through pluginRunHeadless, worker-eligible, replace semantics, refusal touches nothing)
+- T6: Fallback when Nim is unavailable (S7) — route: inline, commit: 2ba4a59 — DONE: 6/6 tests GREEN (plugin mode, no compiler, invalid graph, failing compiler, cache hit without compiler, describeExecution)
 - T7: Shadow mode for loop integration (S8) — route: inline, commit: pending
 - T4c: Unique work directory per compile: hash + process + call discriminator (S13) — route: inline, commit: pending
 - T7a: Dashboard propose + approve (S14, S14a, S14b, S14c) — DONE: 153/153 in test_dashboard (+12)
@@ -82,8 +82,8 @@ S26: A compiled skill runs with no streaming, no research-brain reads and no MCP
 - T2c: Memoize the router fallback decision per (handle, node) (S10) — DONE: 21/21
 - T3b: Drain the compiler child's output while it runs (S11) — DONE: 10/10
 - T4b: Atomic artifact write plus per-skill install lock (S12) — DONE: 20/20 (+install 7, +mode 6)
-- T1b: Validate router `when` conditions + router llm need (S1, S2) — route: inline, commit: pending — DONE: 33/33 validator tests GREEN
-- T2b: Hybrid router codegen: declarative conditions + LLM fallback (S1, S3) — route: inline, commit: pending — DONE: 19/19 generator tests GREEN incl. headless hybrid run (condition path, fallback path, bogus-label rejection)
+- T1b: Validate router `when` conditions + router llm need (S1, S2) — route: inline, commit: 2125156 — DONE: 33/33 validator tests GREEN
+- T2b: Hybrid router codegen: declarative conditions + LLM fallback (S1, S3) — route: inline, commit: 491903e — DONE: 19/19 generator tests GREEN incl. headless hybrid run (condition path, fallback path, bogus-label rejection)
 - T9: Skills-tab Propose graph + Approve & install buttons (S19) — DONE: test_static_assets handler guard + js-parse green (the one failing static test fails pristine too: missing anthropic module in this env), test_dashboard 155 OK via forceBuild, nimble build embeds the new JS and the live dashboard serves it; click-through user-verified in the browser (2026-11-17)
 - T10: Fork-a-bundled-skill action + Copy to my skills button (S20) — DONE: RED (undeclared forkBundledSkill) then GREEN, test_dashboard 157 OK forceBuild; static assets/js-parse guards green (the one red static test fails pristine too); nimble build embeds the new JS and the live dashboard serves it; live fork of research-report into a temp WAKU_HOME byte-identical, second fork refused naming the copy; temp home removed, real home untouched
 - T11: Pending-state ticker for propose/approve/fork (S21) — DONE: static assets/js-parse guards green; no backend change, browser flow user-verified (2026-11-17)
@@ -163,3 +163,4 @@ L48: Point 5 triaged (user decision 2026-11-18): 1-3 become tasks (T13 cost-on-r
 L49: T13 done: PluginFailed carries usage from pluginRunHeadless through runPluginWorker cost+error and skillWorkerTurn skill:<name> ledger, so raises and empty replies with spend still book; no-usage and ineligible still book nothing. T14 done: per-compile work dirs removed best-effort, pruneSkillCache keeps 32 newest .so plus tmp cleanup. T15 done: install refuses over manual <name>.so (provenance = match in skills-compiled/<name>-*.so), upgrades of own installs still replace. Item 4 recorded as S26 contract.
 L50: OCR high finding fixed (user decision 2026-11-18): T14 prune evicted the cache entry T15 provenance relied on, permanently refusing self-upgrades after 32+ compiles. Provenance now recorded at install time as plugins/<name>.so.skill beside the target (marker first, cache comparison as pre-marker fallback). RED (2 new tests) then GREEN, suite 2009 OK 0 FAILED.
 L51: OCR mediums fixed in proposed order (2026-11-18): nil-guard on PluginFailed.usage in runPluginWorker + skillWorkerTurn (bare raises fail open, 2 tests); sanitized stem via skillName in the provenance glob (1 test; names needing it fail codegen today, fallback-only); prune reaps only >60s publish temporaries (1 test). Suite 2013 OK 0 FAILED.
+L52 (2026-11-27, cierre gap doc): T1-T6 landed en 2125156/491903e/6244d79/17ac0b1/2cd1f09/2ba4a59 (L24), T1b en 2125156 y T2b en 491903e (L7-L8). El "pending" era stale; T7/T4c/T7a2 quedan pendientes como trabajo abierto. Sin cambio de código.
