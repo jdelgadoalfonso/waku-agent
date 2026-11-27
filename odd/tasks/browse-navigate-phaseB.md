@@ -11,12 +11,12 @@ S4: Bloqueo SSRF solo en la tool nueva. User verbatim: "Solo en tool nueva (valu
 
 ## Tasks
 
-- T1 (S4): SSRF guard para `browse_navigate` (loopback, red privada, metadata, redirects) + tests RED/GREEN — commit: pending
-- T2 (S1,S2): `browse_navigate` paso de lectura (GET + extrae enlaces numerados + texto capado reutilizando `stripTags`/topes) + tests — commit: pending
-- T3 (S3): sesión en `.waku/` (crear/cargar, cookies mínimas, retención) + tests — commit: pending
-- T4 (S2,S3): formularios básicos (POST con sesión) + tests — commit: pending
-- T5 (S1): registro tras `WAKU_EXPERIMENTAL` en `registry.nim` + salida de `plannedTools` si aplica — commit: pending
-- T6 (S1-S4): docs que cambien (`docs/roadmap.md`, `docs/benchmarks.md`) + eval determinista (regla 4 AGENTS.md) — commit: pending
+- [x] T1 (S4): SSRF guard para `browse_navigate` (loopback, red privada, metadata, redirects) + tests RED/GREEN — commit: 0416135
+- [x] T2 (S1,S2): `browse_navigate` paso de lectura (GET + extrae enlaces numerados + texto capado reutilizando `stripTags`/topes) + tests — commit: 0416135
+- [x] T3 (S3): sesión en `.waku/` (crear/cargar, cookies mínimas, retención) + tests — commit: 0416135
+- [x] T4 (S2,S3): formularios básicos (POST con sesión) + tests — commit: 0416135
+- [x] T5 (S1): registro tras `WAKU_EXPERIMENTAL` en `registry.nim` + salida de `plannedTools` si aplica — commit: aafda89
+- [x] T6 (S1-S4): docs que cambien (`docs/roadmap.md`, `docs/benchmarks.md`) + eval determinista (regla 4 AGENTS.md) — commit: aafda89 (docs) + 0416135 (evals `test_browse_session`/`test_search`)
 
 ## Log
 
@@ -31,3 +31,4 @@ L8: Verify `gentle-ai-verify mwnp0w2n-3-nh6` (41 tests GREEN, S4 FAIL): F1 IPv6 
 L9: User verbatim: "corrígelos ahora". Fixes: IPv6 normalizado (solo 2000::/3 pasa, mapeadas se juzgan como IPv4), DNS check en live single-hop, redirects en browseInSession con jar por host + prune por visita, sesiones 0600, docs con retención 7d/20.
 L10: Second verification batch fixes: rangos 100.64/10, 192.0.0.0/24, 198.18/15, 224/4+240/4 (dotted + mapped), IPv6 punteado solo ::ffff, tests (cap 50, 303 POST→GET, tope 6 hops, 0600), docs known limits (TOCTOU, host-wide cookies). Focos 47/47 + nim check exit 0; re-verify mwnplhb9-5-t1og pendiente.
 L11: Re-verify mwnpwe6x-1-71ts: 47/47 PASS + nim check exit 0; residuals: save no atomico, adapt fallback solo tests. Cierre: tests de rangos mapeados + nota save no atomico en benchmarks. Focos 48/48 (23+15+10). Sin commits (usuario no pidio).
+L12 (2026-11-27, cierre gap doc): T1-T4 landed en 0416135, T5-T6 en aafda89 (registry + roadmap.md:43 + benchmarks.md:242-243 + pins test_registry/test_browse_session/test_search). El "pending" era stale — el fichero se creó en el mismo 0416135. Sin cambio de código, solo se marcan T1-T6 [x] con sus hashes.
